@@ -2,14 +2,54 @@
 PyInstaller-frozen EXE. Starts the FastAPI server then opens the browser.
 """
 from __future__ import annotations
-import multiprocessing
 import os
-import socket
 import sys
+from pathlib import Path
+
+# ── CRITICAL: must run BEFORE importing uvicorn/fastapi/backend ──────────
+# When PyInstaller builds with --windowed (no console), sys.stdout and
+# sys.stderr are None. Uvicorn's ColourizedFormatter calls
+# `sys.stdout.isatty()` during init and crashes with:
+#   AttributeError: 'NoneType' object has no attribute 'isatty'
+#   ValueError: Unable to configure formatter 'default'
+# Patch them to a tee that writes to a log file next to the EXE.
+if sys.stdout is None or sys.stderr is None:
+    try:
+        if getattr(sys, "frozen", False):
+            log_path = Path(sys.executable).parent / "console.log"
+        else:
+            log_path = Path("console.log")
+        _log_fp = open(log_path, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        _log_fp = open(os.devnull, "w", encoding="utf-8")
+
+    class _StdStream:
+        def __init__(self, fp):
+            self._fp = fp
+        def write(self, data):
+            try:
+                self._fp.write(data)
+            except Exception:
+                pass
+            return len(data) if isinstance(data, str) else 0
+        def flush(self):
+            try: self._fp.flush()
+            except Exception: pass
+        def isatty(self):
+            return False
+        def fileno(self):
+            raise OSError("no underlying fd")
+
+    if sys.stdout is None:
+        sys.stdout = _StdStream(_log_fp)
+    if sys.stderr is None:
+        sys.stderr = _StdStream(_log_fp)
+
+import multiprocessing
+import socket
 import threading
 import time
 import webbrowser
-from pathlib import Path
 
 
 def _is_port_open(host: str, port: int) -> bool:

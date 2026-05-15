@@ -209,13 +209,15 @@ if FRONTEND_DIR.exists():
 
 def run():
     import uvicorn
-    # When frozen (PyInstaller), pass the app object directly. String imports
-    # like "backend.main:app" force a re-import that breaks under the bundled
-    # environment.
     import sys as _sys
     if getattr(_sys, "frozen", False):
+        # PyInstaller --windowed: sys.stdout/stderr are None or stub.
+        # Disable uvicorn's ColourizedFormatter (calls stdout.isatty()) by
+        # passing log_config=None so it inherits our basicConfig() above.
+        # Also pass `app` object directly — string imports re-import which
+        # may break in the bundled environment.
         uvicorn.run(app, host="127.0.0.1", port=SERVER_PORT,
-                    log_level="info")
+                    log_config=None, access_log=False)
     else:
         uvicorn.run("backend.main:app", host="127.0.0.1", port=SERVER_PORT,
                     reload=False, log_level="info")
