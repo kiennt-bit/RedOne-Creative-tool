@@ -106,6 +106,7 @@ export const api = {
     list: (limit = 200) => request('GET', '/api/tasks', { params: { limit } }),
     get: (id) => request('GET', `/api/tasks/${id}`),
     cancel: (id) => request('POST', `/api/tasks/${id}/cancel`),
+    retry: (id) => request('POST', `/api/tasks/${id}/retry`),
     queue: () => request('GET', '/api/tasks/_/queue'),
     openFolder: (id) => request('POST', `/api/tasks/${id}/open-folder`),
   },

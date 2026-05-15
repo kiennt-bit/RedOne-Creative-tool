@@ -176,6 +176,11 @@ export function renderTasksManager(root) {
               onclick: () => window.__app.navigate(navTarget) },
               icon('eye', 14))
           : null,
+        ['ERROR', 'CANCELLED'].includes(t.status)
+          ? el('button', { class: 'btn btn-sm btn-primary', title: 'Thử lại task',
+              onclick: () => retryTask(t.id) },
+              icon('refresh', 14))
+          : null,
         ['PENDING', 'RUNNING'].includes(t.status)
           ? el('button', { class: 'btn btn-sm btn-danger', title: 'Hủy',
               onclick: () => cancelTask(t.id) },
@@ -215,6 +220,14 @@ export function renderTasksManager(root) {
     } catch (e) {
       toast(e.message, 'error');
     }
+  }
+
+  async function retryTask(id) {
+    try {
+      const r = await api.tasks.retry(id);
+      toast(`Đã enqueue lại task #${id} (vị trí ${r.queue_position})`, 'success');
+      await reload();
+    } catch (e) { toast(e.message, 'error'); }
   }
 
   // Wire toolbar

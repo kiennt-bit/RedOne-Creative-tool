@@ -66,6 +66,55 @@ async def cancel_task(task_id: int):
     return {"ok": True, "queue_cancel": ok}
 
 
+@router.post("/{task_id}/retry")
+async def retry_task(task_id: int):
+    """Re-enqueue a failed / cancelled task.
+
+    - Items with status=COMPLETED stay completed (their output files exist)
+    - Items with status=ERROR / PENDING get reset to PENDING for re-processing
+    - Picks the right runner based on task.mode
+    """
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task["status"] in ("PENDING", "RUNNING"):
+        raise HTTPException(400, "Task đang chạy / chờ — không thể retry")
+
+    # Reset error items back to PENDING; recompute counters
+    from ..config import ItemStatus
+    items = db.get_task_items(task_id)
+    done = 0
+    for it in items:
+        if it["status"] in (ItemStatus.ERROR.value, ItemStatus.PENDING.value):
+            db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
+        elif it["status"] == ItemStatus.COMPLETED.value:
+            done += 1
+    db.update_task(task_id,
+                   status="PENDING",
+                   done_count=done,
+                   error_count=0,
+                   finished_at=None)
+
+    # Pick the right runner based on task mode
+    mode = (task.get("mode") or "").lower()
+    if mode == "image":
+        from . import image as image_mod
+        runner = image_mod._process_image_task
+        kind = "image"
+    elif mode == "long_video":
+        from . import long_video as lv_mod
+        runner = lv_mod._run_long_video
+        kind = "long_video"
+    else:  # t2v / i2v / fallback
+        from . import content as content_mod
+        runner = content_mod._process_task
+        kind = "content"
+
+    pos = await queue.enqueue(kind, task_id, runner)
+    await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
+    return {"ok": True, "queue_position": pos, "kind": kind}
+
+
 @router.get("/_/queue")
 async def queue_state():
     """Get a snapshot of the queue (current + waiting)."""

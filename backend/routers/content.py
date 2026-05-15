@@ -44,6 +44,25 @@ def _pick_account() -> Optional[dict]:
     return accounts[0] if accounts else None
 
 
+async def _handle_session_dead(task_id, acc, sde):
+    """Disable a dead account, mark task as error, broadcast UI notification."""
+    log.warning(f"Session dead for account {acc['email']}: {sde.reason}")
+    try:
+        db.update_account(acc["id"], enabled=0)
+    except Exception:
+        pass
+    db.update_task(task_id, status=TaskStatus.ERROR.value)
+    await hub.broadcast("account_session_dead", {
+        "account_id": acc["id"],
+        "email": acc["email"],
+        "reason": sde.reason,
+    })
+    await hub.broadcast("task_error", {
+        "task_id": task_id,
+        "error": f"Session account {acc['email']} đã hết hạn — hãy login lại trong tab Tài Khoản",
+    })
+
+
 # Transient errors from Google's poll response that justify an item-level retry
 TRANSIENT_PATTERNS = (
     "failed to enqueue",
@@ -75,7 +94,11 @@ async def _process_task(task_id: int):
         bm = bm_mod.BrowserManager()
         page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
         client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
-        await client.ensure_token()
+        try:
+            await client.ensure_token()
+        except fc_mod.SessionDeadError as sde:
+            await _handle_session_dead(task_id, acc, sde)
+            return
 
         quality = task["quality"]
         aspect = task["aspect_ratio"]
@@ -160,6 +183,21 @@ async def _process_task(task_id: int):
                         "task_id": task_id, "item_id": item["id"],
                         "output_path": str(out_path),
                     })
+                except fc_mod.SessionDeadError as sde:
+                    # Friendly error message instead of raw stack
+                    db.update_item(
+                        item["id"], status=ItemStatus.ERROR.value,
+                        error_message=f"Session hết hạn — login lại {acc['email']}",
+                    )
+                    async with counter_lock:
+                        counters["error"] += 1
+                        d, e = counters["done"], counters["error"]
+                    await hub.broadcast("item_error", {
+                        "task_id": task_id, "item_id": item["id"],
+                        "error": f"Session {acc['email']} hết hạn",
+                    })
+                    # Propagate so the outer try() can disable the account
+                    raise
                 except Exception as ex:
                     db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(ex))
                     async with counter_lock:
@@ -175,15 +213,24 @@ async def _process_task(task_id: int):
                 })
 
         # Launch all items concurrently; semaphore caps how many run at once
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(_process_one(item, idx) for idx, item in enumerate(items)),
             return_exceptions=True,
         )
+
+        # If any item raised SessionDeadError, disable the account so the
+        # queue doesn't keep picking it for future tasks.
+        for r in results:
+            if isinstance(r, fc_mod.SessionDeadError):
+                await _handle_session_dead(task_id, acc, r)
+                return
 
         done = counters["done"]
         err = counters["error"]
         db.update_task(task_id, status=TaskStatus.COMPLETED.value, finished_at=str(time.time()))
         await hub.broadcast("task_completed", {"task_id": task_id, "done": done, "error": err})
+    except fc_mod.SessionDeadError as sde:
+        await _handle_session_dead(task_id, acc, sde)
     except Exception as e:
         log.exception("Task crashed")
         db.update_task(task_id, status=TaskStatus.ERROR.value)

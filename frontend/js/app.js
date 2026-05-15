@@ -127,6 +127,30 @@ function setupTheme() {
   }
 }
 
+function showSessionDeadBanner(d) {
+  const banner = $('#session-banner');
+  if (!banner) return;
+  banner.classList.remove('hidden');
+  banner.innerHTML = '';
+  banner.appendChild(el('div', { style: { flex: 1 } },
+    el('strong', null, '⚠ Session hết hạn: '),
+    el('span', { class: 'mono', style: { background: 'rgba(255,255,255,0.18)', padding: '2px 8px', borderRadius: '99px', margin: '0 4px' } }, d.email || `account #${d.account_id}`),
+    ' — ',
+    (d.reason || 'cần login lại để tiếp tục'),
+  ));
+  banner.appendChild(el('button', {
+    class: 'btn',
+    onclick: async () => {
+      window.__app.navigate('accounts');
+      banner.classList.add('hidden');
+    },
+  }, 'Mở tab Tài Khoản'));
+  banner.appendChild(el('button', {
+    class: 'btn btn-close',
+    onclick: () => banner.classList.add('hidden'),
+  }, '✕'));
+}
+
 function setupWS() {
   ws.start();
   ws.on('_connected', () => {
@@ -140,6 +164,11 @@ function setupWS() {
   ws.on('account_updated', refreshAccounts);
   ws.on('account_added', refreshAccounts);
   ws.on('account_deleted', refreshAccounts);
+  ws.on('account_session_dead', (d) => {
+    refreshAccounts();
+    showSessionDeadBanner(d || {});
+    toast(`Session ${d?.email || ''} hết hạn — login lại trong tab Tài Khoản`, 'error', 10000);
+  });
 }
 
 async function checkForUpdate() {

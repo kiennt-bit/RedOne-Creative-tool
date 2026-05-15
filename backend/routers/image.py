@@ -38,6 +38,24 @@ def _pick_account() -> Optional[dict]:
     return accounts[0] if accounts else None
 
 
+async def _handle_session_dead_img(task_id, acc, sde):
+    log.warning(f"[image] Session dead {acc['email']}: {sde.reason}")
+    try:
+        db.update_account(acc["id"], enabled=0)
+    except Exception:
+        pass
+    db.update_task(task_id, status=TaskStatus.ERROR.value)
+    await hub.broadcast("account_session_dead", {
+        "account_id": acc["id"],
+        "email": acc["email"],
+        "reason": sde.reason,
+    })
+    await hub.broadcast("task_error", {
+        "task_id": task_id,
+        "error": f"Session account {acc['email']} đã hết hạn — hãy login lại trong tab Tài Khoản",
+    })
+
+
 async def _process_image_task(task_id: int):
     task = db.get_task(task_id)
     items = db.get_task_items(task_id)
@@ -57,7 +75,11 @@ async def _process_image_task(task_id: int):
         bm = bm_mod.BrowserManager()
         page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
         client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
-        await client.ensure_token()
+        try:
+            await client.ensure_token()
+        except fc_mod.SessionDeadError as sde:
+            await _handle_session_dead_img(task_id, acc, sde)
+            return
 
         model = task["image_model"]
         aspect = task["aspect_ratio"]
@@ -120,6 +142,19 @@ async def _process_image_task(task_id: int):
                         "width": result.get("width"),
                         "height": result.get("height"),
                     })
+                except fc_mod.SessionDeadError as sde:
+                    db.update_item(
+                        item["id"], status=ItemStatus.ERROR.value,
+                        error_message=f"Session hết hạn — login lại {acc['email']}",
+                    )
+                    async with counter_lock:
+                        counters["error"] += 1
+                        d, e = counters["done"], counters["error"]
+                    await hub.broadcast("item_error", {
+                        "task_id": task_id, "item_id": item["id"],
+                        "error": f"Session {acc['email']} hết hạn",
+                    })
+                    raise
                 except Exception as ex:
                     db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(ex))
                     async with counter_lock:
@@ -134,10 +169,15 @@ async def _process_image_task(task_id: int):
                     "task_id": task_id, "done": d, "error": e, "total": len(items),
                 })
 
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(_process_one(item) for item in items),
             return_exceptions=True,
         )
+        # Catch session-dead surfacing from any item
+        for r in results:
+            if isinstance(r, fc_mod.SessionDeadError):
+                await _handle_session_dead_img(task_id, acc, r)
+                return
 
         done = counters["done"]
         err = counters["error"]
@@ -145,6 +185,8 @@ async def _process_image_task(task_id: int):
         await hub.broadcast("task_completed", {
             "task_id": task_id, "done": done, "error": err, "kind": "image",
         })
+    except fc_mod.SessionDeadError as sde:
+        await _handle_session_dead_img(task_id, acc, sde)
     except Exception as e:
         log.exception("Image task crashed")
         db.update_task(task_id, status=TaskStatus.ERROR.value)

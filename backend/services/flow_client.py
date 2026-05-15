@@ -44,13 +44,29 @@ def _get_recaptcha_lock(account_email: str) -> asyncio.Lock:
     return _RECAPTCHA_LOCKS[key]
 
 
+class SessionDeadError(Exception):
+    """Raised when the labs.google session has expired and re-login is required.
+
+    Detected via:
+      - /fx/api/auth/session returning 404
+      - aisandbox-pa API returning 401 "Request is missing required authentication credential"
+      - page URL containing accounts.google.com/signin
+
+    Routers catch this and disable the offending account + notify the UI.
+    """
+    def __init__(self, email: str, reason: str = "Session hết hạn"):
+        self.email = email
+        self.reason = reason
+        super().__init__(f"[{email}] {reason}")
+
+
 class FlowClient:
     """Google Flow API client — cloned from NAV Tools FlowClient.
-    
+
     All API calls go through browser fetch (page.evaluate) for proper
     session handling, CORS, and reCAPTCHA bypass.
     """
-    
+
     TRPC = "https://labs.google/fx/api/trpc"
     SESSION_URL = "https://labs.google/fx/api/auth/session"
     
@@ -154,6 +170,25 @@ class FlowClient:
             log.info(f"[{self._account_email}] Got token: ya29...{self._token[-8:]}")
         else:
             log.error(f"[{self._account_email}] Failed to get token: {result}")
+            # 404 from /fx/api/auth/session = no NextAuth session = SIGNED OUT
+            err_val = (result or {}).get("error") if isinstance(result, dict) else None
+            if err_val == 404 or err_val == "404":
+                raise SessionDeadError(
+                    self._account_email,
+                    "Session Google đã hết hạn hoặc bị đăng xuất. Vui lòng login lại account này.",
+                )
+            # Also check if the page got redirected to sign-in
+            try:
+                current_url = self._page.url or ""
+                if "accounts.google.com" in current_url and "signin" in current_url.lower():
+                    raise SessionDeadError(
+                        self._account_email,
+                        "Tài khoản đã bị Google đăng xuất. Vui lòng login lại.",
+                    )
+            except SessionDeadError:
+                raise
+            except Exception:
+                pass
     
     async def renew_token(self):
         """Force refresh of session token AND reset reCAPTCHA risk score.
@@ -262,16 +297,34 @@ class FlowClient:
                 
                 status = result.get("status", 0)
                 
-                # 401/403 → renew token and retry
+                # 401/403 → renew token and retry. After MAX_RETRY_COUNT failures
+                # on 401, it's almost certainly a dead session (NextAuth wiped),
+                # not just a stale token → raise SessionDeadError so the router
+                # can disable the account + notify UI.
                 if status in (401, 403) and attempt < MAX_RETRY_COUNT:
                     err_text = result.get("text", "") or json.dumps(result.get("data", {}))[:200]
                     log.warning(f"Browser sandbox {endpoint}: HTTP {status}: {err_text[:100]}")
                     if "recaptcha" in err_text.lower() or "unusual_activity" in err_text.lower():
                         return {"error": f"HTTP {status}", "text": err_text}
-                    await self.renew_token()
+                    try:
+                        await self.renew_token()
+                    except SessionDeadError:
+                        raise
                     token = self._token or ""
                     await asyncio.sleep(1)
                     continue
+
+                # Persistent 401 after all retries = session dead
+                if status == 401 and attempt >= MAX_RETRY_COUNT:
+                    err_text = result.get("text", "")
+                    if (
+                        "missing required authentication" in err_text.lower()
+                        or "unauthenticated" in err_text.lower()
+                    ):
+                        raise SessionDeadError(
+                            self._account_email,
+                            "Server Google trả 401 sau nhiều lần thử — session đã chết, hãy login lại.",
+                        )
                 
                 if result.get("ok"):
                     return result.get("data", {})

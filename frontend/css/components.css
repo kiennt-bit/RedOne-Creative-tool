@@ -417,6 +417,34 @@
   display: flex; justify-content: flex-end; gap: 8px;
 }
 
+/* Session-dead banner (account needs re-login) */
+.session-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: rgba(239, 68, 68, 0.95);
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+}
+.session-banner .btn {
+  background: white;
+  color: var(--red);
+  border-color: white;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.session-banner .btn:hover { background: rgba(255, 255, 255, 0.9); }
+.session-banner .btn-close {
+  background: transparent;
+  color: white;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.session-banner .btn-close:hover { background: rgba(255, 255, 255, 0.15); }
+
 /* Update banner */
 .update-banner {
   display: flex;
