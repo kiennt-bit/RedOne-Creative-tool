@@ -1,0 +1,15 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+playwright>=1.40.0
+google-genai>=0.3.0
+Pillow>=10.0.0
+yt-dlp>=2024.1.0
+imageio-ffmpeg>=0.4.9
+# Optional heavy AI (install only if needed):
+# rembg>=2.0.0
+# openai-whisper>=20231117
+# opencv-python>=4.9.0
+# spandrel>=0.3.0
+# torch>=2.0.0

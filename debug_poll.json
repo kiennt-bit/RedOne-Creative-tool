@@ -1,0 +1,64 @@
+{
+  "remainingCredits": 20711,
+  "media": [
+    {
+      "name": "5d9a1821-26b3-42e0-865f-13615686be20",
+      "workflowId": "b72df5c9-17a0-4b1e-98f9-ad517857c46c",
+      "workflowStepId": "CAE",
+      "mediaMetadata": {
+        "createTime": "2026-05-14T10:50:16.025465Z",
+        "mediaTitle": "ultra-slow",
+        "requestData": {
+          "videoGenerationRequestData": {
+            "videoModelControlInput": {
+              "videoModelName": "veo_3_1_i2v_lite_low_priority",
+              "videoGenerationMode": "VIDEO_GENERATION_MODE_IMAGE_TO_VIDEO",
+              "videoModelCapabilities": [
+                "VIDEO_MODEL_CAPABILITY_START_IMAGE"
+              ]
+            },
+            "videoGenerationImageInputs": [
+              {
+                "mediaGenerationId": "d78c37b2-62ca-49b3-b2fa-509d63e7e7db",
+                "imageUsageType": "IMAGE_USAGE_TYPE_START_IMAGE",
+                "mediaId": "d78c37b2-62ca-49b3-b2fa-509d63e7e7db"
+              }
+            ]
+          },
+          "promptInputs": [
+            {
+              "structuredPrompt": {
+                "parts": [
+                  {
+                    "text": "ultra-slow"
+                  }
+                ]
+              }
+            }
+          ],
+          "clientPlatform": "CLIENT_PLATFORM_WEB"
+        },
+        "mediaStatus": {
+          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+        },
+        "visibility": "PRIVATE"
+      },
+      "video": {
+        "generatedVideo": {
+          "seed": 514082,
+          "prompt": "<root>\n  <context>\n  </context>\n  <instruction>\n    <prompt>ultra-slow</prompt>\n  </instruction>\n</root>",
+          "model": "veo_3_1_i2v_lite_low_priority",
+          "baseImageMediaGenerationId": "d78c37b2-62ca-49b3-b2fa-509d63e7e7db",
+          "isLooped": false,
+          "aspectRatio": "VIDEO_ASPECT_RATIO_LANDSCAPE"
+        },
+        "dimensions": {
+          "length": "8s"
+        },
+        "operation": {
+          "name": "5d9a1821-26b3-42e0-865f-13615686be20"
+        }
+      }
+    }
+  ]
+}

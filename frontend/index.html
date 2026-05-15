@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RedOne Creative — AI Video Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='2' width='60' height='60' rx='14' fill='%23dc2626'/%3E%3Cpath d='M22 18 L46 32 L22 46 Z' fill='white'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/css/theme.css?b=__BUILD_ID__" />
+<link rel="stylesheet" href="/static/css/layout.css?b=__BUILD_ID__" />
+<link rel="stylesheet" href="/static/css/components.css?b=__BUILD_ID__" />
+<link rel="stylesheet" href="/static/css/pages.css?b=__BUILD_ID__" />
+<script>
+  // Apply theme ASAP to avoid flash
+  (function () {
+    var t = localStorage.getItem('redone_theme') || 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+</head>
+<body>
+  <div id="app">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-logo">
+          <svg viewBox="0 0 64 64" width="32" height="32">
+            <rect x="2" y="2" width="60" height="60" rx="14" fill="#dc2626"/>
+            <path d="M22 18 L46 32 L22 46 Z" fill="white"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-name">RedOne</div>
+          <div class="brand-sub">Creative Studio</div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-group">
+          <div class="nav-label">Sáng tạo</div>
+          <button class="nav-item active" data-page="content">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M4 6h16v12H4z M10 9v6l5-3z" fill="currentColor"/></svg>
+            <span>Tạo Video</span>
+          </button>
+          <button class="nav-item" data-page="image">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 5h18v14H3z M8 11l3 3 3-4 5 6H4z" fill="currentColor"/><circle cx="8" cy="9" r="1.5" fill="white"/></svg>
+            <span>Tạo Ảnh</span>
+          </button>
+          <button class="nav-item" data-page="long-video">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 6h18v12H3z M7 9h10M7 12h10M7 15h6" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span>Video Dài</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-label">Phân tích AI</div>
+          <button class="nav-item" data-page="youtube">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M22 8.5c0-1.4-1.1-2.5-2.5-2.5h-15C3.1 6 2 7.1 2 8.5v7C2 16.9 3.1 18 4.5 18h15c1.4 0 2.5-1.1 2.5-2.5z M10 9v6l5-3z" fill="currentColor"/></svg>
+            <span>YouTube → Prompt</span>
+          </button>
+          <button class="nav-item" data-page="script">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M4 4h16v16H4z M7 8h10M7 12h10M7 16h6" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span>Ý Tưởng → Video</span>
+          </button>
+          <button class="nav-item" data-page="image-prompt">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 5h18v14H3z M8 11l3 3 3-4 5 6H4z" fill="currentColor"/></svg>
+            <span>Ảnh → Prompt</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-label">Xử lý ảnh</div>
+          <button class="nav-item" data-page="bg-remove">
+            <svg viewBox="0 0 24 24" class="ni"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 20 L20 4" stroke="currentColor" stroke-width="2"/></svg>
+            <span>Tách Nền</span>
+          </button>
+          <button class="nav-item" data-page="watermark">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M4 4h16v16H4z M8 8h8v8H8z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span>Xóa Logo</span>
+          </button>
+          <button class="nav-item" data-page="upscale">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 3h7v2H5v5H3z M21 3h-7v2h5v5h2z M3 21h7v-2H5v-5H3z M21 21h-7v-2h5v-5h2z" fill="currentColor"/></svg>
+            <span>Upscale</span>
+          </button>
+          <button class="nav-item" data-page="batch-resize">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 3h8v8H3z M13 13h8v8h-8z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span>Resize Hàng Loạt</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-label">Xử lý video</div>
+          <button class="nav-item" data-page="audio-merge">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M9 18V6l11-2v14 M9 14c0 2-2 3-3 3s-3-1-3-3 2-3 3-3 3 1 3 3z" fill="currentColor"/></svg>
+            <span>Ghép Audio</span>
+          </button>
+          <button class="nav-item" data-page="subtitle">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 6h18v12H3z M6 14h4M12 14h6M6 11h12" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span>Phụ Đề</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-label">Hệ thống</div>
+          <button class="nav-item" data-page="tasks">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 5h14v2H3z M3 11h14v2H3z M3 17h10v2H3z M19 14l3 3-3 3M22 17H15" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span>Quản lý Task</span>
+          </button>
+          <button class="nav-item" data-page="accounts">
+            <svg viewBox="0 0 24 24" class="ni"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span>Tài Khoản</span>
+          </button>
+          <button class="nav-item" data-page="settings">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M12 8a4 4 0 110 8 4 4 0 010-8z M19 12a7 7 0 00-.2-1.6l2.1-1.6-2-3.4-2.4 1a7 7 0 00-2.8-1.6L13 2h-4l-.7 2.8a7 7 0 00-2.8 1.6l-2.4-1-2 3.4 2.1 1.6A7 7 0 003 12c0 .5.1 1.1.2 1.6L1.1 15.2l2 3.4 2.4-1c.8.7 1.8 1.2 2.8 1.6L9 22h4l.7-2.8c1-.4 2-.9 2.8-1.6l2.4 1 2-3.4-2.1-1.6c.1-.5.2-1 .2-1.6z" fill="currentColor"/></svg>
+            <span>Cài Đặt</span>
+          </button>
+        </div>
+      </nav>
+
+      <div class="sidebar-theme">
+        <button class="theme-toggle" id="theme-toggle" title="Đổi giao diện sáng / tối">
+          <span class="theme-toggle-icon light">
+            <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </span>
+          <span class="theme-toggle-label" id="theme-toggle-label">Light Mode</span>
+          <span class="theme-toggle-icon dark">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/></svg>
+          </span>
+        </button>
+      </div>
+      <div class="sidebar-footer">
+        <div class="status-pill">
+          <span class="dot dot-green" id="server-dot"></span>
+          <span id="server-status">Đang kết nối...</span>
+        </div>
+        <div class="version-text">v<span id="app-version">1.0</span></div>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main">
+      <!-- Update banner: shown when a newer version is on GitHub -->
+      <div id="update-banner" class="update-banner hidden"></div>
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="page-title">Tạo Video</h1>
+          <p id="page-subtitle" class="page-subtitle">Tạo video AI từ prompt (Text-to-Video)</p>
+        </div>
+        <div class="topbar-right">
+          <div class="stat-chip">
+            <div class="chip-icon chip-icon-brand">
+              <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            </div>
+            <div>
+              <div class="chip-label">Accounts</div>
+              <div class="chip-value" id="topbar-account-count">0</div>
+            </div>
+          </div>
+          <div class="stat-chip">
+            <div class="chip-icon chip-icon-green">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2 L15 9 L22 10 L17 15 L18 22 L12 19 L6 22 L7 15 L2 10 L9 9 Z" fill="currentColor"/></svg>
+            </div>
+            <div>
+              <div class="chip-label">Credits</div>
+              <div class="chip-value" id="topbar-credits">0</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="page-container" id="page-container">
+        <!-- Page content injected by JS -->
+      </div>
+
+      <!-- TOAST CONTAINER -->
+      <div class="toast-stack" id="toast-stack"></div>
+    </main>
+  </div>
+
+  <!-- MODAL ROOT -->
+  <div id="modal-root"></div>
+
+  <script type="module" src="/static/js/app.js?b=__BUILD_ID__"></script>
+</body>
+</html>

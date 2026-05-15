@@ -1,0 +1,1694 @@
+"""VidGen Pro — Google Flow AI Sandbox API client (cloned from NAV Tools).
+
+Auth: Playwright → /fx/api/auth/session → ya29.* access_token
+API:
+  - Upload:   POST aisandbox-pa.googleapis.com/v1/flow/uploadImage
+  - Generate: POST aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideo*
+  - Poll:     POST aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus
+  - Download: tRPC media.getMediaUrlRedirect
+Flow: get_token → upload_images → generate → poll → download
+"""
+
+import asyncio
+import base64
+import json
+import os
+import time
+import uuid
+from pathlib import Path
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+
+import logging
+log = logging.getLogger("vidgen.flow")
+
+from ..config import (
+    AISANDBOX_BASE, X_CLIENT_DATA, X_BROWSER_VALIDATION,
+    POLL_INTERVAL_SECONDS, MAX_RETRY_COUNT
+)
+
+# Per-account reCAPTCHA lock (NAV Tools pattern)
+_RECAPTCHA_LOCKS: dict[str, asyncio.Lock] = {}
+
+def _get_recaptcha_lock(account_email: str) -> asyncio.Lock:
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+    key = f"{loop_id}:{account_email or '?'}"
+    if key not in _RECAPTCHA_LOCKS:
+        _RECAPTCHA_LOCKS[key] = asyncio.Lock()
+    return _RECAPTCHA_LOCKS[key]
+
+
+class FlowClient:
+    """Google Flow API client — cloned from NAV Tools FlowClient.
+    
+    All API calls go through browser fetch (page.evaluate) for proper
+    session handling, CORS, and reCAPTCHA bypass.
+    """
+    
+    TRPC = "https://labs.google/fx/api/trpc"
+    SESSION_URL = "https://labs.google/fx/api/auth/session"
+    
+    # Persistent project_id per account — so extend/upscale finds media created by generate
+    _PROJECT_IDS: dict[str, str] = {}
+    
+    def __init__(self, page: "Page", cookie_path: str = "", account_email: str = ""):
+        self._page = page
+        self._token: Optional[str] = None
+        self._token_lock: Optional[asyncio.Lock] = None
+        self._cookie_path = cookie_path
+        self._account_email = account_email or "?"
+        self._last_remaining_credits = None
+        self._last_credit_cost = 0
+        self._last_model_key = None
+        self._recaptcha_provider = None
+        self._recaptcha_fail_count = 0
+        # Use persistent project_id per account (not random each time!)
+        if account_email not in FlowClient._PROJECT_IDS:
+            FlowClient._PROJECT_IDS[account_email] = str(uuid.uuid4())
+        self.project_id = FlowClient._PROJECT_IDS[account_email]
+
+    def _get_token_lock(self) -> asyncio.Lock:
+        """Lazy-init the token lock (must run in an event loop)."""
+        if self._token_lock is None:
+            self._token_lock = asyncio.Lock()
+        return self._token_lock
+        
+    # ── Session & Auth ────────────────────────────────────────────
+    
+    async def ensure_token(self):
+        """Get ya29.* access token from NextAuth session.
+
+        Concurrent callers serialize on a lock so we only navigate once even
+        when multiple parallel items boot together with no cached token.
+        """
+        if self._token:
+            return
+
+        async with self._get_token_lock():
+            # Recheck after acquiring lock — another caller may have set it
+            if self._token:
+                return
+            await self._do_get_token()
+
+    async def _do_get_token(self):
+        log.info(f"[{self._account_email}] Getting session token...")
+        
+        # Navigate to labs.google if not already there
+        if "labs.google/fx/" not in (self._page.url or ""):
+            try:
+                await self._page.goto("https://labs.google/fx/tools/video-fx", wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                if "interrupted by another navigation" in str(e):
+                    pass
+                else:
+                    raise
+            await asyncio.sleep(2)
+        
+        # Wait for page to settle after any redirects
+        try:
+            await self._page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            await asyncio.sleep(3)
+        
+        # Click Sign In if visible (NAV Tools pattern)
+        try:
+            btn = await self._page.query_selector(
+                'a[href*="accounts.google.com"], button:has-text("Sign in"), a:has-text("Sign in")'
+            )
+            if btn and await btn.is_visible():
+                log.info("Clicking Sign in...")
+                ctx = self._page.context
+                try:
+                    async with ctx.expect_page(timeout=15000) as pi:
+                        await btn.click()
+                    popup = await pi.value
+                    try:
+                        await popup.wait_for_event("close", timeout=20000)
+                    except Exception:
+                        await asyncio.sleep(5)
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+        except Exception as e:
+            log.warning(f"[{self._account_email}] Sign-in button check skipped: {e}")
+        
+        # Fetch session token via browser
+        result = await self._page.evaluate("""
+            async () => {
+                try {
+                    const r = await fetch("/fx/api/auth/session");
+                    if (r.ok) return await r.json();
+                    return {error: r.status};
+                } catch(e) { return {error: e.message}; }
+            }
+        """)
+        
+        if result and result.get("access_token"):
+            self._token = result["access_token"]
+            log.info(f"[{self._account_email}] Got token: ya29...{self._token[-8:]}")
+        else:
+            log.error(f"[{self._account_email}] Failed to get token: {result}")
+    
+    async def renew_token(self):
+        """Force refresh of session token AND reset reCAPTCHA risk score.
+
+        Uses `page.reload()` (full F5) rather than `goto()` — reload wipes the
+        page's per-session reCAPTCHA history more reliably than goto, which
+        Google's bot detector may treat as just another navigation.
+        """
+        log.info(f"[{self._account_email}] Renewing session token (page reload)...")
+        self._token = None
+        try:
+            await self._page.reload(wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2.5)
+        except Exception as e:
+            log.warning(f"[{self._account_email}] reload failed during token renewal: {e}")
+            # Fallback: try goto if reload errored
+            try:
+                await self._page.goto("https://labs.google/fx/tools/video-fx",
+                                       wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2.0)
+            except Exception as e2:
+                log.warning(f"[{self._account_email}] goto fallback also failed: {e2}")
+        await self.ensure_token()
+    
+    # ── tRPC API (NAV Tools exact clone) ─────────────────────
+    
+    async def _api(self, procedure: str, payload: dict, method: str = "POST") -> dict:
+        """Call tRPC endpoint using Playwright HTTP client."""
+        await self.ensure_token()
+        token = self._token or ""
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://labs.google",
+            "Referer": "https://labs.google/",
+            "x-client-data": X_CLIENT_DATA,
+            "x-browser-validation": X_BROWSER_VALIDATION,
+        }
+        try:
+            if method == "GET":
+                import urllib.parse
+                inp = json.dumps({"json": payload})
+                url = f"{self.TRPC}/{procedure}?input={urllib.parse.quote(inp)}"
+                resp = await self._page.request.get(url, headers=headers)
+            else:
+                url = f"{self.TRPC}/{procedure}"
+                body = json.dumps({"json": payload})
+                resp = await self._page.request.post(url, headers=headers, data=body)
+            if resp.ok:
+                return await resp.json()
+            text = await resp.text()
+            return {"error": resp.status, "text": text[:500]}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _extract(self, result: dict):
+        """Extract result.data.json.result from tRPC response."""
+        return result.get("result", {}).get("data", {}).get("json", {}).get("result", {})
+    
+    # ── Browser Sandbox Request (NAV Tools exact clone) ──────
+    
+    async def _browser_sandbox_request(self, endpoint: str, payload: dict, is_text_plain: bool = False) -> dict:
+        """Send request via browser fetch — needed for reCAPTCHA-protected APIs.
+        
+        This is the CORE method. All aisandbox API calls go through here.
+        Uses page.evaluate(fetch()) to inherit browser cookies + session.
+        """
+        await self.ensure_token()
+        token = self._token or ""
+        url = f"{AISANDBOX_BASE}/{endpoint.lstrip('/')}"
+        body_json = json.dumps(payload)
+        
+        for attempt in range(1, MAX_RETRY_COUNT + 1):
+            try:
+                result = await self._page.evaluate("""async ([url, token, body, is_text_plain]) => {
+                    try {
+                        const headers = {
+                            "Authorization": "Bearer " + token,
+                            "Content-Type": is_text_plain ? "text/plain;charset=UTF-8" : "application/json",
+                        };
+                        const r = await fetch(url, {
+                            method: "POST",
+                            headers: headers,
+                            body: body,
+                        });
+                        const text = await r.text();
+                        try {
+                            return {status: r.status, ok: r.ok, data: JSON.parse(text)};
+                        } catch(e) {
+                            return {status: r.status, ok: r.ok, text: text.substring(0, 2000)};
+                        }
+                    } catch(e) {
+                        return {error: e.message};
+                    }
+                }""", [url, token, body_json, is_text_plain])
+                
+                if not result:
+                    return {"error": "No result from browser fetch"}
+                
+                if result.get("error"):
+                    log.warning(f"Browser sandbox {endpoint} attempt {attempt}: {result['error']}")
+                    if attempt < MAX_RETRY_COUNT:
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                    return {"error": result["error"]}
+                
+                status = result.get("status", 0)
+                
+                # 401/403 → renew token and retry
+                if status in (401, 403) and attempt < MAX_RETRY_COUNT:
+                    err_text = result.get("text", "") or json.dumps(result.get("data", {}))[:200]
+                    log.warning(f"Browser sandbox {endpoint}: HTTP {status}: {err_text[:100]}")
+                    if "recaptcha" in err_text.lower() or "unusual_activity" in err_text.lower():
+                        return {"error": f"HTTP {status}", "text": err_text}
+                    await self.renew_token()
+                    token = self._token or ""
+                    await asyncio.sleep(1)
+                    continue
+                
+                if result.get("ok"):
+                    return result.get("data", {})
+                
+                err = result.get("text", json.dumps(result.get("data", {})))[:300]
+                log.warning(f"Browser sandbox {endpoint} HTTP {status}: {err}")
+                
+                if attempt < MAX_RETRY_COUNT and status >= 500:
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                
+                return {"error": f"HTTP {status}", "text": err}
+                
+            except Exception as e:
+                log.error(f"Browser sandbox {endpoint} exception: {e}")
+                if attempt < MAX_RETRY_COUNT:
+                    await asyncio.sleep(2)
+                    continue
+                return {"error": str(e)}
+        
+        return {"error": "Max retries exceeded"}
+
+    async def _sandbox_request(self, endpoint: str, payload: dict | str, method: str="POST") -> dict:
+        """Call aisandbox-pa.googleapis.com endpoint with httpx to bypass CORS."""
+        import httpx
+        await self.ensure_token()
+        token = self._token or ""
+        url = f"{AISANDBOX_BASE}/{endpoint.lstrip('/')}"
+        
+        body_bytes = payload.encode("utf-8") if isinstance(payload, str) else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://labs.google",
+            "Referer": "https://labs.google/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "x-client-data": X_CLIENT_DATA,
+            "x-browser-validation": X_BROWSER_VALIDATION
+        }
+        
+        for attempt in range(1, MAX_RETRY_COUNT + 1):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(url, headers=headers, content=body_bytes)
+                    status = resp.status_code
+                    
+                    if status in (401, 403) and attempt < MAX_RETRY_COUNT:
+                        log.warning(f"Sandbox {endpoint}: HTTP {status}, renewing token...")
+                        await self.renew_token()
+                        headers["Authorization"] = f"Bearer {self._token}"
+                        continue
+                        
+                    if 200 <= status < 300:
+                        try:
+                            return resp.json()
+                        except Exception:
+                            return {"text": resp.text[:2000]}
+                            
+                    err_text = resp.text[:300]
+                    log.warning(f"Sandbox {endpoint} HTTP {status}: {err_text}")
+                    
+                    if attempt < MAX_RETRY_COUNT and status >= 500:
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                        
+                    return {"error": status, "text": err_text}
+            except Exception as e:
+                log.error(f"Sandbox {endpoint} attempt {attempt} exception: {e}")
+                if attempt < MAX_RETRY_COUNT:
+                    await asyncio.sleep(2 * attempt)
+                    
+        return {"error": "Max retries exceeded"}
+    
+    # ── Upload Image (NAV Tools pattern) ─────────────────────
+    
+    async def upload_image(self, image_path: str) -> Optional[str]:
+        """Upload image to Google Flow, return media_id (UUID).
+        
+        Uses browser fetch to POST base64 image to /v1/flow/uploadImage.
+        Returns the 'name' field (UUID) from response, or None on failure.
+        """
+        path = Path(image_path)
+        if not path.exists():
+            log.error(f"Image not found: {image_path}")
+            return None
+        
+        # Read and base64 encode
+        raw = path.read_bytes()
+        b64 = base64.b64encode(raw).decode("utf-8")
+        
+        # Detect MIME type
+        suffix = path.suffix.lower()
+        mime = {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}.get(suffix, "image/jpeg")
+        
+        payload = {
+            "imageBytes": b64,
+            "mimeType": mime,
+            "clientContext": {
+                "tool": "PINHOLE"
+            }
+        }
+        
+        log.info(f"[{self._account_email}] Uploading {path.name} ({len(raw)} bytes)...")
+        result = await self._browser_sandbox_request("flow/uploadImage", payload)
+        
+        if "error" in result:
+            err_msg = str(result.get("text", result.get("error", "")))
+            log.error(f"[{self._account_email}] Upload failed for {path.name}: {result}")
+            raise ValueError(f"Upload lỗi: {err_msg}")
+        
+        # Extract media_id from response (NAV Tools: uses 'name' field)
+        media_id = result.get("name") or result.get("mediaId") or result.get("media_id")
+        
+        if not media_id:
+            # Deep search in nested response
+            for key in ["media", "image", "result", "response"]:
+                nested = result.get(key, {})
+                if isinstance(nested, dict):
+                    media_id = nested.get("name") or nested.get("mediaId")
+                    if media_id:
+                        break
+        
+        if media_id:
+            log.info(f"[{self._account_email}] Upload OK: {path.name} → {media_id}")
+        else:
+            log.error(f"[{self._account_email}] No media_id in upload response: {json.dumps(result)[:300]}")
+        
+        return media_id
+    
+    # ── Generate Image (Google Labs Image FX) ────────────────
+    
+    # Model name mapping for image generation
+    IMAGE_MODEL_MAP = {
+        "nano_banana_pro": "GEM_PIX_2",
+        "nano_banana_2": "NARWHAL",
+        "imagen_4": "IMAGEN_3_5",
+    }
+    
+    IMAGE_ASPECT_RATIO_MAP = {
+        "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
+        "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
+        "3:4": "IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR",
+        "4:3": "IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE",
+    }
+    
+    async def generate_image(
+        self,
+        prompt: str,
+        model_key: str = "nano_banana_pro",
+        aspect_ratio: str = "1:1",
+        reference_images: list[str] | None = None,
+        seed: int | None = None,
+    ) -> dict:
+        """Generate an image using Google Labs Image FX API.
+        
+        Unlike video generation, image generation is SYNCHRONOUS —
+        the response contains the image URL directly (no polling needed).
+        
+        Args:
+            prompt: Text prompt for image generation
+            model_key: Model key (nano_banana_pro, nano_banana_2, imagen_4)
+            aspect_ratio: Aspect ratio (1:1, 16:9, 9:16, 3:4, 4:3)
+            reference_images: List of media_ids from upload_image() for reference
+            seed: Random seed (auto-generated if None)
+            
+        Returns:
+            dict with keys: media_id, download_url, seed, width, height
+        """
+        await self.ensure_token()
+        
+        import random
+        if seed is None:
+            seed = random.randint(100000, 999999)
+        
+        # Resolve model name
+        model_name = self.IMAGE_MODEL_MAP.get(model_key, model_key)
+        
+        # Resolve aspect ratio
+        ar_enum = self.IMAGE_ASPECT_RATIO_MAP.get(aspect_ratio, "IMAGE_ASPECT_RATIO_SQUARE")
+        
+        # Build imageInputs
+        image_inputs = []
+        if reference_images:
+            for media_id in reference_images:
+                image_inputs.append({
+                    "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE",
+                    "name": media_id,
+                })
+        
+        # Get reCAPTCHA token
+        recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+        
+        # Build client context
+        client_context = {
+            "projectId": self.project_id,
+            "tool": "PINHOLE",
+            "sessionId": f";{int(time.time() * 1000)}",
+        }
+        if recaptcha_token:
+            client_context["recaptchaContext"] = {
+                "token": recaptcha_token,
+                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+            }
+        
+        # Build request
+        request_item = {
+            "clientContext": client_context,
+            "imageModelName": model_name,
+            "imageAspectRatio": ar_enum,
+            "structuredPrompt": {
+                "parts": [{"text": prompt}]
+            },
+            "seed": seed,
+            "imageInputs": image_inputs,
+        }
+        
+        payload = {
+            "clientContext": client_context,
+            "mediaGenerationContext": {
+                "batchId": os.urandom(16).hex()[:8] + "-" + 
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(12).hex()[:12],
+            },
+            "useNewMedia": True,
+            "requests": [request_item],
+        }
+        
+        endpoint = f"projects/{self.project_id}/flowMedia:batchGenerateImages"
+        
+        log.info(f"[{self._account_email}] Generating image: model={model_name}, "
+                 f"ratio={ar_enum}, refs={len(image_inputs)}, seed={seed}")
+        
+        # Retry loop (same pattern as generate_video — 5 attempts with
+        # reload-on-403 to drop the per-session bot risk score).
+        import random as _rand
+        result = None
+        for attempt in range(5):
+            if attempt > 0:
+                # Backoff before each retry
+                await asyncio.sleep(_rand.uniform(1.5, 3.0))
+                # Refresh reCAPTCHA token on retry
+                recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+                if recaptcha_token:
+                    client_context["recaptchaContext"] = {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                    }
+
+            result = await self._browser_sandbox_request(endpoint, payload, is_text_plain=True)
+
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                err_lc = err_str.lower()
+                is_recaptcha = (
+                    "403" in err_str or "recaptcha" in err_lc
+                    or "permission_denied" in err_lc or "unusual_activity" in err_lc
+                )
+                is_throttled = (
+                    "429" in err_str
+                    or "resource_exhausted" in err_lc
+                    or "throttled" in err_lc
+                    or "user_requests_throttled" in err_lc
+                    or "rate" in err_lc and "limit" in err_lc
+                )
+                if is_throttled and attempt < 4:
+                    # Exponential backoff for rate limits — Google asks us to slow down
+                    delay = min(60, (5 * (attempt + 1)) + _rand.uniform(2, 8))
+                    log.warning(
+                        f"[{self._account_email}] Image gen throttled 429 "
+                        f"(attempt {attempt + 1}/5) — backing off {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if is_recaptcha and attempt < 4:
+                    log.warning(
+                        f"[{self._account_email}] Image gen reCAPTCHA rejected "
+                        f"(attempt {attempt + 1}/5) — reloading page to reset score..."
+                    )
+                    try:
+                        await self.renew_token()
+                    except Exception as e:
+                        log.warning(f"renew_token during image-gen retry failed: {e}")
+                    continue
+                log.error(f"[{self._account_email}] Image gen failed: {result}")
+                raise ValueError(err_str)
+
+            break
+        else:
+            err_str = str(result.get("text", result.get("error", "Unknown Error")))
+            log.error(f"[{self._account_email}] Image gen failed after 5 attempts: {result}")
+            raise ValueError(err_str)
+        
+        # Extract result — response is synchronous, contains image URL directly
+        return self._extract_image_result(result)
+    
+    def _extract_image_result(self, result: dict) -> dict:
+        """Extract image data from batchGenerateImages response.
+        
+        Response format:
+        {
+          "media": [{
+            "name": "<media_id>",
+            "image": {
+              "generatedImage": {
+                "fifeUrl": "https://flow-content.google/image/<id>?...",
+                "seed": 754077,
+                "mediaId": "<media_id>",
+                ...
+              },
+              "dimensions": {"width": 1376, "height": 768}
+            }
+          }],
+          "workflows": [...]
+        }
+        """
+        media_list = result.get("media", [])
+        if not media_list:
+            log.error(f"No media in image response: {json.dumps(result)[:300]}")
+            raise ValueError("No media in image generation response")
+        
+        media = media_list[0]
+        gen_image = media.get("image", {}).get("generatedImage", {})
+        dims = media.get("image", {}).get("dimensions", {})
+        
+        media_id = gen_image.get("mediaId") or media.get("name", "")
+        download_url = gen_image.get("fifeUrl", "")
+        seed = gen_image.get("seed", 0)
+        width = dims.get("width", 0)
+        height = dims.get("height", 0)
+        
+        if not download_url:
+            log.error(f"No fifeUrl in image response: {json.dumps(result)[:300]}")
+            raise ValueError("No download URL in image generation response")
+        
+        log.info(f"[{self._account_email}] Image generated: {media_id} ({width}x{height})")
+        
+        return {
+            "media_id": media_id,
+            "download_url": download_url,
+            "seed": seed,
+            "width": width,
+            "height": height,
+        }
+    
+    async def download_image(self, url: str, output_path: str) -> bool:
+        """Download image from fifeUrl to local file."""
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200 and len(resp.content) > 500:
+                    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(output_path).write_bytes(resp.content)
+                    log.info(f"Downloaded image: {output_path} ({len(resp.content)} bytes)")
+                    return True
+                log.warning(f"Image download failed: HTTP {resp.status_code}, size={len(resp.content)}")
+        except Exception as e:
+            log.error(f"Image download error: {e}")
+        return False
+    
+    # ── Upscale Image (2K / 4K) ──────────────────────────────
+    
+    UPSCALE_RESOLUTION_MAP = {
+        "2k": "UPSAMPLE_IMAGE_RESOLUTION_2K",
+        "4k": "UPSAMPLE_IMAGE_RESOLUTION_4K",
+    }
+    
+    async def upscale_image(self, media_id: str, resolution: str = "4k") -> dict:
+        """Upscale a generated image to 2K or 4K.
+        
+        Args:
+            media_id: The media_id from generate_image() result
+            resolution: "2k" or "4k"
+            
+        Returns:
+            dict with keys: media_id, download_url, width, height
+        """
+        await self.ensure_token()
+        
+        res_enum = self.UPSCALE_RESOLUTION_MAP.get(
+            resolution.lower(), "UPSAMPLE_IMAGE_RESOLUTION_4K"
+        )
+        
+        endpoint = "flow/upsampleImage"
+        
+        log.info(f"[{self._account_email}] Upscaling image {media_id} to {resolution}")
+        
+        import random as _rand
+        result = None
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(_rand.uniform(1.0, 3.0))
+            
+            recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+            
+            client_context = {
+                "projectId": self.project_id,
+                "tool": "PINHOLE",
+                "userPaygateTier": "PAYGATE_TIER_TWO",
+                "sessionId": f";{int(time.time() * 1000)}",
+            }
+            if recaptcha_token:
+                client_context["recaptchaContext"] = {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                }
+            
+            payload = {
+                "mediaId": media_id,
+                "targetResolution": res_enum,
+                "clientContext": client_context,
+            }
+            
+            result = await self._browser_sandbox_request(endpoint, payload, is_text_plain=True)
+            
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str:
+                    log.warning(f"[{self._account_email}] Upscale reCAPTCHA rejected (attempt {attempt+1}), retrying...")
+                    continue
+                log.error(f"[{self._account_email}] Upscale failed: {err_str}")
+                raise ValueError(err_str)
+            
+            break
+        else:
+            err_str = str(result.get("text", result.get("error", "Unknown Error")))
+            log.error(f"[{self._account_email}] Upscale failed after 3 attempts: {err_str}")
+            raise ValueError(err_str)
+        
+        # Log response keys for debugging
+        resp_keys = list(result.keys()) if isinstance(result, dict) else str(type(result))
+        log.info(f"[{self._account_email}] Upscale response keys: {resp_keys}")
+        
+        # The API returns encodedImage (base64 JPEG) directly
+        if "encodedImage" in result:
+            import base64 as b64
+            image_data = result["encodedImage"]
+            raw_bytes = b64.b64decode(image_data)
+            
+            # Detect dimensions from JPEG header or use resolution-based defaults
+            res_dims = {
+                "2k": (2048, 1152),  # approximate
+                "4k": (3840, 2160),
+            }
+            width, height = res_dims.get(resolution.lower(), (3840, 2160))
+            
+            log.info(f"[{self._account_email}] Upscaled to {resolution}: {len(raw_bytes)} bytes (encoded image)")
+            
+            return {
+                "media_id": media_id,
+                "download_url": None,  # No URL, data is embedded
+                "encoded_image": raw_bytes,  # Raw bytes to save directly
+                "width": width,
+                "height": height,
+            }
+        
+        # Fallback: search for fifeUrl
+        def _deep_find(obj, key):
+            if isinstance(obj, dict):
+                if key in obj:
+                    return obj[key]
+                for v in obj.values():
+                    found = _deep_find(v, key)
+                    if found:
+                        return found
+            elif isinstance(obj, list):
+                for item in obj:
+                    found = _deep_find(item, key)
+                    if found:
+                        return found
+            return None
+        
+        download_url = _deep_find(result, "fifeUrl") or ""
+        if download_url:
+            log.info(f"[{self._account_email}] Upscaled via fifeUrl")
+            return {
+                "media_id": _deep_find(result, "mediaId") or media_id,
+                "download_url": download_url,
+                "encoded_image": None,
+                "width": _deep_find(result, "width") or 0,
+                "height": _deep_find(result, "height") or 0,
+            }
+        
+        log.error(f"Upscale unknown response: {json.dumps(result)[:500]}")
+        raise ValueError(f"Unknown upscale response format")
+    
+    # ── Generate Video (NAV Tools pattern) ────────────────────
+    
+    async def generate_video(
+        self,
+        prompt: str,
+        reference_image: Optional[str] = None,
+        model_key: str = "veo_3_generate_video_fast",
+        aspect_ratio: str = "LANDSCAPE",
+    ) -> Optional[str]:
+        """Submit video generation request. Returns operation/generation ID.
+        
+        Args:
+            prompt: Text prompt for video generation
+            reference_image: media_id from upload_image() (UUID)
+            model_key: Model key (e.g. veo_3_generate_video_fast)
+            aspect_ratio: LANDSCAPE or PORTRAIT
+        """
+        await self.ensure_token()
+        
+        # Build aspect ratio enum
+        ar_map = {
+            "LANDSCAPE": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "PORTRAIT": "VIDEO_ASPECT_RATIO_PORTRAIT",
+            "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        }
+        ar_enum = ar_map.get(aspect_ratio, "VIDEO_ASPECT_RATIO_LANDSCAPE")
+        
+        import random
+        result = None
+        for attempt in range(5):
+            # Stagger concurrent tasks slightly to avoid triggering Google's rate limiter
+            if attempt > 0:
+                await asyncio.sleep(random.uniform(1.0, 3.0))
+            else:
+                await asyncio.sleep(random.uniform(0.1, 1.0))
+                
+            # Get fresh reCAPTCHA token
+            recaptcha_token = await self.get_recaptcha_token("VIDEO_GENERATION")
+            
+            if not prompt or prompt.strip() == "":
+                prompt = "Static shot"
+                
+            if reference_image:
+                request_item = {
+                    "textInput": {
+                        "structuredPrompt": {
+                            "parts": [{"text": prompt}]
+                        }
+                    },
+                    "videoModelKey": model_key,
+                    "startImage": {
+                        "mediaId": reference_image
+                    }
+                }
+                
+                payload = {
+                    "clientContext": {
+                        "tool": "VIDEO_FX",
+                        "sessionId": os.urandom(16).hex()
+                    },
+                    "requests": [request_item]
+                }
+                
+                if recaptcha_token:
+                    payload["clientContext"]["recaptchaToken"] = recaptcha_token
+            else:
+                # Text-to-Video: completely different payload & endpoint
+                import random as _rng
+                ar_t2v = "VIDEO_ASPECT_RATIO_PORTRAIT" if "9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper() else "VIDEO_ASPECT_RATIO_LANDSCAPE"
+
+                # Determine if this is a free queue model (LP / relaxed).
+                # For free queues we must NOT send `userPaygateTier` or Google
+                # returns HTTP 500 INTERNAL ("free model on paid tier" mismatch).
+                # For paid queues (fast/quality/lite), we send PAYGATE_TIER_TWO
+                # which is what Labs UI sends — even free accounts can get
+                # past the validator with this tier as long as the model itself
+                # is paid (credits will be deducted normally).
+                mk_lower = (model_key or "").lower()
+                is_free_queue = (
+                    "_low_priority" in mk_lower
+                    or "_relaxed" in mk_lower
+                    or "_ultra_relaxed" in mk_lower
+                )
+
+                client_context = {
+                    "projectId": self.project_id,
+                    "tool": "PINHOLE",
+                    "sessionId": f";{int(time.time() * 1000)}",
+                }
+                if not is_free_queue:
+                    client_context["userPaygateTier"] = "PAYGATE_TIER_TWO"
+
+                payload = {
+                    "mediaGenerationContext": {
+                        "batchId": str(uuid.uuid4()),
+                        "audioFailurePreference": "BLOCK_SILENCED_VIDEOS"
+                    },
+                    "clientContext": client_context,
+                    "requests": [{
+                        "aspectRatio": ar_t2v,
+                        "textInput": {
+                            "structuredPrompt": {
+                                "parts": [{"text": prompt}]
+                            }
+                        },
+                        "videoModelKey": model_key,
+                        "metadata": {},
+                        "seed": _rng.randint(10000, 99999)
+                    }],
+                    "useV2ModelConfig": True
+                }
+
+                if recaptcha_token:
+                    payload["clientContext"]["recaptchaContext"] = {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+                    }
+            
+            self._last_model_key = model_key
+            if attempt == 0:
+                log.info(f"[{self._account_email}] Generating video: model={model_key}, ref={reference_image is not None}")
+            
+            endpoint = "video:batchAsyncGenerateVideoStartImage" if reference_image else "video:batchAsyncGenerateVideoText"
+            result = await self._browser_sandbox_request(endpoint, payload, is_text_plain=True)
+            
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                err_lc = err_str.lower()
+                # Rate limit — back off exponentially
+                if "429" in err_str or "resource_exhausted" in err_lc or "throttled" in err_lc:
+                    delay = min(60, (5 * (attempt + 1)) + random.uniform(2, 8))
+                    log.warning(
+                        f"[{self._account_email}] Video gen throttled 429 "
+                        f"(attempt {attempt + 1}/5) — backing off {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_lc:
+                    if "unusual_activity" in err_lc or "recaptcha" in err_lc:
+                        log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
+                        await self.renew_token()
+                    else:
+                        log.warning(f"[{self._account_email}] reCAPTCHA rejected or 403 (attempt {attempt+1}), retrying with new token...")
+                    continue
+                log.error(f"[{self._account_email}] Generate failed: {result}")
+                raise ValueError(err_str)
+            
+            # Success, break the retry loop
+            break
+        else:
+            err_str = str(result.get("text", result.get("error", "Unknown Error")))
+            log.error(f"[{self._account_email}] Generate failed after 3 attempts: {result}")
+            raise ValueError(err_str)
+        
+        # Extract generation ID
+        gen_id = self._extract_generation_id(result)
+        if gen_id:
+            log.info(f"[{self._account_email}] Generation started: {gen_id}")
+        else:
+            err_msg = json.dumps(result)[:300]
+            log.error(f"[{self._account_email}] No generation ID in response: {err_msg}")
+            raise ValueError(f"Invalid Response: {err_msg}")
+        
+        return gen_id
+        
+    async def extend_video(self, prompt: str, media_id: str, workflow_id: str, model_key: str, aspect_ratio: str) -> str:
+        """Extend an existing generated video."""
+        import random as _rng
+        ar_str = str(aspect_ratio).upper()
+        ar_t2v = "VIDEO_ASPECT_RATIO_PORTRAIT" if ("9:16" in ar_str or "PORTRAIT" in ar_str) else "VIDEO_ASPECT_RATIO_LANDSCAPE"
+
+        mk_lower = (model_key or "").lower()
+        is_free_queue = "_low_priority" in mk_lower or "_relaxed" in mk_lower or "_extension" in mk_lower
+
+        for attempt in range(5):
+            recaptcha_token = await self.get_recaptcha_token(action="VIDEO_GENERATION")
+
+            client_context = {
+                "projectId": self.project_id,
+                "tool": "PINHOLE",
+                "sessionId": f";{int(time.time() * 1000)}",
+            }
+            if not is_free_queue:
+                client_context["userPaygateTier"] = "PAYGATE_TIER_TWO"
+
+            payload = {
+                "mediaGenerationContext": {
+                    "batchId": str(uuid.uuid4()),
+                    "audioFailurePreference": "BLOCK_SILENCED_VIDEOS"
+                },
+                "clientContext": client_context,
+                "requests": [{
+                    "aspectRatio": ar_t2v,
+                    "textInput": {"structuredPrompt": {"parts": [{"text": prompt}]}},
+                    "videoModelKey": model_key,
+                    "metadata": {"workflowId": workflow_id},
+                    "seed": _rng.randint(10000, 99999),
+                    "videoInput": {"mediaId": media_id}
+                }],
+                "useV2ModelConfig": True
+            }
+            if recaptcha_token:
+                payload["clientContext"]["recaptchaContext"] = {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+                }
+            
+            log.info(f"[{self._account_email}] Extending video {media_id} (attempt {attempt+1})")
+            result = await self._browser_sandbox_request("video:batchAsyncGenerateVideoExtendVideo", payload, is_text_plain=True)
+            
+            # Log full response for debugging
+            log.info(f"[{self._account_email}] Extend response: {json.dumps(result)[:500]}")
+            
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_str.lower():
+                    if "unusual_activity" in err_str.lower() or "recaptcha" in err_str.lower():
+                        log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
+                        await self.renew_token()
+                    continue
+                raise ValueError(err_str)
+            break
+        else:
+            raise ValueError(str(result.get("text", result.get("error", "Unknown Error"))))
+            
+        gen_id = self._extract_generation_id(result)
+        if not gen_id:
+            raise ValueError(f"No generation ID in extend response: {str(result)[:200]}")
+        return gen_id
+
+    async def upscale_video(self, media_id: str, workflow_id: str, aspect_ratio: str, resolution: str = "1080p") -> str:
+        """Upscale an existing generated video."""
+        import random as _rng
+        ar_str = str(aspect_ratio).upper()
+        ar_t2v = "VIDEO_ASPECT_RATIO_PORTRAIT" if ("9:16" in ar_str or "PORTRAIT" in ar_str) else "VIDEO_ASPECT_RATIO_LANDSCAPE"
+
+        model_key = "veo_3_1_upsampler_1080p" if "1080" in resolution else "veo_3_1_upsampler_4k"
+        res_enum = "VIDEO_RESOLUTION_1080P" if "1080" in resolution else "VIDEO_RESOLUTION_4K"
+
+        for attempt in range(5):
+            recaptcha_token = await self.get_recaptcha_token(action="VIDEO_GENERATION")
+
+            # Upscaler is a paid feature — keep userPaygateTier
+            payload = {
+                "mediaGenerationContext": {
+                    "batchId": str(uuid.uuid4()),
+                    "audioFailurePreference": "BLOCK_SILENCED_VIDEOS"
+                },
+                "clientContext": {
+                    "projectId": self.project_id,
+                    "tool": "PINHOLE",
+                    "userPaygateTier": "PAYGATE_TIER_TWO",
+                    "sessionId": f";{int(time.time() * 1000)}",
+                },
+                "requests": [{
+                    "resolution": res_enum,
+                    "aspectRatio": ar_t2v,
+                    "videoModelKey": model_key,
+                    "metadata": {"workflowId": workflow_id},
+                    "seed": _rng.randint(10000, 99999),
+                    "videoInput": {"mediaId": media_id}
+                }],
+                "useV2ModelConfig": True
+            }
+            if recaptcha_token:
+                payload["clientContext"]["recaptchaContext"] = {
+                    "token": recaptcha_token,
+                    "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB"
+                }
+            
+            log.info(f"[{self._account_email}] Upscaling video {media_id} to {resolution} (attempt {attempt+1})")
+            result = await self._browser_sandbox_request("video:batchAsyncGenerateVideoUpsampleVideo", payload, is_text_plain=True)
+            
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_str.lower():
+                    if "unusual_activity" in err_str.lower() or "recaptcha" in err_str.lower():
+                        log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
+                        await self.renew_token()
+                    continue
+                raise ValueError(err_str)
+            break
+        else:
+            raise ValueError(str(result.get("text", result.get("error", "Unknown Error"))))
+            
+        gen_id = self._extract_generation_id(result)
+        if not gen_id:
+            raise ValueError(f"No generation ID in upscale response: {str(result)[:200]}")
+        return gen_id
+    
+    def _extract_generation_id(self, result: dict, _depth: int = 0) -> Optional[str]:
+        """Extract generation/operation ID from aisandbox response.
+        
+        Response formats:
+        1. I2V: {generateVideoResponses: [{generationId: "..."}]}
+        2. T2V/Extend/Upscale: {operations: [...], workflows: [...], media: [...]}
+        
+        For extend responses, primaryMediaId is the ORIGINAL video (wrong!).
+        The correct ID is in operations[0].operation.name or media[0].name.
+        """
+        if _depth > 5:
+            return None
+        
+        if not isinstance(result, dict):
+            return None
+        
+        # Priority 1: operations array (extend/upscale/T2V responses)
+        # operations[0].operation.name = new generation ID
+        operations = result.get("operations")
+        if isinstance(operations, list) and operations:
+            op = operations[0]
+            if isinstance(op, dict):
+                op_inner = op.get("operation", {})
+                if isinstance(op_inner, dict):
+                    name = op_inner.get("name")
+                    if name and isinstance(name, str) and len(name) >= 16:
+                        return name
+                # Also check operationId directly
+                op_id = op.get("operationId") or op.get("name")
+                if op_id and isinstance(op_id, str) and len(op_id) >= 16:
+                    return op_id
+        
+        # Priority 2: media array — media[0].name = new media ID
+        media = result.get("media")
+        if isinstance(media, list) and media:
+            m = media[0]
+            if isinstance(m, dict):
+                name = m.get("name")
+                if name and isinstance(name, str) and len(name) >= 16:
+                    return name
+        
+        # Priority 3: Direct ID fields (old format)
+        for key in ["generationId", "operationId"]:
+            val = result.get(key)
+            if val and isinstance(val, str) and len(val) >= 16:
+                return val
+        
+        # Priority 4: generateVideoResponses (I2V old format)
+        for key in ["generateVideoResponses", "responses"]:
+            nested = result.get(key)
+            if isinstance(nested, list) and nested:
+                found = self._extract_generation_id(nested[0], _depth + 1)
+                if found:
+                    return found
+        
+        # Priority 5: workflows — ONLY use primaryMediaId if nothing else found
+        # (for T2V generate, workflows[0].metadata.primaryMediaId IS the gen_id)
+        # (for extend, it's the ORIGINAL video — wrong! But we won't reach here
+        #  because operations/media arrays are checked first)
+        workflows = result.get("workflows")
+        if isinstance(workflows, list) and workflows:
+            wf = workflows[0]
+            if isinstance(wf, dict):
+                meta = wf.get("metadata", {})
+                if isinstance(meta, dict):
+                    mid = meta.get("primaryMediaId")
+                    if mid and isinstance(mid, str) and len(mid) >= 16:
+                        return mid
+        
+        # Priority 6: Fallback — top-level name/id
+        for key in ["name", "id"]:
+            val = result.get(key)
+            if val and isinstance(val, str) and len(val) >= 16:
+                return val
+        
+        # Priority 7: Recurse into nested dicts
+        for key, val in result.items():
+            if isinstance(val, dict):
+                found = self._extract_generation_id(val, _depth + 1)
+                if found:
+                    return found
+        
+        return None
+    
+    # ── reCAPTCHA (NAV Tools pattern) ─────────────────────────
+    
+    async def get_recaptcha_token(self, action: str = "VIDEO_GENERATION") -> str:
+        """Get reCAPTCHA token via browser (NAV Tools CDP pattern)."""
+        lock = _get_recaptcha_lock(self._account_email)
+        
+        async with lock:
+            log.info(f"Harvesting reCAPTCHA (action={action})...")
+
+            # Simulate human-like cursor activity to keep reCAPTCHA risk
+            # score high. Multiple curved moves + occasional click are much
+            # more convincing than a single mouse.move.
+            try:
+                import random as _rand
+                num_moves = _rand.randint(3, 6)
+                last_x, last_y = 100 + _rand.randint(0, 400), 100 + _rand.randint(0, 400)
+                for _ in range(num_moves):
+                    nx = max(20, min(900, last_x + _rand.randint(-180, 180)))
+                    ny = max(20, min(600, last_y + _rand.randint(-120, 120)))
+                    steps = _rand.randint(8, 15)
+                    await self._page.mouse.move(nx, ny, steps=steps)
+                    await asyncio.sleep(_rand.uniform(0.04, 0.12))
+                    last_x, last_y = nx, ny
+                # Occasionally tap (humans click around while thinking)
+                if _rand.random() < 0.45:
+                    await self._page.mouse.down()
+                    await asyncio.sleep(_rand.uniform(0.03, 0.08))
+                    await self._page.mouse.up()
+                # Tiny scroll wheel jiggle
+                if _rand.random() < 0.35:
+                    await self._page.mouse.wheel(0, _rand.randint(-40, 40))
+                    await asyncio.sleep(0.1)
+            except Exception:
+                pass
+            
+            # We rely on ensure_token() to navigate to the correct page initially.
+            # Navigating here would destroy the execution context for concurrent tasks.
+            
+            # Wait for grecaptcha to load
+            for i in range(30):
+                try:
+                    has = await self._page.evaluate(
+                        "typeof grecaptcha !== 'undefined' && (!!grecaptcha.enterprise || !!grecaptcha.execute)"
+                    )
+                except Exception as e:
+                    log.debug(f"grecaptcha check error: {e}")
+                    has = False
+                    
+                if has:
+                    log.info(f"grecaptcha loaded after {i * 0.5}s")
+                    break
+                await asyncio.sleep(0.5)
+            
+            try:
+                token_result = await self._page.evaluate("""async (action) => {
+                    let siteKey = null;
+                    const scripts = document.querySelectorAll('script[src*="recaptcha"]');
+                    for (const s of scripts) {
+                        const m = s.src.match(/[?&]render=([^&]+)/);
+                        if (m) { siteKey = m[1]; break; }
+                    }
+                    if (!siteKey) return {error: 'no_site_key'};
+                    if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {
+                        try {
+                            const token = await grecaptcha.enterprise.execute(
+                                siteKey, {action: action}
+                            );
+                            if (token) return {token, key: siteKey};
+                        } catch(e) {
+                            return {error: e.message};
+                        }
+                    }
+                    return {error: 'grecaptcha_not_available'};
+                }""", action)
+                
+                if token_result and isinstance(token_result, dict) and token_result.get("token"):
+                    log.info(f"Got reCAPTCHA token: {token_result['token'][:20]}...")
+                    self._recaptcha_fail_count = 0
+                    return token_result["token"]
+                else:
+                    log.warning(f"Could not get reCAPTCHA token: {token_result}")
+                    self._recaptcha_fail_count += 1
+                    return ""
+            except Exception as e:
+                log.error(f"reCAPTCHA harvester error: {e}")
+                self._recaptcha_fail_count += 1
+                return ""
+    
+    # ── Poll Status (NAV Tools pattern) ───────────────────────
+    
+    async def poll_status(self, generation_id: str) -> dict:
+        """Poll video generation status via browser fetch."""
+        payload = {
+            "media": [{"name": generation_id, "projectId": self.project_id}]
+        }
+        result = await self._browser_sandbox_request(
+            "video:batchCheckAsyncVideoGenerationStatus", payload
+        )
+        
+        if "error" in result:
+            return result
+            
+        # Parse status from response
+        # Dump to file to debug structure
+        try:
+            import json
+            with open("debug_poll.json", "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+            
+        # Old: generateVideoStatuses, New: media or mediaStatuses
+        statuses = result.get("media", result.get("generateVideoStatuses", result.get("statuses", [])))
+        if statuses and isinstance(statuses, list):
+            # Print the actual media object for debugging
+            log.info(f"Poll media[0]: {str(statuses[0])[:500]}")
+            return statuses[0]
+            
+        log.info(f"Poll raw result: {str(result)[:300]}...")
+        return result
+    
+    async def wait_for_completion(
+        self,
+        generation_id: str,
+        timeout: int = 600,
+        callback=None,
+        cancel_check=None,
+    ) -> dict:
+        """Poll until video completes or times out (NAV Tools pattern).
+        
+        v1.2.11: Handle Low Priority models where media object
+        isn't created immediately ("Media not found" is transient).
+        """
+        start = time.time()
+        consecutive_errors = 0
+        max_consecutive_errors = 12  # More retries for Low Priority
+        media_not_found_count = 0
+        max_media_not_found = 20  # Low Priority can take minutes to start
+        
+        # Wait before first poll — Low Priority models need time to register
+        await asyncio.sleep(10)
+        
+        while time.time() - start < timeout:
+            # Check cancellation
+            if cancel_check and cancel_check():
+                return {"state": "FAILED", "error": "CANCELLED"}
+            
+            status_info = await self.poll_status(generation_id)
+            
+            # Handle errors
+            if "error" in status_info:
+                consecutive_errors += 1
+                log.warning(f"Poll error ({consecutive_errors}/{max_consecutive_errors}): {status_info}")
+                if consecutive_errors >= max_consecutive_errors:
+                    return {"state": "FAILED", "error": f"Too many poll errors: {status_info}"}
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                continue
+            
+            consecutive_errors = 0
+            
+            # Priority 1: Check mediaMetadata.mediaStatus (Ultra model response)
+            state = "RUNNING"
+            failure_msg = ""
+            if "mediaMetadata" in status_info and "mediaStatus" in status_info["mediaMetadata"]:
+                media_status_obj = status_info["mediaMetadata"]["mediaStatus"]
+                media_status = media_status_obj.get("mediaGenerationStatus")
+                if media_status:
+                    state = media_status
+                # Get failure message for "Media not found" detection
+                err_obj = media_status_obj.get("error", {})
+                if isinstance(err_obj, dict):
+                    failure_msg = err_obj.get("message", "")
+                reasons = media_status_obj.get("failureReasons", [])
+                if reasons:
+                    failure_msg = failure_msg or str(reasons[0])
+            
+            # Priority 2: Fallback to top-level state fields
+            if state == "RUNNING":
+                state = status_info.get("state", status_info.get("status", "RUNNING"))
+            
+            # Check for actual video data
+            has_video = False
+            if "mediaMetadata" in status_info and "videoUri" in status_info["mediaMetadata"]:
+                has_video = True
+            
+            # Callback
+            if callback:
+                try:
+                    await callback(status_info)
+                except Exception:
+                    pass
+            
+            # Check completion
+            if state in ("COMPLETED", "COMPLETE", "MEDIA_GENERATION_STATUS_SUCCESSFUL") or has_video:
+                status_info["state"] = "COMPLETED"
+                log.info(f"Video generation completed! state={state}, has_video={has_video}")
+                return status_info
+            
+            # Check failure — but "Media not found" is TRANSIENT for Low Priority
+            if state in ("FAILED", "ERROR", "MEDIA_GENERATION_STATUS_FAILED"):
+                if "Media not found" in failure_msg or "not found" in failure_msg.lower():
+                    media_not_found_count += 1
+                    log.info(f"Media not found ({media_not_found_count}/{max_media_not_found}) — "
+                             f"waiting for Low Priority media to register...")
+                    if media_not_found_count >= max_media_not_found:
+                        return {"state": "FAILED", "error": "Media never became available"}
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS * 2)  # Wait longer
+                    continue
+                # Real failure
+                status_info["state"] = "FAILED"
+                status_info["error"] = failure_msg or state
+                log.warning(f"Video generation FAILED: {failure_msg or state}")
+                return status_info
+            
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        
+        return {"state": "FAILED", "error": "Timeout"}
+    
+    # ── Check Credits (NAV Tools exact clone) ─────────────────
+    
+    async def check_credits(self) -> Optional[dict]:
+        """Check remaining AI credits.
+        
+        Strategy (in priority order):
+        1. Try /fx/api/trpc/user.getUserSettings API (fast, no DOM interaction)
+        2. Try reading credit text directly from page (no popup click needed)
+        3. Click profile avatar → read popup "XX AI credits" text
+        """
+        await self.ensure_token()
+        
+        # Make sure we're on the Flow page
+        current_url = self._page.url or ""
+        if "labs.google" not in current_url:
+            await self._page.goto("https://labs.google/fx/tools/video-fx", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+        
+        try:
+            await self._page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            await asyncio.sleep(3)
+        
+        # ── Method 1: Try tRPC API directly ──
+        try:
+            api_credits = await self._page.evaluate('''async () => {
+                try {
+                    const r = await fetch("/fx/api/trpc/user.getUserSettings");
+                    if (r.ok) {
+                        const data = await r.json();
+                        // Try multiple paths in the response
+                        const result = data?.result?.data?.json || data?.result?.data || data;
+                        const credits = result?.remainingCredits 
+                            ?? result?.credits 
+                            ?? result?.aiCredits
+                            ?? result?.creditBalance;
+                        if (typeof credits === 'number') return credits;
+                        // Deep search for any credit-like field
+                        const str = JSON.stringify(data);
+                        const m = str.match(/"(?:remaining|ai|credit|balance)[Cc]?redits?"\\s*:\\s*(\\d+)/);
+                        if (m) return parseInt(m[1]);
+                    }
+                    return null;
+                } catch(e) { return null; }
+            }''')
+            
+            if api_credits is not None and isinstance(api_credits, (int, float)):
+                log.info(f"[{self._account_email}] Credits from API: {int(api_credits)}")
+                return {"remainingCredits": int(api_credits)}
+        except Exception as e:
+            log.debug(f"[{self._account_email}] API credit check failed: {e}")
+        
+        # ── Method 2: Read credit text from page directly (no popup) ──
+        try:
+            page_credits = await self._page.evaluate(r'''
+                () => {
+                    const text = document.body.innerText;
+                    // Try multiple patterns
+                    const patterns = [
+                        /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*AI/i,
+                        /(\d[\d,.\s]*)\s*AI\s*credits?/i,
+                        /T\u00edn\s*d\u1ee5ng\s*AI\s*:?\s*(\d[\d,.\s]*)/i,
+                        /credits?\s*:?\s*(\d[\d,.\s]*)/i,
+                        /(\d[\d,.\s]*)\s*credits?\s*remaining/i,
+                    ];
+                    for (const p of patterns) {
+                        const m = text.match(p);
+                        if (m) {
+                            return parseInt(m[1].replace(/[,.\s]/g, ''));
+                        }
+                    }
+                    return null;
+                }
+            ''')
+            
+            if page_credits is not None and page_credits > 0:
+                log.info(f"[{self._account_email}] Credits from page text: {page_credits}")
+                return {"remainingCredits": page_credits}
+        except Exception as e:
+            log.debug(f"[{self._account_email}] Page text credit check failed: {e}")
+        
+        # ── Method 3: Click ULTRA/tier badge → read popup ──
+        try:
+            # The credit info is shown when clicking the "ULTRA" or "AI trial" badge
+            # in the top-right area of Google Labs header (NOT the profile avatar)
+            badge = None
+            
+            # First try: find by text content using JS (most reliable)
+            badge = await self._page.evaluate_handle('''
+                () => {
+                    // Look for elements containing "ULTRA", "FREE", "AI trial" text
+                    const keywords = ['ULTRA', 'AI trial', 'FREE', 'credits'];
+                    const allElements = document.querySelectorAll('button, a, div[role="button"], [class*="badge"], [class*="tier"], [class*="credit"], [class*="plan"]');
+                    for (const el of allElements) {
+                        const text = el.textContent?.trim() || '';
+                        if (keywords.some(kw => text.includes(kw)) && el.offsetWidth > 0 && el.offsetHeight > 0) {
+                            return el;
+                        }
+                    }
+                    // Broader search: any clickable element with tier/credit keywords
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                    while (walker.nextNode()) {
+                        const node = walker.currentNode;
+                        const text = node.textContent?.trim() || '';
+                        const tag = node.tagName;
+                        if ((tag === 'BUTTON' || tag === 'A' || node.getAttribute('role') === 'button' || node.style?.cursor === 'pointer') 
+                            && keywords.some(kw => text.includes(kw))
+                            && text.length < 50
+                            && node.offsetWidth > 0) {
+                            return node;
+                        }
+                    }
+                    return null;
+                }
+            ''')
+            
+            if badge:
+                try:
+                    await badge.as_element().click()
+                    log.info(f"[{self._account_email}] Clicked tier badge via JS text search")
+                except Exception:
+                    badge = None
+            
+            # Fallback: try CSS selectors for common avatar/profile patterns
+            if not badge:
+                for selector in [
+                    'img[data-profileimageid]',
+                    'button[aria-label*="Account"]',
+                    'a[aria-label*="Account"]',
+                    'img[src*="googleusercontent"]',
+                    '[data-ogsr-up]',
+                    '.gb_d',
+                ]:
+                    try:
+                        el = await self._page.query_selector(selector)
+                        if el and await el.is_visible():
+                            await el.click()
+                            log.info(f"[{self._account_email}] Clicked fallback avatar: {selector}")
+                            badge = el
+                            break
+                    except Exception:
+                        continue
+            
+            if not badge:
+                log.warning(f"[{self._account_email}] Could not find ULTRA badge or profile button")
+                try:
+                    debug_text = await self._page.evaluate("document.body.innerText.substring(0, 2000)")
+                    log.info(f"[{self._account_email}] Page text sample: {debug_text[:500]}")
+                except Exception:
+                    pass
+                return {"error": "Badge/Avatar not found"}
+            
+            await asyncio.sleep(2)
+            
+            # Read credit text with broader patterns
+            credits = await self._page.evaluate(r'''
+                () => {
+                    try {
+                        const text = document.body.innerText;
+                        const patterns = [
+                            /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*AI/i,
+                            /(\d[\d,.\s]*)\s*AI\s*credits?/i,
+                            /T\u00edn\s*d\u1ee5ng\s*AI\s*:?\s*(\d[\d,.\s]*)/i,
+                            /AI\s*credits?\s*:?\s*(\d[\d,.\s]*)/i,
+                            /credits?\s*remaining\s*:?\s*(\d[\d,.\s]*)/i,
+                            /(\d[\d,.\s]*)\s*credits?\s*left/i,
+                            /(\d[\d,.\s]*)\s*credits?/i,
+                        ];
+                        for (const p of patterns) {
+                            const m = text.match(p);
+                            if (m) {
+                                const num = parseInt(m[1].replace(/[,.\s]/g, ''));
+                                if (num > 0 && num < 1000000) return num;
+                            }
+                        }
+                        return null;
+                    } catch (e) {
+                        return null;
+                    }
+                }
+            ''')
+            
+            try:
+                await self._page.keyboard.press("Escape")
+            except Exception:
+                pass
+            
+            if credits is not None and credits > 0:
+                log.info(f"[{self._account_email}] Credits from badge popup: {credits}")
+                return {"remainingCredits": credits}
+            
+            # Debug: dump popup content 
+            try:
+                debug_text = await self._page.evaluate("document.body.innerText.substring(0, 3000)")
+                log.warning(f"[{self._account_email}] Popup text (no credits found): {debug_text[:800]}")
+                # Also take a debug screenshot
+                await self._page.screenshot(path=f"debug_credits.png", full_page=False)
+                log.info(f"[{self._account_email}] Saved debug screenshot: debug_credits.png")
+            except Exception:
+                pass
+            
+            return {"error": "Credits not found in popup"}
+            
+        except Exception as e:
+            log.error(f"[{self._account_email}] Credit check error: {e}")
+            return {"error": str(e)}
+    
+    # ── Get Video Models (NAV Tools) ──────────────────────────
+    
+    async def get_video_models(self) -> list:
+        """Fetch available video models from tRPC API."""
+        result = await self._api("videoFx.getVideoModelConfig", None, "GET")
+        data = self._extract(result)
+        models = data.get("videoModelConfigs", [])
+        if models:
+            log.info(f"VideoModelRegistry: {len(models)} models from API")
+        return models
+    
+    # ── Download (NAV Tools pattern) ──────────────────────────
+    
+    async def get_download_url(self, media_id: str) -> Optional[str]:
+        """Get video download URL via tRPC redirect endpoint.
+        
+        Google Labs format (confirmed via network capture):
+          GET /fx/api/trpc/media.getMediaUrlRedirect?name=<media_id>
+          → 307 redirect to https://flow-content.google/video/<id>?Expires=...&Signature=...
+        
+        Uses Playwright's page.request API (not browser fetch) to bypass CORS
+        on the cross-origin redirect to flow-content.google.
+        """
+        url = f"{self.TRPC}/media.getMediaUrlRedirect?name={media_id}"
+        
+        try:
+            # Use Playwright request API — bypasses CORS, uses browser cookies
+            resp = await self._page.request.get(url, max_redirects=0)
+            
+            # 307 redirect → extract Location header (signed CDN URL)
+            if resp.status in (301, 302, 307, 308):
+                location = resp.headers.get('location', '')
+                if location:
+                    log.info(f"Got download URL (307 redirect): {location[:100]}...")
+                    return location
+            
+            # If server returned 200 directly (unlikely but handle it)
+            if resp.ok:
+                # Check if it's JSON with a URL inside
+                try:
+                    data = await resp.json()
+                    redirect_url = (
+                        data.get("url") or
+                        data.get("result", {}).get("data", {}).get("json", {}).get("url")
+                    )
+                    if redirect_url:
+                        return redirect_url
+                except Exception:
+                    pass
+                # The URL itself might serve the video
+                return url
+            
+            log.warning(f"get_download_url: HTTP {resp.status}")
+            
+        except Exception as e:
+            log.error(f"get_download_url error: {e}")
+        
+        return None
+    
+    async def _fetch_mp4_via_browser(self, media_id: str) -> Optional[bytes]:
+        """Fetch MP4 bytes directly via Playwright request API.
+        
+        Uses page.request.get() which follows redirects and bypasses CORS.
+        The 307 redirect to flow-content.google CDN is followed automatically.
+        """
+        url = f"{self.TRPC}/media.getMediaUrlRedirect?name={media_id}"
+        
+        try:
+            # Follow redirects automatically, download video bytes
+            resp = await self._page.request.get(url, timeout=120000)
+            
+            if resp.ok:
+                body = await resp.body()
+                if len(body) > 1000:
+                    log.info(f"_fetch_mp4_via_browser OK: {len(body)} bytes")
+                    return body
+                log.warning(f"_fetch_mp4_via_browser: response too small ({len(body)} bytes)")
+            else:
+                log.warning(f"_fetch_mp4_via_browser: HTTP {resp.status}")
+                
+        except Exception as e:
+            log.error(f"_fetch_mp4_via_browser error: {e}")
+        
+        return None
+    
+    async def download_video(self, url: str, output_path: str) -> bool:
+        """Download video from URL to local file using httpx."""
+        if not url:
+            log.error("download_video called with no URL")
+            return False
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200 and len(resp.content) > 1000:
+                    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(output_path).write_bytes(resp.content)
+                    log.info(f"Downloaded video: {output_path} ({len(resp.content)} bytes)")
+                    return True
+                log.warning(f"Download failed: HTTP {resp.status_code}, size={len(resp.content)}")
+        except Exception as e:
+            log.error(f"Download error: {e}")
+        return False
+
+    async def download_to(self, media_id: str, output_path: str) -> bool:
+        """Save a generated video (by media_id) to a local file.
+
+        Tries the most reliable path first: Playwright's request API which
+        follows the 307 redirect to flow-content.google with browser cookies.
+        Falls back to httpx + signed URL only if the browser fetch returns
+        nothing.
+        """
+        if not media_id:
+            log.error("download_to: no media_id")
+            return False
+
+        # Method 1: browser fetch (preferred — handles auth + redirects)
+        body = await self._fetch_mp4_via_browser(media_id)
+        if body:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(body)
+            log.info(f"Downloaded video via browser: {output_path} ({len(body)} bytes)")
+            return True
+
+        # Method 2: get signed URL then download via httpx
+        url = await self.get_download_url(media_id)
+        if url:
+            return await self.download_video(url, output_path)
+
+        log.error(f"download_to: no download method worked for media_id={media_id}")
+        return False
