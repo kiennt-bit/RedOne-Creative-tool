@@ -1,6 +1,12 @@
-# NAV Tools Web
+# RedOne Creative
 
-Local web app rebuild của desktop tool RedOne/NAVTools (PySide6 → FastAPI + HTML).
+Local desktop AI tool — tạo ảnh / video bằng Google Veo 3.1 + Nano Banana / Imagen 4 thông qua credit miễn phí của Google Labs Flow.
+
+## 📚 Tài liệu
+
+- **🚀 [Hướng dẫn sử dụng đầy đủ](docs/HUONG_DAN_SU_DUNG.md)** — cho người dùng cuối: cài đặt → thêm account → tạo ảnh/video → quản lý task
+- **🔨 [Build & Release guide](BUILD_RELEASE.md)** — cho dev: PyInstaller, GitHub Release workflow
+- **📥 [Tải bản EXE mới nhất](https://github.com/kiennt-bit/RedOne-Creative-tool/releases)** — Windows 10/11
 
 ## Cài đặt nhanh
 
