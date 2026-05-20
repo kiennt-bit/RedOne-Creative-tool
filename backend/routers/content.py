@@ -135,8 +135,17 @@ async def _process_task(task_id: int):
                     mode = "i2v" if ref_media else "t2v"
                     # For Omni Flash, duration is encoded in the model_key
                     # itself (abra_t2v_10s). For Veo 3.1, static keys.
+                    # Safety: Omni Flash doesn't support I2V yet — fallback
+                    # to Veo 3.1 Lite [LP] (free queue) when ref image is set.
+                    eff_quality = quality
+                    if quality == "omni_flash" and ref_media:
+                        log.warning(
+                            f"Item {item['id']}: Omni Flash + ref image not supported by Google; "
+                            f"falling back to lite_lp for this item"
+                        )
+                        eff_quality = "lite_lp"
                     duration_s = int(task.get("duration") or 8)
-                    model_key = video_model_for(quality, mode, duration_s)
+                    model_key = video_model_for(eff_quality, mode, duration_s)
 
                     done_state = None
                     last_err = None

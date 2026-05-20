@@ -76,7 +76,14 @@ async def _run_long_video(task_id: int):
                         ref_media = await client.upload_image(start_image)
                     mode = "i2v" if ref_media else "t2v"
                     duration_s = int(task.get("duration") or 8)
-                    first_key = video_model_for(quality, mode, duration_s)
+                    eff_quality = quality
+                    if quality == "omni_flash" and ref_media:
+                        log.warning(
+                            "Omni Flash + start image not supported; "
+                            "falling back to lite_lp for the first scene"
+                        )
+                        eff_quality = "lite_lp"
+                    first_key = video_model_for(eff_quality, mode, duration_s)
                     wf = await client.generate_video(
                         prompt=item["prompt"],
                         model_key=first_key,

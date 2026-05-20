@@ -22,6 +22,17 @@ const DURATION_BY_MODEL = {
   lite_lp:    [8],
 };
 
+// Omni Flash doesn't support image-input yet → hide if start_image is set.
+const MODEL_LABELS = {
+  omni_flash: 'Omni Flash (hỗ trợ 10s)',
+  lite_lp:    'Veo 3.1 — Lite [Lower Priority] · Miễn phí',
+  lite:       'Veo 3.1 — Lite · 5 credit/cảnh',
+  fast:       'Veo 3.1 — Fast · 10 credit/cảnh',
+  quality:    'Veo 3.1 — Quality · 100 credit/cảnh',
+};
+const MODELS_NO_IMAGE = ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'];
+const MODELS_WITH_IMAGE = ['lite_lp', 'lite', 'fast', 'quality'];
+
 function defaultTaskName() {
   const d = new Date();
   const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}`;
@@ -68,13 +79,8 @@ export function renderLongVideo(root) {
       ),
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Model'),
-        el('select', { class: 'select', id: 'lv-quality' },
-          el('option', { value: 'omni_flash' }, 'Omni Flash (hỗ trợ 10s)'),
-          el('option', { value: 'lite_lp' }, 'Veo 3.1 — Lite [Lower Priority] · Miễn phí'),
-          el('option', { value: 'lite' },    'Veo 3.1 — Lite · 5 credit/cảnh'),
-          el('option', { value: 'fast' },    'Veo 3.1 — Fast · 10 credit/cảnh'),
-          el('option', { value: 'quality' }, 'Veo 3.1 — Quality · 100 credit/cảnh'),
-        ),
+        el('select', { class: 'select', id: 'lv-quality' }),
+        el('div', { class: 'field-help', id: 'lv-quality-help' }),
       ),
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Độ dài mỗi cảnh'),
@@ -112,8 +118,27 @@ export function renderLongVideo(root) {
     ),
   ));
 
+  function refreshModelDropdown() {
+    const sel = root.querySelector('#lv-quality');
+    const help = root.querySelector('#lv-quality-help');
+    if (!sel) return;
+    const allowed = form.startImagePath ? MODELS_WITH_IMAGE : MODELS_NO_IMAGE;
+    const prev = form.quality;
+    clear(sel);
+    for (const m of allowed) {
+      sel.appendChild(el('option', { value: m }, MODEL_LABELS[m] || m));
+    }
+    form.quality = allowed.includes(prev) ? prev : 'lite_lp';
+    sel.value = form.quality;
+    if (help) {
+      help.textContent = form.startImagePath
+        ? 'Có ảnh frame đầu → Omni Flash đang ẩn (chưa hỗ trợ I2V)'
+        : 'Omni Flash hỗ trợ 4/6/8/10s; các model Veo 3.1 cố định 8s';
+    }
+  }
+  refreshModelDropdown();
+
   // Restore selects
-  root.querySelector('#lv-quality').value = form.quality;
   root.querySelector('#lv-aspect').value = form.aspect;
 
   function refreshDurationDropdown() {
@@ -226,6 +251,8 @@ export function renderLongVideo(root) {
       form.startImagePreviewUrl = URL.createObjectURL(file);
       preview.innerHTML = '';
       preview.appendChild(el('img', { src: form.startImagePreviewUrl, class: 'thumb', style: { maxWidth: '200px' } }));
+      refreshModelDropdown();   // hide Omni Flash since I2V isn't supported
+      refreshDurationDropdown();
       toast('Đã tải ảnh', 'success');
     } catch (e) { toast(e.message, 'error'); }
   });

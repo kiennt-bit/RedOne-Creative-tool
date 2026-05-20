@@ -21,7 +21,7 @@ const form = {
 };
 
 // Duration options per model. Confirmed via labs.google network capture:
-//   Omni Flash internal key = abra_<mode>_<N>s — has 4/6/8/10
+//   Omni Flash internal key = abra_t2v_<N>s — has 4/6/8/10
 //   Veo 3.1 keys don't have duration suffix → always 8s for now
 const DURATION_BY_MODEL = {
   omni_flash: [4, 6, 8, 10],
@@ -29,6 +29,20 @@ const DURATION_BY_MODEL = {
   fast:       [8],
   quality:    [8],
   lite_lp:    [8],
+};
+
+// Models that work in each mode. As of 2026-05-20, Google Labs shows
+// "Frames for Omni Flash coming soon" → Omni Flash chỉ hỗ trợ T2V.
+const MODELS_FOR_MODE = {
+  t2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
+  i2v: ['lite_lp', 'lite', 'fast', 'quality'],  // no omni_flash
+};
+const MODEL_LABELS = {
+  omni_flash: 'Omni Flash (hỗ trợ 10s)',
+  lite_lp:    'Veo 3.1 — Lite [Lower Priority] · Miễn phí',
+  lite:       'Veo 3.1 — Lite · 5 credit',
+  fast:       'Veo 3.1 — Fast · 10 credit',
+  quality:    'Veo 3.1 — Quality · 100 credit',
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -82,13 +96,9 @@ export function renderContent(root) {
           ),
           el('div', { class: 'field-group' },
             el('label', { class: 'field-label' }, 'Model'),
-            el('select', { class: 'select', id: 'cnt-quality' },
-              option('omni_flash', 'Omni Flash (hỗ trợ 10s)'),
-              option('lite_lp',    'Veo 3.1 — Lite [Lower Priority] · Miễn phí'),
-              option('lite',       'Veo 3.1 — Lite · 5 credit'),
-              option('fast',       'Veo 3.1 — Fast · 10 credit'),
-              option('quality',    'Veo 3.1 — Quality · 100 credit'),
-            ),
+            // Options populated dynamically — Omni Flash hidden in I2V mode
+            el('select', { class: 'select', id: 'cnt-quality' }),
+            el('div', { class: 'field-help', id: 'cnt-quality-help' }),
           ),
           el('div', { class: 'form-row' },
             el('div', { class: 'field-group' },
@@ -215,6 +225,8 @@ export function renderContent(root) {
         root.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         e.currentTarget.classList.add('active');
         root.querySelector('#i2v-image-block').style.display = mode === 'i2v' ? 'block' : 'none';
+        refreshModelDropdown();  // hide/show Omni Flash based on T2V/I2V
+        refreshDurationDropdown();
         refreshBulkPromptBlock();
         refreshList();    // re-render rows (show/hide image thumbs)
       },
@@ -261,8 +273,31 @@ export function renderContent(root) {
     return el('option', { value }, label);
   }
 
+  // Populate Model dropdown based on current mode (T2V vs I2V).
+  // Omni Flash hidden in I2V because Google Labs hasn't enabled it yet.
+  function refreshModelDropdown() {
+    const sel = root.querySelector('#cnt-quality');
+    const help = root.querySelector('#cnt-quality-help');
+    if (!sel) return;
+    const allowed = MODELS_FOR_MODE[form.mode] || MODELS_FOR_MODE.t2v;
+    const prev = form.quality;
+    clear(sel);
+    for (const m of allowed) {
+      sel.appendChild(el('option', { value: m }, MODEL_LABELS[m] || m));
+    }
+    // If previous choice no longer allowed (vd Omni Flash khi vào I2V),
+    // fallback sang lite_lp (miễn phí, an toàn nhất)
+    form.quality = allowed.includes(prev) ? prev : 'lite_lp';
+    sel.value = form.quality;
+    if (help) {
+      help.textContent = form.mode === 'i2v'
+        ? 'Omni Flash chưa hỗ trợ Image-to-Video (Google sẽ cập nhật sau)'
+        : 'Omni Flash hỗ trợ 4/6/8/10s, các model Veo 3.1 cố định 8s';
+    }
+  }
+  refreshModelDropdown();
+
   // Restore selects from form
-  root.querySelector('#cnt-quality').value = form.quality;
   root.querySelector('#cnt-aspect').value = form.aspect;
   root.querySelector('#cnt-resolution').value = form.resolution;
 

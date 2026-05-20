@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.2"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -219,8 +219,11 @@ def video_model_for(quality: str, mode: str = "t2v", duration: int = 8) -> str:
     m = (mode or "t2v").lower()
     if quality == "omni_flash":
         d = clamp_duration("omni_flash", duration)
-        sub = "t2v" if m != "i2v" else "i2v"
-        return f"abra_{sub}_{d}s"
+        # Currently CONFIRMED only `abra_t2v_<N>s` from labs.google capture.
+        # Try the same key for both T2V and I2V (Google's image-input is
+        # signalled via `startImage` field, model itself may be unified).
+        # If 500 from Google → need to capture I2V payload separately.
+        return f"abra_t2v_{d}s"
     table = I2V_MODEL_MAP if m == "i2v" else T2V_MODEL_MAP
     return table.get(quality, table["fast"])
 

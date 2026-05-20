@@ -26,3 +26,6 @@ Thumbs.db
 # Logs
 *.log
 debug_credits.png
+debug_poll.json
+debug_*.json
+debug_*.png
