@@ -21,6 +21,7 @@ class SettingsUpdate(BaseModel):
     theme: str | None = None
     auto_rotate_accounts: bool | None = None
     auto_save_outputs: bool | None = None
+    browser_backend: str | None = None    # "chrome" | "cloak"
 
 
 @router.get("")
@@ -50,6 +51,26 @@ async def update_settings(body: SettingsUpdate):
         if v is not None:
             db.set_setting(k, v)
     return {"ok": True, "updated": list(payload.keys())}
+
+
+@router.get("/cloak-status")
+async def cloak_status():
+    """Check whether CloakBrowser package is installed and binary is cached."""
+    from ..services.cloak_backend import is_available
+    installed, err = is_available()
+    info: dict = {"installed": installed, "error": err}
+    if installed:
+        try:
+            import cloakbrowser
+            info["version"] = getattr(cloakbrowser, "__version__", "unknown")
+            try:
+                bi = cloakbrowser.binary_info()
+                info["binary"] = bi
+            except Exception as e:
+                info["binary_error"] = str(e)
+        except Exception as e:
+            info["error"] = str(e)
+    return info
 
 
 @router.post("/test-gemini")

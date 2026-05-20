@@ -17,8 +17,10 @@ datas = [
 ]
 
 # Heavy 3rd-party packages need full collection (binaries + data + submodules)
+# Note: 'cloakbrowser' is optional — if user uses Cloak backend, the package
+# is bundled but its Chromium binary (~200MB) auto-downloads on first run.
 for pkg in ('playwright', 'curl_cffi', 'httpx', 'uvicorn', 'fastapi', 'starlette',
-            'websockets', 'pydantic_core'):
+            'websockets', 'pydantic_core', 'cloakbrowser'):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -37,6 +39,10 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('backend')
 hiddenimports += collect_submodules('playwright')
+try:
+    hiddenimports += collect_submodules('cloakbrowser')
+except Exception:
+    pass
 
 
 a = Analysis(

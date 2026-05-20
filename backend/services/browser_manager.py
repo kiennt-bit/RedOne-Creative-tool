@@ -134,14 +134,25 @@ class BrowserManager:
         cookie_path: str,
         url: str = "",
     ) -> Page:
-        """Get or create a page for an account (NAV Tools pattern).
-        
-        Reuses existing context if alive, otherwise creates new one.
+        """Get or create a page for an account.
+
+        Dispatches to the configured backend (`browser_backend` setting):
+          - "chrome" (default): system Chrome via Playwright launch
+          - "cloak"           : CloakBrowser stealth Chromium
         """
+        # Backend dispatch — read setting fresh each call so user can switch
+        # in Settings page without needing a restart.
+        backend = self._configured_backend()
+        if backend == "cloak":
+            from .cloak_backend import get_cloak_manager
+            return await get_cloak_manager().get_page(
+                account_id, email, cookie_path, url,
+            )
+
+        # Default Chrome flow
         self._ref_counts[account_id] = self._ref_counts.get(account_id, 0) + 1
-        
+
         async with self._lock:
-            # Check if existing page is alive
             if account_id in self._pages:
                 page = self._pages[account_id]
                 if not page.is_closed():
@@ -153,8 +164,19 @@ class BrowserManager:
                     except Exception:
                         log.warning(f"Page stale for {email}, recreating...")
                         await self._close_account_internal(account_id)
-            
+
             return await self._create_page(account_id, email, cookie_path, url)
+
+    def _configured_backend(self) -> str:
+        """Read `browser_backend` setting from DB. Defaults to 'chrome'."""
+        try:
+            from ..database import db
+            val = db.get_setting("browser_backend", "chrome")
+            if isinstance(val, str) and val.lower() in ("chrome", "cloak"):
+                return val.lower()
+        except Exception:
+            pass
+        return "chrome"
     
     async def _create_page(
         self,
@@ -247,11 +269,21 @@ class BrowserManager:
         return []
     
     async def close_context(self, account_id: int):
-        """Close browser for account (with ref counting like NAV Tools)."""
+        """Close browser for account (with ref counting like NAV Tools).
+        Also closes Cloak context if it owns this account.
+        """
+        # Close Cloak side too if active
+        try:
+            from .cloak_backend import get_cloak_manager, _singleton
+            if _singleton is not None:
+                await get_cloak_manager().close_context(account_id)
+        except Exception:
+            pass
+
         self._ref_counts[account_id] = self._ref_counts.get(account_id, 1) - 1
         if self._ref_counts[account_id] > 0:
             return
-        
+
         async with self._lock:
             await self._close_account_internal(account_id)
     

@@ -7,6 +7,13 @@ google-genai>=0.3.0
 Pillow>=10.0.0
 yt-dlp>=2024.1.0
 imageio-ffmpeg>=0.4.9
+
+# Optional — stealth Chromium for bypassing Google reCAPTCHA detection.
+# User chooses backend in Settings → "Trình duyệt sử dụng". If not
+# installed, tool falls back gracefully to system Chrome.
+# First time CloakBrowser is invoked, binary (~200MB) auto-downloads.
+cloakbrowser>=0.3.28
+
 # Optional heavy AI (install only if needed):
 # rembg>=2.0.0
 # openai-whisper>=20231117

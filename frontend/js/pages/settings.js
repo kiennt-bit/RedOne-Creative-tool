@@ -67,6 +67,16 @@ export function renderSettings(root) {
         + 'Tắt: lưu tạm vào outputs/_pending/ (auto dọn dẹp sau 24h) — '
         + 'bạn chủ động chọn file muốn giữ qua nút "Lưu vào outputs" ở gallery.'),
     ),
+    el('div', { class: 'field-group' },
+      el('label', { class: 'field-label' }, 'Trình duyệt sử dụng'),
+      el('select', { class: 'select', id: 'st-backend' },
+        el('option', { value: 'chrome' }, 'Google Chrome (mặc định)'),
+        el('option', { value: 'cloak' }, 'CloakBrowser — Stealth Chromium (chống detect tốt hơn)'),
+      ),
+      el('div', { class: 'field-help', id: 'st-backend-help' },
+        'Chuyển sang CloakBrowser nếu hay bị reCAPTCHA 403 / 429. Lần đầu sẽ auto-download binary ~200MB.'),
+      el('div', { id: 'st-cloak-status', style: { marginTop: '6px' } }),
+    ),
     el('button', { class: 'btn btn-primary', id: 'st-save2' }, icon('check'), 'Lưu hệ thống'),
   );
   layout.appendChild(infoCard);
@@ -106,6 +116,23 @@ export function renderSettings(root) {
       root.querySelector('#st-quality').value = s.default_quality || 'fast';
       const autosave = s.auto_save_outputs === undefined ? true : !!s.auto_save_outputs;
       root.querySelector('#st-autosave').checked = autosave;
+      const backend = (s.browser_backend || 'chrome').toLowerCase();
+      root.querySelector('#st-backend').value = backend;
+      // Show Cloak install status under the dropdown
+      try {
+        const cs = await api.settings.cloakStatus();
+        const wrap = root.querySelector('#st-cloak-status');
+        wrap.innerHTML = '';
+        if (cs.installed) {
+          wrap.appendChild(el('div', { class: 'chip chip-green' },
+            `✓ CloakBrowser v${cs.version || '?'} đã cài`));
+        } else {
+          wrap.appendChild(el('div', { class: 'chip chip-yellow' },
+            'CloakBrowser chưa cài — sẽ báo lỗi nếu chọn'));
+          wrap.appendChild(el('div', { class: 'field-help', style: { marginTop: '4px' } },
+            'Cài: chạy `pip install cloakbrowser` trong terminal, rồi restart tool'));
+        }
+      } catch (e) { /* non-fatal */ }
       // Fetch system info (includes GitHub repo + paths)
       let sysInfo = {};
       try { sysInfo = await api.system.info(); } catch (e) { /* ignore */ }
@@ -168,6 +195,7 @@ export function renderSettings(root) {
         default_aspect: root.querySelector('#st-aspect').value,
         default_quality: root.querySelector('#st-quality').value,
         auto_save_outputs: root.querySelector('#st-autosave').checked,
+        browser_backend: root.querySelector('#st-backend').value,
       });
       // Sync into in-memory store so newly-opened pages pick up the changes.
       // Pages already initialized keep their form values (intentional — user's
