@@ -12,11 +12,21 @@ const form = {
   quality: 'fast',
   aspect: '16:9',
   resolution: '720p',
+  duration: 8,
   concurrent: 1,
   taskName: '',
   // Per-prompt reference images (I2V): same index as prompts
   //   refs[i] = { path, previewUrl, name } | null
   refs: [],
+};
+
+// Duration options per model — only Omni Flash supports 10s
+const DURATION_BY_MODEL = {
+  omni_flash: [4, 6, 8, 10],
+  lite:       [4, 6, 8],
+  fast:       [4, 6, 8],
+  quality:    [4, 6, 8],
+  lite_lp:    [4, 6, 8],
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -71,10 +81,11 @@ export function renderContent(root) {
           el('div', { class: 'field-group' },
             el('label', { class: 'field-label' }, 'Model'),
             el('select', { class: 'select', id: 'cnt-quality' },
-              option('lite_lp', 'Veo 3.1 — Lite [Lower Priority] · Miễn phí'),
-              option('lite',    'Veo 3.1 — Lite · 5 credit'),
-              option('fast',    'Veo 3.1 — Fast · 10 credit'),
-              option('quality', 'Veo 3.1 — Quality · 100 credit'),
+              option('omni_flash', 'Omni Flash (hỗ trợ 10s)'),
+              option('lite_lp',    'Veo 3.1 — Lite [Lower Priority] · Miễn phí'),
+              option('lite',       'Veo 3.1 — Lite · 5 credit'),
+              option('fast',       'Veo 3.1 — Fast · 10 credit'),
+              option('quality',    'Veo 3.1 — Quality · 100 credit'),
             ),
           ),
           el('div', { class: 'form-row' },
@@ -92,6 +103,12 @@ export function renderContent(root) {
                 option('1080p', '1080p Full HD'),
               ),
             ),
+          ),
+          el('div', { class: 'field-group' },
+            el('label', { class: 'field-label' }, 'Độ dài video'),
+            el('select', { class: 'select', id: 'cnt-duration' }),
+            el('div', { class: 'field-help', id: 'cnt-duration-help' },
+              'Chọn 4s, 6s, 8s. Chỉ Omni Flash hỗ trợ 10s.'),
           ),
           el('div', { class: 'field-group', id: 'i2v-image-block' },
             el('label', { class: 'field-label' }, 'Ảnh tham chiếu (Image-to-Video)'),
@@ -246,6 +263,30 @@ export function renderContent(root) {
   root.querySelector('#cnt-quality').value = form.quality;
   root.querySelector('#cnt-aspect').value = form.aspect;
   root.querySelector('#cnt-resolution').value = form.resolution;
+
+  // Populate duration dropdown based on currently-selected model, and
+  // keep it in sync when the user picks a different model.
+  function refreshDurationDropdown() {
+    const sel = root.querySelector('#cnt-duration');
+    if (!sel) return;
+    const allowed = DURATION_BY_MODEL[form.quality] || [4, 6, 8];
+    const prev = form.duration;
+    clear(sel);
+    for (const d of allowed) {
+      sel.appendChild(el('option', { value: String(d) }, `${d} giây`));
+    }
+    // Try to keep the previous choice if still allowed, else fall back to 8s
+    form.duration = allowed.includes(prev) ? prev : (allowed.includes(8) ? 8 : allowed[allowed.length - 1]);
+    sel.value = String(form.duration);
+  }
+  refreshDurationDropdown();
+  root.querySelector('#cnt-quality').addEventListener('change', (e) => {
+    form.quality = e.target.value;
+    refreshDurationDropdown();
+  });
+  root.querySelector('#cnt-duration').addEventListener('change', (e) => {
+    form.duration = parseInt(e.target.value, 10) || 8;
+  });
   root.querySelector('#i2v-image-block').style.display = form.mode === 'i2v' ? 'block' : 'none';
   refreshBulkPromptBlock();
 
@@ -583,6 +624,7 @@ export function renderContent(root) {
     form.quality = root.querySelector('#cnt-quality').value;
     form.aspect = root.querySelector('#cnt-aspect').value;
     form.resolution = root.querySelector('#cnt-resolution').value;
+    form.duration = parseInt(root.querySelector('#cnt-duration').value || '8', 10);
     form.concurrent = parseInt(root.querySelector('#cnt-concurrent').value || '1', 10);
 
     let ref_images = null;
@@ -610,6 +652,7 @@ export function renderContent(root) {
         quality: form.quality,
         aspect_ratio: form.aspect,
         resolution: form.resolution,
+        duration: form.duration,
         concurrent: form.concurrent,
         reference_images: ref_images,
         task_name: form.taskName || defaultTaskName('video'),

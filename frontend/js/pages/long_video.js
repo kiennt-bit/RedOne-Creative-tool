@@ -7,9 +7,18 @@ const form = {
   prompts: ['', ''],
   quality: 'fast',
   aspect: '16:9',
+  duration: 8,
   taskName: '',
   startImagePath: null,
   startImagePreviewUrl: null,
+};
+
+const DURATION_BY_MODEL = {
+  omni_flash: [4, 6, 8, 10],
+  lite:       [4, 6, 8],
+  fast:       [4, 6, 8],
+  quality:    [4, 6, 8],
+  lite_lp:    [4, 6, 8],
 };
 
 function defaultTaskName() {
@@ -59,11 +68,18 @@ export function renderLongVideo(root) {
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Model'),
         el('select', { class: 'select', id: 'lv-quality' },
+          el('option', { value: 'omni_flash' }, 'Omni Flash (hỗ trợ 10s)'),
           el('option', { value: 'lite_lp' }, 'Veo 3.1 — Lite [Lower Priority] · Miễn phí'),
           el('option', { value: 'lite' },    'Veo 3.1 — Lite · 5 credit/cảnh'),
           el('option', { value: 'fast' },    'Veo 3.1 — Fast · 10 credit/cảnh'),
           el('option', { value: 'quality' }, 'Veo 3.1 — Quality · 100 credit/cảnh'),
         ),
+      ),
+      el('div', { class: 'field-group' },
+        el('label', { class: 'field-label' }, 'Độ dài mỗi cảnh'),
+        el('select', { class: 'select', id: 'lv-duration' }),
+        el('div', { class: 'field-help' },
+          'Chỉ Omni Flash hỗ trợ 10s. Các model Veo: 4s, 6s, 8s.'),
       ),
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Tỉ lệ'),
@@ -98,6 +114,27 @@ export function renderLongVideo(root) {
   // Restore selects
   root.querySelector('#lv-quality').value = form.quality;
   root.querySelector('#lv-aspect').value = form.aspect;
+
+  function refreshDurationDropdown() {
+    const sel = root.querySelector('#lv-duration');
+    if (!sel) return;
+    const allowed = DURATION_BY_MODEL[form.quality] || [4, 6, 8];
+    const prev = form.duration;
+    clear(sel);
+    for (const d of allowed) {
+      sel.appendChild(el('option', { value: String(d) }, `${d} giây`));
+    }
+    form.duration = allowed.includes(prev) ? prev : (allowed.includes(8) ? 8 : allowed[allowed.length - 1]);
+    sel.value = String(form.duration);
+  }
+  refreshDurationDropdown();
+  root.querySelector('#lv-quality').addEventListener('change', (e) => {
+    form.quality = e.target.value;
+    refreshDurationDropdown();
+  });
+  root.querySelector('#lv-duration').addEventListener('change', (e) => {
+    form.duration = parseInt(e.target.value, 10) || 8;
+  });
   const nameInput = root.querySelector('#lv-taskname');
   nameInput.value = form.taskName || defaultTaskName();
   form.taskName = nameInput.value;
@@ -202,12 +239,14 @@ export function renderLongVideo(root) {
     if (prompts.length < 2) return toast('Cần ít nhất 2 cảnh', 'warning');
     form.quality = root.querySelector('#lv-quality').value;
     form.aspect = root.querySelector('#lv-aspect').value;
+    form.duration = parseInt(root.querySelector('#lv-duration').value || '8', 10);
     setLoading(startBtn, true);
     try {
       const res = await api.longVideo.start({
         prompts,
         quality: form.quality,
         aspect_ratio: form.aspect,
+        duration: form.duration,
         start_image_path: form.startImagePath,
         task_name: form.taskName || defaultTaskName(),
       });

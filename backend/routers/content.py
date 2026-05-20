@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..database import db
 from ..config import (
     OUTPUT_DIR, TaskStatus, ItemStatus, ASPECT_RATIOS, RESOLUTIONS,
-    video_model_for, get_save_dir,
+    video_model_for, get_save_dir, clamp_duration,
 )
 from ..ws_hub import hub
 from ..queue_manager import queue
@@ -26,9 +26,10 @@ router = APIRouter(prefix="/api/content", tags=["content"])
 class StartTaskRequest(BaseModel):
     mode: str  # "t2v" | "i2v"
     prompts: list[str]
-    quality: str = "fast"            # lite | fast | quality | lite_lp | fast_lp
+    quality: str = "fast"            # omni_flash | lite | fast | quality | lite_lp
     aspect_ratio: str = "16:9"
     resolution: str = "720p"
+    duration: int = 8                # 4 | 6 | 8 | 10 (10 only for omni_flash)
     concurrent: int = 1
     reference_images: Optional[list[str]] = None  # uploaded image paths
     character_images: Optional[dict] = None
@@ -142,6 +143,7 @@ async def _process_task(task_id: int):
                             model_key=model_key,
                             aspect_ratio=aspect,
                             reference_image=ref_media,
+                            duration=int(task.get("duration") or 8),
                         )
                         done_state = await client.wait_for_completion(workflow)
                         if done_state and done_state.get("state") != "FAILED":
@@ -244,12 +246,15 @@ async def start_content_task(body: StartTaskRequest):
     if not body.prompts:
         raise HTTPException(400, "Prompts required")
     task_name = (body.task_name or "").strip() or f"video_{int(time.time())}"
+    # Clamp duration to what the chosen model actually supports
+    safe_duration = clamp_duration(body.quality, body.duration)
     task_id = db.create_task(
         name=task_name,
         mode=body.mode,
         quality=body.quality,
         aspect_ratio=body.aspect_ratio,
         resolution=body.resolution,
+        duration=safe_duration,
         concurrent=body.concurrent,
         total_count=len(body.prompts),
         status=TaskStatus.PENDING.value,

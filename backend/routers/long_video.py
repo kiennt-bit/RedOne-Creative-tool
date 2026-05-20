@@ -12,7 +12,10 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ..database import db
-from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, video_model_for, EXTEND_MODEL_MAP, get_save_dir
+from ..config import (
+    OUTPUT_DIR, TaskStatus, ItemStatus, video_model_for, EXTEND_MODEL_MAP,
+    get_save_dir, clamp_duration,
+)
 from ..queue_manager import queue
 from ..ws_hub import hub
 from ..services.ffmpeg_utils import concat_videos
@@ -25,6 +28,7 @@ class LongVideoRequest(BaseModel):
     prompts: list[str]
     quality: str = "fast"
     aspect_ratio: str = "16:9"
+    duration: int = 8                # per-scene duration: 4|6|8 (10 for omni_flash)
     start_image_path: Optional[str] = None
     task_name: Optional[str] = None
 
@@ -77,6 +81,7 @@ async def _run_long_video(task_id: int):
                         model_key=first_key,
                         aspect_ratio=task["aspect_ratio"],
                         reference_image=ref_media,
+                        duration=int(task.get("duration") or 8),
                     )
                 else:
                     wf = await client.extend_video(
@@ -145,11 +150,13 @@ async def start_long_video(body: LongVideoRequest):
     if len(body.prompts) > 20:
         raise HTTPException(400, "Tối đa 20 prompts")
     task_name = (body.task_name or "").strip() or f"long_video_{int(time.time())}"
+    safe_duration = clamp_duration(body.quality, body.duration)
     task_id = db.create_task(
         name=task_name,
         mode="long_video",
         quality=body.quality,
         aspect_ratio=body.aspect_ratio,
+        duration=safe_duration,
         total_count=len(body.prompts),
         status=TaskStatus.PENDING.value,
     )

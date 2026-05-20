@@ -47,6 +47,7 @@ class Database:
             image_model TEXT,
             aspect_ratio TEXT,
             resolution TEXT,
+            duration INTEGER DEFAULT 8,
             concurrent INTEGER DEFAULT 1,
             output_folder TEXT,
             total_count INTEGER DEFAULT 0,
@@ -77,6 +78,17 @@ class Database:
         );
         """)
         self.conn.commit()
+        # Idempotent column additions for existing DBs (older schema)
+        self._add_column_if_missing("tasks", "duration", "INTEGER DEFAULT 8")
+
+    def _add_column_if_missing(self, table: str, column: str, decl: str):
+        try:
+            cols = [r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                self.conn.commit()
+        except Exception:
+            pass
 
     # ---------------------- Accounts ----------------------
     def get_accounts(self) -> list[dict]:

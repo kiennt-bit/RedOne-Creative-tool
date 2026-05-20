@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -131,27 +131,30 @@ def cost_for_model_key(model_key: str) -> int:
     return 100
 
 
-# Veo 3.1 model keys (4 quality tiers — matches current labs.google dropdown)
-#   lite     → Veo 3.1 - Lite         (paid, cheap)
-#   fast     → Veo 3.1 - Fast         (paid, balanced)
-#   quality  → Veo 3.1 - Quality      (paid, best)
-#   lite_lp  → Veo 3.1 - Lite [Lower Priority]  (FREE, slow queue)
+# Video generation model keys (matches current labs.google dropdown)
+#   omni_flash → Omni Flash                  (new model, supports 4s/6s/8s/10s)
+#   lite       → Veo 3.1 - Lite              (paid, cheap)
+#   fast       → Veo 3.1 - Fast              (paid, balanced)
+#   quality    → Veo 3.1 - Quality           (paid, best)
+#   lite_lp    → Veo 3.1 - Lite [Lower Priority]  (FREE queue)
 T2V_MODEL_MAP = {
-    "lite":    "veo_3_1_t2v_lite",
-    "fast":    "veo_3_1_t2v_fast_ultra",
-    "quality": "veo_3_1_t2v",
-    "lite_lp": "veo_3_1_t2v_lite_low_priority",
+    "omni_flash": "omni_flash_t2v",
+    "lite":       "veo_3_1_t2v_lite",
+    "fast":       "veo_3_1_t2v_fast_ultra",
+    "quality":    "veo_3_1_t2v",
+    "lite_lp":    "veo_3_1_t2v_lite_low_priority",
 }
 
-# Image-to-Video model keys (Veo 3.1)
+# Image-to-Video model keys
 I2V_MODEL_MAP = {
-    "lite":    "veo_3_1_i2v_lite",
-    "fast":    "veo_3_1_i2v_s_fast_ultra",
-    "quality": "veo_3_1_i2v_s",
-    "lite_lp": "veo_3_1_i2v_lite_low_priority",
+    "omni_flash": "omni_flash_i2v",
+    "lite":       "veo_3_1_i2v_lite",
+    "fast":       "veo_3_1_i2v_s_fast_ultra",
+    "quality":    "veo_3_1_i2v_s",
+    "lite_lp":    "veo_3_1_i2v_lite_low_priority",
 }
 
-# Extend video model keys
+# Extend video model keys (Omni Flash doesn't currently support extend)
 EXTEND_MODEL_MAP = {
     "lite":    "veo_3_1_extension_lite",
     "fast":    "veo_3_1_extension_fast_ultra",
@@ -159,12 +162,44 @@ EXTEND_MODEL_MAP = {
     "lite_lp": "veo_3_1_extension_lite_low_priority",
 }
 
+# Allowed duration options (seconds) per model preset.
+# Omni Flash is the only model that supports 10s.
+VIDEO_DURATIONS_BY_MODEL = {
+    "omni_flash": [4, 6, 8, 10],
+    "lite":       [4, 6, 8],
+    "fast":       [4, 6, 8],
+    "quality":    [4, 6, 8],
+    "lite_lp":    [4, 6, 8],
+}
+
+DEFAULT_VIDEO_DURATION = 8
+
+
+def allowed_durations(quality: str) -> list[int]:
+    """Return the duration options (seconds) allowed for a given model preset."""
+    return VIDEO_DURATIONS_BY_MODEL.get(quality, [4, 6, 8])
+
+
+def clamp_duration(quality: str, duration: int | None) -> int:
+    """Clamp a requested duration to the closest allowed value for the model."""
+    allowed = allowed_durations(quality)
+    if not duration or duration not in allowed:
+        return DEFAULT_VIDEO_DURATION if DEFAULT_VIDEO_DURATION in allowed else allowed[-1]
+    return duration
+
+
 # Human-readable labels (used by frontend if it asks for the list)
 VIDEO_MODEL_LABELS = [
-    {"value": "lite",    "label": "Veo 3.1 — Lite",                    "cost": 5},
-    {"value": "fast",    "label": "Veo 3.1 — Fast",                    "cost": 10},
-    {"value": "quality", "label": "Veo 3.1 — Quality",                 "cost": 100},
-    {"value": "lite_lp", "label": "Veo 3.1 — Lite [Lower Priority]",   "cost": 0},
+    {"value": "omni_flash", "label": "Omni Flash",                          "cost": None,
+     "supports": [4, 6, 8, 10]},
+    {"value": "lite",       "label": "Veo 3.1 — Lite",                      "cost": 5,
+     "supports": [4, 6, 8]},
+    {"value": "fast",       "label": "Veo 3.1 — Fast",                      "cost": 10,
+     "supports": [4, 6, 8]},
+    {"value": "quality",    "label": "Veo 3.1 — Quality",                   "cost": 100,
+     "supports": [4, 6, 8]},
+    {"value": "lite_lp",    "label": "Veo 3.1 — Lite [Lower Priority]",     "cost": 0,
+     "supports": [4, 6, 8]},
 ]
 
 # Backwards-compat alias (some old code still references VIDEO_MODEL_MAP)

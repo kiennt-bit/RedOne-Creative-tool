@@ -822,14 +822,18 @@ class FlowClient:
         reference_image: Optional[str] = None,
         model_key: str = "veo_3_generate_video_fast",
         aspect_ratio: str = "LANDSCAPE",
+        duration: int = 8,
     ) -> Optional[str]:
         """Submit video generation request. Returns operation/generation ID.
-        
+
         Args:
             prompt: Text prompt for video generation
             reference_image: media_id from upload_image() (UUID)
             model_key: Model key (e.g. veo_3_generate_video_fast)
             aspect_ratio: LANDSCAPE or PORTRAIT
+            duration: Video length in seconds. Most Veo 3.1 models accept 4/6/8;
+                Omni Flash also accepts 10. Field name `videoLengthSeconds` is
+                what Google Labs sends per Network capture.
         """
         await self.ensure_token()
         
@@ -867,9 +871,10 @@ class FlowClient:
                     "videoModelKey": model_key,
                     "startImage": {
                         "mediaId": reference_image
-                    }
+                    },
+                    "videoLengthSeconds": int(duration),
                 }
-                
+
                 payload = {
                     "clientContext": {
                         "tool": "VIDEO_FX",
@@ -921,6 +926,7 @@ class FlowClient:
                             }
                         },
                         "videoModelKey": model_key,
+                        "videoLengthSeconds": int(duration),
                         "metadata": {},
                         "seed": _rng.randint(10000, 99999)
                     }],
