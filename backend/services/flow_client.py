@@ -872,8 +872,12 @@ class FlowClient:
                     "startImage": {
                         "mediaId": reference_image
                     },
-                    "videoLengthSeconds": int(duration),
                 }
+                # NOTE: duration field name unknown — Google rejected
+                # `videoLengthSeconds`. Disabled until we capture the real
+                # payload from labs.google DevTools. Default model duration
+                # (usually 8s) applies.
+                _ = duration  # silence unused-var, keep API signature stable
 
                 payload = {
                     "clientContext": {
@@ -926,7 +930,7 @@ class FlowClient:
                             }
                         },
                         "videoModelKey": model_key,
-                        "videoLengthSeconds": int(duration),
+                        # duration field disabled — see I2V branch note above
                         "metadata": {},
                         "seed": _rng.randint(10000, 99999)
                     }],
