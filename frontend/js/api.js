@@ -70,6 +70,8 @@ export const api = {
     start: (payload) => request('POST', '/api/image/start', { body: payload }),
     cancel: (taskId) => request('POST', `/api/image/cancel/${taskId}`),
     upscale: (itemId, resolution) => request('POST', `/api/image/upscale/${itemId}`, { params: { resolution } }),
+    upscaleBatch: (itemIds, resolution) => request('POST', '/api/image/upscale-batch',
+      { body: { item_ids: itemIds, resolution } }),
   },
 
   analyzer: {
@@ -95,6 +97,7 @@ export const api = {
     update: (payload) => request('POST', '/api/settings', { body: payload }),
     testGemini: () => request('POST', '/api/settings/test-gemini'),
     logs: (limit = 200) => request('GET', '/api/settings/logs', { params: { limit } }),
+    cloakStatus: () => request('GET', '/api/settings/cloak-status'),
   },
 
   system: {

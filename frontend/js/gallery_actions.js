@@ -15,9 +15,17 @@ import { api } from './api.js';
  * @param {(paths: string[]) => void} [opts.onClearSelected] - remove items
  *        from the in-memory gallery (NOT delete from disk). If absent, the
  *        Clear button is hidden.
+ * @param {(card: HTMLElement) => {id:number, mediaId:string}|null} [opts.itemOf]
+ *        - extract item_id + media_id from a card; required for upscale.
+ *          When provided, "Tải về 2K" / "Tải về 4K" buttons appear next to
+ *          download. Only items with a media_id are sent.
+ * @param {(itemIds:number[], resolution:'2k'|'4k') => Promise} [opts.onUpscale]
+ *        - called when user clicks 2K/4K. Receives the IDs of selected items
+ *          that actually have a media_id. Responsible for showing progress
+ *          and triggering download of the result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
 
   function selectedCards() {
@@ -61,8 +69,45 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     toast(`Đã bỏ ${paths.length} mục khỏi danh sách (file vẫn còn trên ổ đĩa)`, 'info');
   }, 'btn-danger');
 
+  // Upscale buttons — only created when an itemOf+onUpscale pair is provided
+  // (image page passes them; video pages don't, since Flow upscale is image-only).
+  const upscaleEnabled = !!(itemOf && onUpscale);
+
+  function selectedUpscalable() {
+    return selectedCards()
+      .map(itemOf)
+      .filter(x => x && x.id != null && x.mediaId);
+  }
+
+  async function runUpscale(res) {
+    const items = selectedUpscalable();
+    if (!items.length) {
+      return toast(
+        'Không có ảnh nào upscale được — ảnh phải được tạo từ phiên bản tool mới '
+        + '(có media_id). Hãy generate lại để dùng tính năng này.',
+        'warning',
+      );
+    }
+    const skipped = selectedCards().length - items.length;
+    if (skipped > 0) {
+      toast(`Bỏ qua ${skipped} ảnh không có media_id`, 'info');
+    }
+    try {
+      await onUpscale(items.map(x => x.id), res);
+    } catch (e) {
+      toast(`Upscale lỗi: ${e.message}`, 'error');
+    }
+  }
+
+  const btn2k = upscaleEnabled
+    ? iconBtn('upscale', 'Tải về 2K', () => runUpscale('2k'))
+    : null;
+  const btn4k = upscaleEnabled
+    ? iconBtn('upscale', 'Tải về 4K', () => runUpscale('4k'), 'btn-primary')
+    : null;
+
   // Hide selection actions by default
-  const selectionButtons = [btnDownload, btnSave, btnClear];
+  const selectionButtons = [btnDownload, btn2k, btn4k, btnSave, btnClear].filter(Boolean);
   for (const b of selectionButtons) b.style.display = 'none';
 
   function refreshCounter() {
@@ -72,6 +117,8 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     btnDownload.style.display = show ? '' : 'none';
     btnSave.style.display = show ? '' : 'none';
     btnClear.style.display = (show && onClearSelected) ? '' : 'none';
+    if (btn2k) btn2k.style.display = show ? '' : 'none';
+    if (btn4k) btn4k.style.display = show ? '' : 'none';
   }
 
   const toolbar = el('div', {
@@ -104,6 +151,8 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     counterEl,
     el('div', { style: { flex: 1 } }),
     btnDownload,
+    ...(btn2k ? [btn2k] : []),
+    ...(btn4k ? [btn4k] : []),
     btnSave,
     btnClear,
   );
@@ -115,6 +164,8 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
       download: '<path d="M5 20h14v-2H5v2z M12 4v10l4-4 1 1-5 5-5-5 1-1 4 4V4z" fill="currentColor"/>',
       plus: '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2"/>',
       trash: '<path d="M6 7v13h12V7H6z M9 4h6v2H9z" fill="none" stroke="currentColor" stroke-width="2"/>',
+      // 4 arrows pointing outward — universal "upscale" / "expand" glyph
+      upscale: '<path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" stroke="currentColor" stroke-width="2" fill="none"/>',
     };
     const wrap = document.createElement('span');
     wrap.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14">${icons[name] || ''}</svg>`;

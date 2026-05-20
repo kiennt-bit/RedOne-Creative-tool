@@ -210,6 +210,46 @@ export function renderImage(root) {
   );
   right.appendChild(resultsCard);
 
+  // Run upscale on selected items. Backend processes sequentially and
+  // streams WS events (`upscale_started` / `_completed` / `_error`) which
+  // tasks_store translates into per-item `upscale_status` flags — the
+  // gallery chips re-render automatically via the normal notify path.
+  // When the batch finishes, auto-download all the upscaled files.
+  async function runBatchUpscale(itemIds, resolution) {
+    const initial = toast(
+      `Đang upscale ${itemIds.length} ảnh → ${resolution.toUpperCase()}… `
+      + `(có thể mất 5-10s/ảnh)`,
+      'info', 0,   // sticky toast — won't auto-dismiss
+    );
+    try {
+      const r = await api.image.upscaleBatch(itemIds, resolution);
+      // Auto-download results
+      const paths = (r.completed || []).map(c => c.path);
+      if (paths.length === 1) {
+        const url = (r.completed[0].url) || ('/files/' + paths[0].split(/outputs[\\/]/).pop());
+        const a = document.createElement('a');
+        a.href = url; a.download = '';
+        document.body.appendChild(a); a.click(); a.remove();
+      } else if (paths.length > 1) {
+        try {
+          await api.files.downloadZip(paths);
+        } catch (e) {
+          toast(`Tải zip lỗi: ${e.message}`, 'error');
+        }
+      }
+      const okN = (r.completed || []).length;
+      const errN = (r.errors || []).length;
+      if (errN === 0) {
+        toast(`Đã upscale ${okN} ảnh → ${resolution.toUpperCase()}`, 'success');
+      } else {
+        toast(`Upscale: ${okN} OK, ${errN} lỗi`, errN ? 'warning' : 'success');
+      }
+    } finally {
+      // Dismiss the sticky toast
+      if (initial && typeof initial.remove === 'function') initial.remove();
+    }
+  }
+
   async function clearCurrentTask() {
     const tid = currentTaskId();
     if (!tid) return;
@@ -448,6 +488,13 @@ export function renderImage(root) {
       toolbar = makeSelectionToolbar({
         getCards: () => [...grid.querySelectorAll('.scene-card[data-path]')],
         pathOf: (card) => card.dataset.path,
+        itemOf: (card) => {
+          const id = parseInt(card.dataset.itemId || '0', 10);
+          return id ? { id, mediaId: card.dataset.mediaId || null } : null;
+        },
+        onUpscale: async (itemIds, resolution) => {
+          await runBatchUpscale(itemIds, resolution);
+        },
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {
           tasksStore.removeItemsByPath(taskState.id, paths);
@@ -492,18 +539,39 @@ export function renderImage(root) {
       );
 
       if (it.status === 'done' && it.output_url) {
-        info.appendChild(el('div', { class: 'scene-actions' },
+        const actions = el('div', { class: 'scene-actions' },
           el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
             icon('download', 14), 'Tải'),
           el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy URL', onclick: () => {
             navigator.clipboard.writeText(location.origin + it.output_url);
             toast('Đã copy URL', 'success');
           } }, icon('copy', 14)),
-        ));
+        );
+        // Upscale status chip — shows realtime progress when 2K/4K is running
+        if (it.upscale_status === 'running') {
+          actions.appendChild(el('span', { class: 'chip chip-blue', style: { marginLeft: 'auto' } },
+            `Đang upscale ${(it.upscale_resolution || '').toUpperCase()}…`));
+        } else if (it.upscale_status === 'done' && it.upscale_url) {
+          actions.appendChild(el('a', {
+            href: it.upscale_url, download: '', target: '_blank',
+            class: 'chip chip-green', style: { marginLeft: 'auto', textDecoration: 'none' },
+            title: 'File upscaled — click để tải về',
+          }, `✓ ${(it.upscale_resolution || '').toUpperCase()}`));
+        } else if (it.upscale_status === 'error') {
+          actions.appendChild(el('span', {
+            class: 'chip chip-red', style: { marginLeft: 'auto' },
+            title: it.upscale_error || 'Lỗi upscale',
+          }, 'Upscale lỗi'));
+        }
+        info.appendChild(actions);
       }
       card.appendChild(info);
       // Attach checkbox only if file exists server-side
       if (it.status === 'done' && it.output_path) {
+        // Stamp the item_id + media_id onto the card so the toolbar's upscale
+        // handler can grab them without re-querying the store.
+        if (it.id != null) card.dataset.itemId = String(it.id);
+        if (it.media_id) card.dataset.mediaId = it.media_id;
         attachCardCheckbox(card, it.output_path, toolbar);
       }
       grid.appendChild(card);

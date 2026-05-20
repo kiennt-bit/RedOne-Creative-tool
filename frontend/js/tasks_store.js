@@ -232,7 +232,53 @@ ws.on('item_completed', (d) => {
   it.status = 'done';
   it.output_url = pathToUrl(d.output_path);
   it.output_path = d.output_path;
+  // Carry media_id through so the gallery's upscale button (2K/4K) can
+  // pass it to the backend without an extra DB lookup.
+  if (d.media_id) it.media_id = d.media_id;
   notify(d.task_id);
+});
+
+// ── Upscale (2K / 4K) events ──────────────────────────────
+ws.on('upscale_started', (d) => {
+  if (!d || d.item_id == null) return;
+  // Find the item across all tasks (upscale doesn't carry task_id)
+  for (const t of tasks.values()) {
+    const it = t.items.find(x => x.id === d.item_id);
+    if (it) {
+      it.upscale_status = 'running';
+      it.upscale_resolution = d.resolution;
+      it.upscale_error = null;
+      notify(t.id);
+      return;
+    }
+  }
+});
+
+ws.on('upscale_completed', (d) => {
+  if (!d || d.item_id == null) return;
+  for (const t of tasks.values()) {
+    const it = t.items.find(x => x.id === d.item_id);
+    if (it) {
+      it.upscale_status = 'done';
+      it.upscale_url = d.url;
+      it.upscale_path = d.path;
+      notify(t.id);
+      return;
+    }
+  }
+});
+
+ws.on('upscale_error', (d) => {
+  if (!d || d.item_id == null) return;
+  for (const t of tasks.values()) {
+    const it = t.items.find(x => x.id === d.item_id);
+    if (it) {
+      it.upscale_status = 'error';
+      it.upscale_error = d.error || 'Lỗi upscale';
+      notify(t.id);
+      return;
+    }
+  }
 });
 
 ws.on('item_error', (d) => {

@@ -30,7 +30,7 @@ export function $$(sel, root = document) { return [...root.querySelectorAll(sel)
 // Toasts
 export function toast(message, type = 'info', duration = 4000) {
   const stack = $('#toast-stack');
-  if (!stack) return;
+  if (!stack) return null;
   const icon = {
     success: '✓', error: '✕', info: 'i', warning: '!',
   }[type] || 'i';
@@ -46,12 +46,16 @@ export function toast(message, type = 'info', duration = 4000) {
     el('span', null, message),
   );
   stack.appendChild(t);
-  setTimeout(() => {
+  function fadeAndRemove() {
     t.style.transition = 'opacity 0.3s, transform 0.3s';
     t.style.opacity = '0';
     t.style.transform = 'translateX(40px)';
     setTimeout(() => t.remove(), 300);
-  }, duration);
+  }
+  // duration <= 0 → sticky toast; caller must dismiss via the returned handle.
+  // Useful for "Đang xử lý..." messages that finish on an async response.
+  if (duration > 0) setTimeout(fadeAndRemove, duration);
+  return { remove: fadeAndRemove, el: t };
 }
 
 // Modal

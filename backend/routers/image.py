@@ -127,10 +127,14 @@ async def _process_image_task(task_id: int):
                     if not ok:
                         raise RuntimeError("Image download failed")
 
+                    # Persist media_id so the upscale endpoint can find it later
+                    # (Google Flow upsampleImage API needs the original mediaId).
+                    extra["media_id"] = result.get("media_id")
                     db.update_item(
                         item["id"],
                         status=ItemStatus.COMPLETED.value,
                         output_path=str(out_path),
+                        extra_json=json.dumps(extra),
                     )
                     async with counter_lock:
                         counters["done"] += 1
@@ -141,6 +145,7 @@ async def _process_image_task(task_id: int):
                         "kind": "image",
                         "width": result.get("width"),
                         "height": result.get("height"),
+                        "media_id": result.get("media_id"),
                     })
                 except fc_mod.SessionDeadError as sde:
                     db.update_item(
@@ -240,27 +245,74 @@ async def cancel_image(task_id: int):
     return {"ok": True, "queue_cancel": ok}
 
 
+def _find_item(item_id: int) -> tuple[Optional[dict], Optional[dict]]:
+    """Look up (task, item) by item_id across all tasks. Returns (None, None)
+    if not found. Only searches the last 200 tasks — enough for practical use,
+    since upscale is invoked from the currently visible gallery."""
+    for t in db.list_tasks(limit=200):
+        for it in db.get_task_items(t["id"]):
+            if it["id"] == item_id:
+                return t, it
+    return None, None
+
+
+def _save_upscaled(item_id: int, resolution: str, raw_bytes: bytes, task: dict) -> Path:
+    """Save upscaled JPEG bytes to outputs/image/<date>/<task>/upscaled/."""
+    # Mirror the original task's folder so the upscaled file lives next to
+    # the source — keeps everything tidy when the user opens the folder.
+    base_dir = get_save_dir("image", f"task_{task['id']}", task.get("name"))
+    upscale_dir = base_dir / "upscaled"
+    upscale_dir.mkdir(parents=True, exist_ok=True)
+    out_path = upscale_dir / f"item_{item_id}_{resolution}.jpg"
+    out_path.write_bytes(raw_bytes)
+    return out_path
+
+
+async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, task: dict) -> dict:
+    """Run one upscale call + save result. Raises on failure."""
+    r = await client.upscale_image(media_id, resolution=resolution)
+    raw = r.get("encoded_image")
+    if not raw:
+        # Fallback path: response had fifeUrl instead of encodedImage
+        url = r.get("download_url")
+        if not url:
+            raise RuntimeError("Upscale response thiếu cả encoded_image lẫn download_url")
+        out_dir = get_save_dir("image", f"task_{task['id']}", task.get("name")) / "upscaled"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"item_{item_id}_{resolution}.png"
+        ok = await client.download_image(url, str(out_path))
+        if not ok:
+            raise RuntimeError("Tải ảnh upscaled thất bại")
+    else:
+        out_path = _save_upscaled(item_id, resolution, raw, task)
+
+    rel = out_path.relative_to(OUTPUT_DIR).as_posix()
+    return {
+        "item_id": item_id,
+        "path": str(out_path),
+        "url": f"/files/{rel}",
+        "width": r.get("width"),
+        "height": r.get("height"),
+    }
+
+
 @router.post("/upscale/{item_id}")
 async def upscale_existing(item_id: int, resolution: str = "4k"):
-    """Upscale an already-generated image to 2K/4K via Google Labs."""
-    # Find the item + its task to get the media_id
-    task = None
-    item = None
-    for t in db.list_tasks(limit=200):
-        items = db.get_task_items(t["id"])
-        for it in items:
-            if it["id"] == item_id:
-                task = t
-                item = it
-                break
-        if item:
-            break
-    if not item:
+    """Upscale a single already-generated image to 2K/4K via Google Labs."""
+    if resolution.lower() not in ("2k", "4k"):
+        raise HTTPException(400, "resolution phải là '2k' hoặc '4k'")
+
+    task, item = _find_item(item_id)
+    if not item or not task:
         raise HTTPException(404, "Item not found")
     extra = json.loads(item.get("extra_json") or "{}")
     media_id = extra.get("media_id")
     if not media_id:
-        raise HTTPException(400, "Item không có media_id (cần generate qua endpoint /start)")
+        raise HTTPException(
+            400,
+            "Item không có media_id — ảnh này được tạo trước khi tool lưu media_id, "
+            "cần generate lại để dùng tính năng upscale."
+        )
 
     acc = _pick_account()
     if not acc:
@@ -271,13 +323,135 @@ async def upscale_existing(item_id: int, resolution: str = "4k"):
         page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
         client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
         await client.ensure_token()
-        r = await client.upscale_image(media_id, resolution=resolution)
-        out_dir = OUTPUT_DIR / "image" / "upscaled"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"upscaled_{item_id}_{resolution}.png"
-        ok = await client.download_image(r["download_url"], str(out_path))
-        if not ok:
-            raise RuntimeError("Download failed")
-        return {"ok": True, "path": str(out_path), "url": f"/files/{out_path.relative_to(OUTPUT_DIR).as_posix()}"}
+        result = await _do_upscale_one(client, item_id, media_id, resolution, task)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
     except Exception as e:
+        log.exception(f"Upscale item={item_id} failed")
+        raise HTTPException(500, str(e))
+
+
+class UpscaleBatchRequest(BaseModel):
+    item_ids: list[int]
+    resolution: str = "4k"   # "2k" | "4k"
+
+
+@router.post("/upscale-batch")
+async def upscale_batch(body: UpscaleBatchRequest):
+    """Upscale multiple already-generated images sequentially.
+
+    Sequential rather than parallel because Google's reCAPTCHA gets stricter
+    when we hit the API in rapid bursts from one account — burnt this lesson
+    on generate_image already. Each upscale is sync (~5-10s), and the frontend
+    shows live toast progress so the wait is OK.
+
+    Broadcasts WebSocket events per item so the gallery can update the
+    upscale-status chip in realtime:
+      • upscale_started      {item_id, resolution}
+      • upscale_completed    {item_id, resolution, path, url}
+      • upscale_error        {item_id, resolution, error}
+    """
+    if body.resolution.lower() not in ("2k", "4k"):
+        raise HTTPException(400, "resolution phải là '2k' hoặc '4k'")
+    if not body.item_ids:
+        raise HTTPException(400, "item_ids rỗng")
+
+    # Resolve all items + media_ids up-front; reject batch if any item has
+    # no media_id rather than partially failing mid-way.
+    resolved: list[tuple[dict, dict, str]] = []
+    skipped: list[dict] = []
+    for iid in body.item_ids:
+        task, item = _find_item(iid)
+        if not item or not task:
+            skipped.append({"item_id": iid, "error": "Không tìm thấy item"})
+            continue
+        extra = json.loads(item.get("extra_json") or "{}")
+        mid = extra.get("media_id")
+        if not mid:
+            skipped.append({"item_id": iid, "error": "Thiếu media_id (ảnh tạo trước khi tool support upscale)"})
+            continue
+        resolved.append((task, item, mid))
+
+    if not resolved:
+        raise HTTPException(
+            400,
+            "Tất cả items đã chọn đều không có media_id — "
+            "tính năng upscale chỉ áp dụng cho ảnh tạo từ phiên bản 1.0.3 trở đi."
+        )
+
+    acc = _pick_account()
+    if not acc:
+        raise HTTPException(400, "Không có account khả dụng")
+
+    completed: list[dict] = []
+    errors: list[dict] = []
+
+    try:
+        from ..services import browser_manager as bm_mod, flow_client as fc_mod
+        bm = bm_mod.BrowserManager()
+        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
+        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        try:
+            await client.ensure_token()
+        except fc_mod.SessionDeadError as sde:
+            db.update_account(acc["id"], enabled=0)
+            await hub.broadcast("account_session_dead", {
+                "account_id": acc["id"], "email": acc["email"], "reason": sde.reason,
+            })
+            raise HTTPException(401, f"Session {acc['email']} hết hạn — login lại")
+
+        total = len(resolved)
+        await hub.broadcast("upscale_batch_started", {
+            "total": total, "resolution": body.resolution,
+        })
+
+        for idx, (task, item, mid) in enumerate(resolved, 1):
+            iid = item["id"]
+            await hub.broadcast("upscale_started", {
+                "item_id": iid, "resolution": body.resolution,
+                "index": idx, "total": total,
+            })
+            try:
+                r = await _do_upscale_one(client, iid, mid, body.resolution, task)
+                completed.append(r)
+                await hub.broadcast("upscale_completed", {
+                    "item_id": iid, "resolution": body.resolution,
+                    "path": r["path"], "url": r["url"],
+                    "index": idx, "total": total,
+                })
+            except fc_mod.SessionDeadError as sde:
+                db.update_account(acc["id"], enabled=0)
+                await hub.broadcast("account_session_dead", {
+                    "account_id": acc["id"], "email": acc["email"], "reason": sde.reason,
+                })
+                errors.append({"item_id": iid, "error": f"Session hết hạn: {sde.reason}"})
+                # Stop batch — without a working session, the rest will also fail
+                break
+            except Exception as e:
+                log.warning(f"Upscale item={iid} failed: {e}")
+                errors.append({"item_id": iid, "error": str(e)})
+                await hub.broadcast("upscale_error", {
+                    "item_id": iid, "resolution": body.resolution,
+                    "error": str(e),
+                    "index": idx, "total": total,
+                })
+
+        await hub.broadcast("upscale_batch_done", {
+            "total": total,
+            "completed": len(completed),
+            "errors": len(errors),
+            "resolution": body.resolution,
+        })
+
+        return {
+            "ok": True,
+            "completed": completed,
+            "errors": errors + skipped,
+            "resolution": body.resolution,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Upscale batch crashed")
         raise HTTPException(500, str(e))
