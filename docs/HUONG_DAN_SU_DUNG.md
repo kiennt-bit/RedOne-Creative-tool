@@ -3,7 +3,7 @@
 > Tool tạo ảnh và video AI sử dụng credit miễn phí từ Google Labs Flow
 > (Veo 3.1 cho video, Nano Banana / Imagen 4 cho ảnh).
 >
-> **Phiên bản:** v1.0.1 · **Hệ điều hành:** Windows 10/11
+> **Phiên bản:** v1.0.3 · **Hệ điều hành:** Windows 10/11
 
 ---
 
@@ -215,6 +215,41 @@ Mỗi ảnh xong sẽ:
 
 ✅ File lưu tại `outputs\image\<ngày>\<tên_task>\item_X.png`. Mặc định **auto-lưu**, có thể tắt trong Cài đặt.
 
+### 4.6. Tải về 2K / 4K (Upscale qua Google Flow) — *mới từ v1.0.3*
+
+Sau khi ảnh tạo xong, có thể dùng **chính engine upscale của Google Flow** (model PINHOLE) để nâng độ phân giải lên **2K (2048px)** hoặc **4K (3840px)**, chất lượng tốt hơn nhiều so với upscale bằng AI cục bộ.
+
+#### Cách dùng
+
+1. Trong gallery ảnh kết quả, **tick checkbox** ở góc các ảnh muốn upscale (chọn 1 hoặc nhiều)
+2. Toolbar phía trên gallery sẽ hiện 2 nút mới: **`⤡ Tải về 2K`** và **`⤡ Tải về 4K`** (màu đỏ)
+3. Bấm nút → tool gửi từng ảnh lên Google Flow tuần tự (~5-10 giây/ảnh)
+4. Trên mỗi ảnh sẽ hiện chip realtime:
+   - 🔵 **`Đang upscale 2K…`** — đang gửi request
+   - 🟢 **`✓ 2K`** (clickable link) — xong, click để tải file
+   - 🔴 **`Upscale lỗi`** — thất bại (hover tooltip để xem chi tiết)
+5. Khi tất cả xong → **auto-download zip** chứa ảnh đã upscaled
+
+![Bước 4.6: Nút 2K/4K trong toolbar gallery](./screenshots/26_upscale_buttons.png)
+
+> *📸 Screenshot cần chụp: Toolbar gallery với 2 ảnh được tick, hiện đủ 2 nút "Tải về 2K" + "Tải về 4K" cạnh nút "Tải về đã chọn"*
+
+#### File output
+
+File upscaled lưu cạnh ảnh gốc:
+- Gốc: `outputs\image\<ngày>\<tên_task>\item_1.png`
+- 2K/4K: `outputs\image\<ngày>\<tên_task>\upscaled\item_1_2k.jpg` (JPEG vì Google trả về JPEG)
+
+#### Lưu ý quan trọng
+
+⚠️ **Chỉ upscale được ảnh tạo từ v1.0.3 trở lên.** Ảnh tạo bằng phiên bản cũ không có `media_id` lưu trong DB nên không gọi được API upscale của Google → tool sẽ báo *"Không có ảnh nào upscale được — generate lại để dùng tính năng này"*. Giải pháp: tạo lại ảnh sau khi đã update tool lên v1.0.3.
+
+⚠️ **Mỗi ảnh upscale tốn ~5-10 giây.** Tool xử lý **tuần tự** (không parallel) để tránh Google reCAPTCHA chấm điểm bot. Đừng đóng tab trong lúc đang upscale, sẽ mất tiến trình.
+
+⚠️ **Tốn credit Google?** Theo capture network thấy `userPaygateTier: PAYGATE_TIER_TWO` → vẫn dùng credit miễn phí của account hiện tại. Không tốn credit riêng cho upscale (tính đến v1.0.3 — có thể Google đổi sau).
+
+⚠️ **Không upscale được video.** Tính năng này hiện chỉ áp dụng cho ảnh. Google chưa public API upscale video qua Flow.
+
 ---
 
 ## 5. Tạo video Text-to-Video (T2V)
@@ -359,15 +394,19 @@ Bấm **📁** trên row task → File Explorer tự mở folder chứa file.
 
 > *📸 Screenshot cần chụp: File Explorer Windows mở folder `outputs/image/2026-05-15/chan_dung_nu_studio/` chứa 4-5 file PNG*
 
-### 7.3. Đa-chọn để tải về / xóa khỏi list
+### 7.3. Đa-chọn để tải về / upscale / xóa khỏi list
 
 Trên gallery (Tạo Ảnh / Tạo Video), mỗi card có **checkbox góc trên phải**:
 - Tick các card muốn xử lý
-- Toolbar hiện **3 nút mới**: **Tải về đã chọn** (zip nếu >1 file) | **Lưu vào outputs** (nếu auto-save đang tắt) | **Bỏ khỏi danh sách** (chỉ clear UI, file vẫn còn)
+- Toolbar hiện các nút action:
+  - **`Tải về đã chọn`** — tải về (zip nếu chọn >1 file)
+  - **`⤡ Tải về 2K`** + **`⤡ Tải về 4K`** *(chỉ trên trang Tạo Ảnh, từ v1.0.3)* — upscale qua Google Flow → xem mục [4.6](#46-tải-về-2k--4k-upscale-qua-google-flow--mới-từ-v103)
+  - **`+ Lưu vào outputs`** — chuyển file tạm sang permanent (chỉ hiện khi auto-save tắt)
+  - **`✕ Bỏ khỏi danh sách`** — clear khỏi UI, file vẫn ở `outputs\`
 
 ![Bước 7.3: Multi-select gallery](./screenshots/24_multiselect_actions.png)
 
-> *📸 Screenshot cần chụp: Gallery với 3 cards được tick (checkbox đỏ), toolbar hiện đầy đủ 5 nút (Chọn tất cả / Bỏ chọn / Tải / Lưu / Bỏ)*
+> *📸 Screenshot cần chụp: Gallery Tạo Ảnh với 3 cards được tick (checkbox đỏ), toolbar hiện đầy đủ các nút (Chọn tất cả / Bỏ chọn / Tải / 2K / 4K / Lưu / Bỏ)*
 
 ### 7.4. Retry task lỗi
 
@@ -393,9 +432,50 @@ Sidebar → **Hệ Thống** → **Cài Đặt**.
 | **Tỉ lệ mặc định** | Áp dụng khi mở trang mới (vd 9:16 cho TikTok creator) |
 | **Chất lượng mặc định** | Lite [LP] (free) / Lite / Fast / Quality |
 | **Tự lưu vào outputs/** | Bật = lưu vĩnh viễn. Tắt = lưu tạm `outputs/_pending/` (auto xóa sau 24h) |
+| **Trình duyệt sử dụng** *(v1.0.3+)* | `Google Chrome` (mặc định) hoặc `CloakBrowser` (stealth — xem chi tiết bên dưới) |
 | **Kiểm tra cập nhật** | Bấm nút → fetch GitHub API, hiển thị version mới + link tải |
 
 Dark mode: nút toggle ở sidebar dưới cùng (icon mặt trời / mặt trăng).
+
+### 8.1. CloakBrowser — Stealth Chromium *(tuỳ chọn, v1.0.3+)*
+
+CloakBrowser là một bản Chromium đã được patch 49 chỗ ở source C++ để **ẩn các đặc điểm nhận diện automation** (`navigator.webdriver`, CDP fingerprint, behavioral signals, v.v.). Hữu ích khi:
+
+- ✋ Account bị Google chấm điểm reCAPTCHA cao → liên tục 403 / 429
+- 🚫 Login Google bị chặn "unusual activity"
+- 🐢 Gen ảnh/video hay bị reject vì "bot detection"
+
+#### Khi nào cần
+
+Mặc định tool dùng **Chrome thật trên máy bạn**, đã đủ tốt cho 95% trường hợp. Chỉ chuyển sang CloakBrowser nếu **liên tục** bị Google chặn (không phải 1-2 lần ngẫu nhiên).
+
+#### Cách bật
+
+1. Cài CloakBrowser (nếu chưa có): mở terminal/cmd, chạy:
+   ```cmd
+   pip install cloakbrowser
+   ```
+2. Trong tool → Cài Đặt → **Trình duyệt sử dụng** → chọn `CloakBrowser — Stealth Chromium`
+3. Bấm **Lưu hệ thống**
+4. Lần **đầu** dùng: CloakBrowser tự download Chromium binary ~200MB (chỉ 1 lần) — đợi 1-2 phút
+5. Test login lại một account → CloakBrowser sẽ mở thay vì Chrome thật
+
+#### Khác biệt
+
+| | Google Chrome | CloakBrowser |
+|---|---|---|
+| **Cài đặt** | Có sẵn nếu đã cài Chrome | `pip install cloakbrowser` + ~200MB binary |
+| **Tốc độ** | Nhanh | Chậm hơn ~10-20% (overhead patches) |
+| **Detection** | Có thể bị Google flag | Khó detect hơn nhiều |
+| **Profile** | Dùng chung profile máy bạn | Profile riêng tại `data/browser_profiles/cloak/<account_id>/` |
+
+#### Status chip dưới dropdown
+
+Tool tự check CloakBrowser đã cài chưa, hiển thị chip xanh/vàng:
+- 🟢 **`✓ CloakBrowser v0.3.x đã cài`** — sẵn sàng dùng
+- 🟡 **`CloakBrowser chưa cài — sẽ báo lỗi nếu chọn`** — chạy `pip install cloakbrowser` rồi restart tool
+
+⚠️ Lưu ý: CloakBrowser dùng profile riêng → **cookies/login của Chrome thật KHÔNG sync sang**. Phải login lại từng account khi đổi sang CloakBrowser. Đổi ngược lại Chrome thì login lại 1 lần nữa.
 
 ---
 
@@ -411,6 +491,8 @@ Dark mode: nút toggle ở sidebar dưới cùng (icon mặt trời / mặt tră
 | **"Failed to enqueue generation"** | Google queue tạm thời từ chối | Tool tự retry 3 lần. Bình thường |
 | **Chrome login không tự đóng** | User chưa vào Flow page (vẫn ở Google homepage) | Trong Chrome, gõ `labs.google/fx/tools/video-fx` → tool sẽ detect cookies |
 | **Banner cập nhật không hiện** | Cache TTL 5 phút | Settings → "Kiểm tra cập nhật" để force check ngay |
+| **"Không có ảnh nào upscale được"** *(v1.0.3+)* | Ảnh tạo từ phiên bản cũ hơn v1.0.3, không có `media_id` lưu trong DB | Generate lại ảnh đó sau khi đã update tool — ảnh mới sẽ upscale được |
+| **Upscale 2K/4K báo HTTP 401/403** | Session account hết hạn / reCAPTCHA score cao | Login lại account ở tab Tài Khoản. Nếu vẫn lỗi, thử đổi sang CloakBrowser (Cài đặt → Trình duyệt sử dụng) |
 
 ### Log file
 
