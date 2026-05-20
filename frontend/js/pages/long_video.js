@@ -13,12 +13,13 @@ const form = {
   startImagePreviewUrl: null,
 };
 
+// Duration encoded in model_key for Omni Flash; Veo 3.1 keys are fixed at 8s.
 const DURATION_BY_MODEL = {
   omni_flash: [4, 6, 8, 10],
-  lite:       [4, 6, 8],
-  fast:       [4, 6, 8],
-  quality:    [4, 6, 8],
-  lite_lp:    [4, 6, 8],
+  lite:       [8],
+  fast:       [8],
+  quality:    [8],
+  lite_lp:    [8],
 };
 
 function defaultTaskName() {
@@ -79,7 +80,7 @@ export function renderLongVideo(root) {
         el('label', { class: 'field-label' }, 'Độ dài mỗi cảnh'),
         el('select', { class: 'select', id: 'lv-duration' }),
         el('div', { class: 'field-help' },
-          'Chỉ Omni Flash hỗ trợ 10s. Các model Veo: 4s, 6s, 8s.'),
+          'Chỉ Omni Flash hỗ trợ tùy chỉnh (4/6/8/10s). Veo 3.1 cố định 8s.'),
       ),
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Tỉ lệ'),

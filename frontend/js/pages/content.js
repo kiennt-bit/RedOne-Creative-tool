@@ -20,13 +20,15 @@ const form = {
   refs: [],
 };
 
-// Duration options per model — only Omni Flash supports 10s
+// Duration options per model. Confirmed via labs.google network capture:
+//   Omni Flash internal key = abra_<mode>_<N>s — has 4/6/8/10
+//   Veo 3.1 keys don't have duration suffix → always 8s for now
 const DURATION_BY_MODEL = {
   omni_flash: [4, 6, 8, 10],
-  lite:       [4, 6, 8],
-  fast:       [4, 6, 8],
-  quality:    [4, 6, 8],
-  lite_lp:    [4, 6, 8],
+  lite:       [8],
+  fast:       [8],
+  quality:    [8],
+  lite_lp:    [8],
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -108,7 +110,7 @@ export function renderContent(root) {
             el('label', { class: 'field-label' }, 'Độ dài video'),
             el('select', { class: 'select', id: 'cnt-duration' }),
             el('div', { class: 'field-help', id: 'cnt-duration-help' },
-              'Chọn 4s, 6s, 8s. Chỉ Omni Flash hỗ trợ 10s.'),
+              'Chỉ Omni Flash hỗ trợ tùy chỉnh (4/6/8/10s). Veo 3.1 cố định 8s.'),
           ),
           el('div', { class: 'field-group', id: 'i2v-image-block' },
             el('label', { class: 'field-label' }, 'Ảnh tham chiếu (Image-to-Video)'),

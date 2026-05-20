@@ -133,7 +133,10 @@ async def _process_task(task_id: int):
                         ref_media = await client.upload_image(ref_image_path)
 
                     mode = "i2v" if ref_media else "t2v"
-                    model_key = video_model_for(quality, mode)
+                    # For Omni Flash, duration is encoded in the model_key
+                    # itself (abra_t2v_10s). For Veo 3.1, static keys.
+                    duration_s = int(task.get("duration") or 8)
+                    model_key = video_model_for(quality, mode, duration_s)
 
                     done_state = None
                     last_err = None
@@ -143,7 +146,7 @@ async def _process_task(task_id: int):
                             model_key=model_key,
                             aspect_ratio=aspect,
                             reference_image=ref_media,
-                            duration=int(task.get("duration") or 8),
+                            duration=duration_s,
                         )
                         done_state = await client.wait_for_completion(workflow)
                         if done_state and done_state.get("state") != "FAILED":

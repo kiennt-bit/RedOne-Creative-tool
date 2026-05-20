@@ -75,13 +75,14 @@ async def _run_long_video(task_id: int):
                     if start_image and Path(start_image).exists():
                         ref_media = await client.upload_image(start_image)
                     mode = "i2v" if ref_media else "t2v"
-                    first_key = video_model_for(quality, mode)
+                    duration_s = int(task.get("duration") or 8)
+                    first_key = video_model_for(quality, mode, duration_s)
                     wf = await client.generate_video(
                         prompt=item["prompt"],
                         model_key=first_key,
                         aspect_ratio=task["aspect_ratio"],
                         reference_image=ref_media,
-                        duration=int(task.get("duration") or 8),
+                        duration=duration_s,
                     )
                 else:
                     wf = await client.extend_video(

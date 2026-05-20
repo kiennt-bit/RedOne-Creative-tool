@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -131,27 +131,21 @@ def cost_for_model_key(model_key: str) -> int:
     return 100
 
 
-# Video generation model keys (matches current labs.google dropdown)
-#   omni_flash → Omni Flash                  (new model, supports 4s/6s/8s/10s)
-#   lite       → Veo 3.1 - Lite              (paid, cheap)
-#   fast       → Veo 3.1 - Fast              (paid, balanced)
-#   quality    → Veo 3.1 - Quality           (paid, best)
-#   lite_lp    → Veo 3.1 - Lite [Lower Priority]  (FREE queue)
+# Static model keys for Veo 3.1 (always 8s default — Google internally
+# locks duration here. To support 4s/6s for Veo we'd need to capture each
+# duration variant's key from the labs.google network tab.)
 T2V_MODEL_MAP = {
-    "omni_flash": "omni_flash_t2v",
-    "lite":       "veo_3_1_t2v_lite",
-    "fast":       "veo_3_1_t2v_fast_ultra",
-    "quality":    "veo_3_1_t2v",
-    "lite_lp":    "veo_3_1_t2v_lite_low_priority",
+    "lite":    "veo_3_1_t2v_lite",
+    "fast":    "veo_3_1_t2v_fast_ultra",
+    "quality": "veo_3_1_t2v",
+    "lite_lp": "veo_3_1_t2v_lite_low_priority",
 }
 
-# Image-to-Video model keys
 I2V_MODEL_MAP = {
-    "omni_flash": "omni_flash_i2v",
-    "lite":       "veo_3_1_i2v_lite",
-    "fast":       "veo_3_1_i2v_s_fast_ultra",
-    "quality":    "veo_3_1_i2v_s",
-    "lite_lp":    "veo_3_1_i2v_lite_low_priority",
+    "lite":    "veo_3_1_i2v_lite",
+    "fast":    "veo_3_1_i2v_s_fast_ultra",
+    "quality": "veo_3_1_i2v_s",
+    "lite_lp": "veo_3_1_i2v_lite_low_priority",
 }
 
 # Extend video model keys (Omni Flash doesn't currently support extend)
@@ -163,13 +157,21 @@ EXTEND_MODEL_MAP = {
 }
 
 # Allowed duration options (seconds) per model preset.
-# Omni Flash is the only model that supports 10s.
+#
+# CONFIRMED via labs.google network capture:
+#   Omni Flash uses `abra_<mode>_<N>s` pattern — duration encoded in key.
+#
+# UNCONFIRMED:
+#   Veo 3.1 (lite/fast/quality/lite_lp) — capture only showed
+#   `veo_3_1_t2v_lite` etc. without a duration suffix. Google may always
+#   render at 8s for those keys. Until we capture an actual 4s/6s Veo
+#   payload, we only expose 8s for Veo models.
 VIDEO_DURATIONS_BY_MODEL = {
     "omni_flash": [4, 6, 8, 10],
-    "lite":       [4, 6, 8],
-    "fast":       [4, 6, 8],
-    "quality":    [4, 6, 8],
-    "lite_lp":    [4, 6, 8],
+    "lite":       [8],
+    "fast":       [8],
+    "quality":    [8],
+    "lite_lp":    [8],
 }
 
 DEFAULT_VIDEO_DURATION = 8
@@ -206,9 +208,19 @@ VIDEO_MODEL_LABELS = [
 VIDEO_MODEL_MAP = T2V_MODEL_MAP
 
 
-def video_model_for(quality: str, mode: str = "t2v") -> str:
-    """Pick the correct Veo model key for a given quality preset + mode."""
+def video_model_for(quality: str, mode: str = "t2v", duration: int = 8) -> str:
+    """Pick the correct internal model key.
+
+    - Omni Flash: duration is encoded in the key itself.
+      Pattern: `abra_<t2v|i2v>_<duration>s` (eg. `abra_t2v_10s`).
+    - Veo 3.1: static keys from T2V/I2V_MODEL_MAP. Duration is ignored
+      because we haven't captured Veo's duration-variant keys yet.
+    """
     m = (mode or "t2v").lower()
+    if quality == "omni_flash":
+        d = clamp_duration("omni_flash", duration)
+        sub = "t2v" if m != "i2v" else "i2v"
+        return f"abra_{sub}_{d}s"
     table = I2V_MODEL_MAP if m == "i2v" else T2V_MODEL_MAP
     return table.get(quality, table["fast"])
 
