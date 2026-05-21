@@ -23,9 +23,12 @@ import { api } from './api.js';
  *        - called when user clicks 2K/4K. Receives the IDs of selected items
  *          that actually have a media_id. Responsible for showing progress
  *          and triggering download of the result.
+ * @param {(paths:string[]) => Promise} [opts.onRemoveWatermark]
+ *        - called when user clicks "Xóa watermark". Receives selected card
+ *          file paths. Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
 
   function selectedCards() {
@@ -106,8 +109,21 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     ? iconBtn('upscale', 'Tải về 4K', () => runUpscale('4k'), 'btn-primary')
     : null;
 
+  // Watermark removal — uses built-in Veo mask. Only shown when caller
+  // wired an onRemoveWatermark handler (video pages do, image pages don't).
+  const wmEnabled = !!onRemoveWatermark;
+  const btnWm = wmEnabled ? iconBtn('eraser', 'Xóa watermark', async () => {
+    const paths = selectedCards().map(pathOf).filter(Boolean);
+    if (!paths.length) return;
+    try {
+      await onRemoveWatermark(paths);
+    } catch (e) {
+      toast(`Xóa watermark lỗi: ${e.message}`, 'error');
+    }
+  }, 'btn-warm') : null;
+
   // Hide selection actions by default
-  const selectionButtons = [btnDownload, btn2k, btn4k, btnSave, btnClear].filter(Boolean);
+  const selectionButtons = [btnDownload, btn2k, btn4k, btnWm, btnSave, btnClear].filter(Boolean);
   for (const b of selectionButtons) b.style.display = 'none';
 
   function refreshCounter() {
@@ -119,6 +135,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     btnClear.style.display = (show && onClearSelected) ? '' : 'none';
     if (btn2k) btn2k.style.display = show ? '' : 'none';
     if (btn4k) btn4k.style.display = show ? '' : 'none';
+    if (btnWm) btnWm.style.display = show ? '' : 'none';
   }
 
   const toolbar = el('div', {
@@ -153,6 +170,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     btnDownload,
     ...(btn2k ? [btn2k] : []),
     ...(btn4k ? [btn4k] : []),
+    ...(btnWm ? [btnWm] : []),
     btnSave,
     btnClear,
   );
@@ -166,6 +184,8 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
       trash: '<path d="M6 7v13h12V7H6z M9 4h6v2H9z" fill="none" stroke="currentColor" stroke-width="2"/>',
       // 4 arrows pointing outward — universal "upscale" / "expand" glyph
       upscale: '<path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" stroke="currentColor" stroke-width="2" fill="none"/>',
+      // Eraser glyph for watermark removal
+      eraser: '<path d="M3 17l8-8 6 6-8 8H3v-6zM14 6l4-4 6 6-4 4-6-6z" stroke="currentColor" stroke-width="1.6" fill="none"/>',
     };
     const wrap = document.createElement('span');
     wrap.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14">${icons[name] || ''}</svg>`;
@@ -203,4 +223,88 @@ export function attachCardCheckbox(card, path, toolbar) {
   const thumb = card.querySelector('.scene-thumb');
   if (thumb) thumb.appendChild(cb);
   return card;
+}
+
+
+/**
+ * Build a "Gen lại N lỗi" button for the gallery card-header. Wraps
+ * api.tasks.retry() with a confirmation, loading state, and clear toast
+ * feedback. Returns the button element (or null when there's nothing to
+ * retry).
+ *
+ * Shape:
+ *   <button class="btn btn-sm btn-warning">🔄 Gen lại 3 lỗi</button>
+ *
+ * Why a separate helper instead of inlining in each page:
+ *  - 3 generator pages (content, image, long_video) need identical
+ *    behavior. Without this helper they'd diverge over time.
+ *  - The retry flow has subtle ordering: call backend → reset store
+ *    immediately so user sees instant spinners → WS events take over.
+ *
+ * @param {Object} opts
+ * @param {() => {taskId:number, errorCount:number, status:string}} opts.getTaskState
+ *        - Pulled fresh on each click so the button reflects current state
+ *          (errors may have been resolved before the click).
+ * @param {(taskId:number) => void} opts.onResetUI
+ *        - Page-level hook called after backend confirms; usually wraps
+ *          tasksStore.resetErrorItems(taskId).
+ * @returns {HTMLElement}
+ */
+export function makeRetryFailedButton({ getTaskState, onResetUI }) {
+  const labelSpan = el('span', null, 'Gen lại lỗi');
+  const btn = el('button', {
+    class: 'btn btn-sm btn-warm hidden',
+    title: 'Gen lại các item bị lỗi của task hiện tại (giữ nguyên item đã hoàn thành)',
+    onclick: async () => {
+      const s = getTaskState();
+      if (!s || !s.taskId || !s.errorCount) return;
+      if (s.status === 'running' || s.status === 'pending') {
+        return toast('Task đang chạy — không thể retry. Đợi xong hoặc Hủy trước.', 'warning');
+      }
+      const orig = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = 'Đang gửi…';
+      try {
+        await api.tasks.retry(s.taskId);
+        // Reset local UI immediately. Subsequent WS events will drive the
+        // per-item progress (pending → generating → done/error).
+        if (onResetUI) onResetUI(s.taskId);
+        toast(`Đã gen lại ${s.errorCount} item lỗi`, 'success');
+      } catch (e) {
+        toast(`Retry lỗi: ${e.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = orig;
+      }
+    },
+  },
+    // Retry/refresh icon — circular arrow
+    (() => {
+      const wrap = document.createElement('span');
+      wrap.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14">'
+        + '<path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3" stroke="currentColor" stroke-width="2" fill="none"/>'
+        + '<path d="M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="2" fill="none"/>'
+        + '</svg>';
+      return wrap.firstChild;
+    })(),
+    labelSpan,
+  );
+
+  /** Page calls this from renderTaskGallery() with the latest state. */
+  btn.refresh = (taskState) => {
+    if (!taskState || !taskState.error || taskState.error <= 0) {
+      btn.classList.add('hidden');
+      return;
+    }
+    // Don't show while task is still running — would race with the WS stream.
+    // Backend also rejects retry on PENDING/RUNNING with 400.
+    if (taskState.status === 'running' || taskState.status === 'pending') {
+      btn.classList.add('hidden');
+      return;
+    }
+    labelSpan.textContent = `Gen lại ${taskState.error} lỗi`;
+    btn.classList.remove('hidden');
+  };
+
+  return btn;
 }

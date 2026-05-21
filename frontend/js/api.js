@@ -85,6 +85,11 @@ export const api = {
   media: {
     bgRemove: (form) => request('POST', '/api/media/bg-remove', { form }),
     watermark: (form) => request('POST', '/api/media/watermark-remove', { form }),
+    videoWatermark: (form) => request('POST', '/api/media/video-watermark-remove', { form }),
+    videoWatermarkBatch: (paths, opts = {}) => request('POST', '/api/media/video-watermark-remove-batch',
+      { body: { paths, method: opts.method || 'auto', device: opts.device || 'auto',
+                gpu_ratio: opts.gpuRatio || 70 } }),
+    lamaStatus: () => request('GET', '/api/media/lama-status'),
     upscale: (form) => request('POST', '/api/media/upscale', { form }),
     audioMerge: (form) => request('POST', '/api/media/audio-merge', { form }),
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
@@ -103,6 +108,9 @@ export const api = {
   system: {
     info: () => request('GET', '/api/system/info'),
     checkUpdate: (force = false) => request('GET', '/api/system/check-update', { params: { force } }),
+    updateState: () => request('GET', '/api/system/update-state'),
+    startUpdate: () => request('POST', '/api/system/start-update'),
+    applyUpdate: () => request('POST', '/api/system/apply-update'),
   },
 
   tasks: {
@@ -117,6 +125,7 @@ export const api = {
   files: {
     delete: (paths) => request('POST', '/api/files/delete', { body: { paths } }),
     moveToOutputs: (paths) => request('POST', '/api/files/move-to-outputs', { body: { paths } }),
+    openFolder: (path) => request('POST', '/api/files/open-folder', { body: { path } }),
     // download-zip returns a binary stream; handle via fetch directly
     downloadZip: async (paths) => {
       const res = await fetch('/api/files/download-zip', {

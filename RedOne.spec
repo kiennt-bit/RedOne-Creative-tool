@@ -11,9 +11,14 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 block_cipher = None
 project_root = Path('.').resolve()
 
-# Bundle ALL of frontend (HTML + CSS + JS) as data — server reads at runtime
+# Bundle ALL of frontend (HTML + CSS + JS) as data — server reads at runtime.
+# Also bundle backend/resources/ which holds the lama_inpaint.py runner script
+# and veo3watermark.png mask (Veo logo bottom-right) used by the video-watermark
+# removal feature.
 datas = [
     (str(project_root / 'frontend'), 'frontend'),
+    (str(project_root / 'backend' / 'resources'), 'backend/resources'),
+    (str(project_root / 'backend' / 'services' / 'lama_inpaint.py'), 'backend/services'),
 ]
 
 # Heavy 3rd-party packages need full collection (binaries + data + submodules)

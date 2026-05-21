@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
 
 // ── Per-form state that survives navigation (singleton, module-level) ──
 const form = {
@@ -194,12 +194,14 @@ export function renderImage(root) {
         el('h3', { class: 'card-title' }, 'Ảnh kết quả'),
         el('div', { class: 'card-subtitle', id: 'img-status' }, 'Chưa có job'),
       ),
-      el('button', {
-        class: 'btn btn-sm btn-danger hidden',
-        id: 'img-clear-all',
-        title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy, file vẫn còn trên ổ đĩa)',
-        onclick: clearCurrentTask,
-      }, icon('trash', 14), 'Xóa danh sách'),
+      el('div', { id: 'img-header-actions', style: { display: 'flex', gap: '8px' } },
+        el('button', {
+          class: 'btn btn-sm btn-danger hidden',
+          id: 'img-clear-all',
+          title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy, file vẫn còn trên ổ đĩa)',
+          onclick: clearCurrentTask,
+        }, icon('trash', 14), 'Xóa danh sách'),
+      ),
     ),
     el('div', { id: 'img-results' },
       el('div', { class: 'empty' },
@@ -463,6 +465,7 @@ export function renderImage(root) {
 
     const clearBtn = root.querySelector('#img-clear-all');
     if (clearBtn) clearBtn.classList.toggle('hidden', !taskState);
+    retryBtn.refresh(taskState);
 
     if (!taskState) {
       wrap.appendChild(el('div', { class: 'empty' },
@@ -600,6 +603,20 @@ export function renderImage(root) {
     }
     root.querySelector('#img-status').textContent = statusText;
   }
+
+  // ── "Gen lại N lỗi" button ───────────────────────────
+  // Created once; refresh() is called from renderTaskGallery() on every
+  // state update. Prepended into the header actions container so it lands
+  // left of "Xóa danh sách" — the most relevant action when items failed.
+  const retryBtn = makeRetryFailedButton({
+    getTaskState: () => {
+      const id = currentTaskId();
+      const t = id && tasksStore.get(id);
+      return t ? { taskId: id, errorCount: t.error || 0, status: t.status } : null;
+    },
+    onResetUI: (id) => tasksStore.resetErrorItems(id),
+  });
+  root.querySelector('#img-header-actions').prepend(retryBtn);
 
   // ── Live subscription ────────────────────────────────
   let unsubscribe = null;

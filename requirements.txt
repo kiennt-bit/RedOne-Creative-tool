@@ -14,9 +14,23 @@ imageio-ffmpeg>=0.4.9
 # First time CloakBrowser is invoked, binary (~200MB) auto-downloads.
 cloakbrowser>=0.3.28
 
-# Optional heavy AI (install only if needed):
+# ── Optional video watermark removal (v1.0.5+) ─────────
+# Backend "Xóa watermark Video" feature spawns lama_inpaint.py as a
+# subprocess. Min: opencv-python for OpenCV TELEA fallback. Recommended:
+# also install LaMa packages for high-quality AI inpainting (best for
+# Veo logo on complex scenes).
+#
+# Minimum (OpenCV fallback only):
+# opencv-python>=4.9.0
+#
+# Recommended (LaMa AI quality):
+# opencv-python>=4.9.0
+# simple-lama-inpainting>=0.1.2
+# torch>=2.0.0           # CPU-only ~500MB. For CUDA build see pytorch.org
+# Note: first LaMa run also downloads big-lama.pt model (~204MB) to
+# ~/.cache/torch/hub/checkpoints/.
+
+# Other optional heavy AI:
 # rembg>=2.0.0
 # openai-whisper>=20231117
-# opencv-python>=4.9.0
 # spandrel>=0.3.0
-# torch>=2.0.0

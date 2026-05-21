@@ -163,6 +163,36 @@ export const tasksStore = {
     subscribers.clear();
     persist();
   },
+
+  /**
+   * Reset all items with status='error' back to 'pending' and flip the task
+   * status to 'running'. Called by the gallery's "Gen lại N lỗi" button
+   * BEFORE the WS events stream in — gives the UI an instant response so
+   * the user sees the spinners come back without waiting for the first
+   * item_status broadcast.
+   *
+   * Items with status='done' are left untouched (their files exist).
+   * Items in 'pending' (e.g. cancelled mid-queue) also reset to clear any
+   * stale "Đang chờ" → matches backend's retry_task() behaviour.
+   */
+  resetErrorItems(taskId) {
+    const t = tasks.get(taskId);
+    if (!t) return 0;
+    let n = 0;
+    for (const it of t.items) {
+      if (it.status === 'error' || it.status === 'pending') {
+        it.status = 'pending';
+        it.error = null;
+        n += 1;
+      }
+    }
+    t.error = 0;
+    t.done = t.items.filter(x => x.status === 'done').length;
+    t.status = 'running';
+    t.error_message = null;
+    notify(taskId);
+    return n;
+  },
 };
 
 // ── WebSocket → store reducer ──────────────────────────────
@@ -279,6 +309,55 @@ ws.on('upscale_error', (d) => {
       return;
     }
   }
+});
+
+// ── Watermark removal events ──────────────────────────────
+// Backend doesn't carry item_id (path-based). Look up by matching output_path:
+// the toolbar passes the gallery's selected file paths through, and the
+// backend echoes them in `src` so we can find the right item to update.
+function _findItemByPath(srcPath) {
+  if (!srcPath) return null;
+  const norm = String(srcPath).replace(/\\/g, '/');
+  for (const t of tasks.values()) {
+    for (const it of t.items) {
+      const op = (it.output_path || '').replace(/\\/g, '/');
+      if (op && (op === norm || op.endsWith(norm) || norm.endsWith(op))) {
+        return { task: t, item: it };
+      }
+    }
+  }
+  return null;
+}
+
+ws.on('watermark_progress', (d) => {
+  if (!d || !d.source) return;
+  const hit = _findItemByPath(d.source);
+  if (!hit) return;
+  hit.item.wm_status = 'running';
+  hit.item.wm_label = d.status || '…';
+  hit.item.wm_progress = d.progress || 0;
+  notify(hit.task.id);
+});
+
+ws.on('watermark_item_completed', (d) => {
+  if (!d || !d.src) return;
+  const hit = _findItemByPath(d.src);
+  if (!hit) return;
+  hit.item.wm_status = 'done';
+  hit.item.wm_url = d.url;
+  hit.item.wm_path = d.path;
+  hit.item.wm_label = '✓ Đã xóa watermark';
+  hit.item.wm_progress = 100;
+  notify(hit.task.id);
+});
+
+ws.on('watermark_item_error', (d) => {
+  if (!d || !d.src) return;
+  const hit = _findItemByPath(d.src);
+  if (!hit) return;
+  hit.item.wm_status = 'error';
+  hit.item.wm_error = d.error || 'Lỗi xóa watermark';
+  notify(hit.task.id);
 });
 
 ws.on('item_error', (d) => {

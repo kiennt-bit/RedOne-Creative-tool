@@ -2,7 +2,10 @@
 from __future__ import annotations
 import io
 import logging
+import os
 import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -109,6 +112,39 @@ async def move_to_outputs(body: PathsBody):
         except Exception as e:
             errors.append({"path": p, "error": str(e)})
     return {"moved": len(moved), "files": moved, "errors": errors}
+
+
+class OpenFolderBody(BaseModel):
+    """A single path inside OUTPUT_DIR. If it's a file, the parent dir opens."""
+    path: str
+
+
+@router.post("/open-folder")
+async def open_folder(body: OpenFolderBody):
+    """Open the host OS file explorer at the given path.
+
+    Path validation: rejects anything outside OUTPUT_DIR — keeps the endpoint
+    from being a generic "open arbitrary folder" RPC (which would be a real
+    security hole when accessed via the local-only WS, but defence-in-depth).
+    If `path` points to a file, opens its parent directory.
+    """
+    target = _validate_path(body.path)
+    if target.is_file():
+        target = target.parent
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(404, f"Folder không tồn tại: {target}")
+    folder = str(target.resolve())
+    try:
+        if sys.platform == "win32":
+            os.startfile(folder)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", folder])
+        else:
+            subprocess.Popen(["xdg-open", folder])
+    except Exception as e:
+        log.exception("open-folder failed")
+        raise HTTPException(500, f"Không mở được folder: {e}")
+    return {"ok": True, "path": folder}
 
 
 def cleanup_pending_folder(max_age_hours: int = 24):

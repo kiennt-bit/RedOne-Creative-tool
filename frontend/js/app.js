@@ -21,6 +21,7 @@ import { renderScript } from './pages/script.js';
 import { renderImagePrompt } from './pages/image_prompt.js';
 import { renderBgRemove } from './pages/bg_remove.js';
 import { renderWatermark } from './pages/watermark.js';
+import { renderVideoWatermark } from './pages/video_watermark.js';
 import { renderUpscale } from './pages/upscale.js';
 import { renderBatchResize } from './pages/batch_resize.js';
 import { renderAudioMerge } from './pages/audio_merge.js';
@@ -43,11 +44,12 @@ const PAGES = {
   'script':        { title: 'Ý Tưởng → Video',   subtitle: 'Từ kịch bản tiếng Việt sang storyboard chuẩn Veo 3',     render: renderScript },
   'image-prompt':  { title: 'Ảnh → Prompt',      subtitle: 'Phân tích ảnh và sinh prompt cho video',                 render: renderImagePrompt },
   'bg-remove':     { title: 'Tách Nền',          subtitle: 'Xóa background ảnh (rembg / Gemini)',                    render: renderBgRemove },
-  'watermark':     { title: 'Xóa Logo / Watermark', subtitle: 'Xóa logo Veo / watermark khỏi ảnh / video',           render: renderWatermark },
+  'watermark':     { title: 'Xóa Logo / Watermark', subtitle: 'Xóa watermark khỏi ảnh (vẽ vùng + inpaint OpenCV)',  render: renderWatermark },
   'upscale':       { title: 'Upscale Ảnh',       subtitle: 'Phóng to ảnh giữ nét',                                   render: renderUpscale },
   'batch-resize':  { title: 'Resize Hàng Loạt',  subtitle: 'Đổi kích thước nhiều ảnh theo preset',                   render: renderBatchResize },
   'audio-merge':   { title: 'Ghép Audio',        subtitle: 'Ghép âm thanh vào video bằng FFmpeg',                    render: renderAudioMerge },
   'subtitle':      { title: 'Tạo Phụ Đề',        subtitle: 'Sinh phụ đề SRT từ video bằng Whisper',                  render: renderSubtitle },
+  'video-watermark': { title: 'Xóa Watermark Video', subtitle: 'Xóa logo Veo / watermark khỏi nhiều video một lúc', render: renderVideoWatermark },
   'tasks':         { title: 'Quản lý Task',      subtitle: 'Theo dõi tiến độ + hàng đợi tất cả tác vụ',              render: renderTasksManager },
   'accounts':      { title: 'Tài Khoản',         subtitle: 'Quản lý Google account & credits',                       render: renderAccounts },
   'settings':      { title: 'Cài Đặt',           subtitle: 'API keys, thư mục, tùy chọn',                            render: renderSettings },
@@ -190,12 +192,21 @@ async function checkForUpdate() {
       el('span', { class: 'update-version' }, `v${r.latest}`),
       ` — bạn đang dùng v${r.current}`,
     );
-    const dlBtn = el('a', {
-      class: 'btn',
-      href: r.download_url || r.release_url || `https://github.com/${r.github_repo || ''}/releases`,
-      target: '_blank',
-      rel: 'noopener',
-    }, 'Tải bản mới');
+
+    // EXE bundle: in-app installer. Dev mode: just point to GitHub.
+    const canAutoInstall = !!(r.can_auto_install && r.download_url);
+    const actionBtn = canAutoInstall
+      ? el('button', {
+          class: 'btn',
+          onclick: () => openUpdateModal(r),
+        }, 'Tải xuống & cài đặt')
+      : el('a', {
+          class: 'btn',
+          href: r.download_url || r.release_url
+            || `https://github.com/${r.github_repo || ''}/releases`,
+          target: '_blank', rel: 'noopener',
+        }, 'Mở GitHub Release');
+
     const closeBtn = el('button', {
       class: 'btn btn-close',
       title: 'Bỏ qua phiên bản này',
@@ -206,12 +217,186 @@ async function checkForUpdate() {
     }, '✕');
 
     banner.appendChild(text);
-    banner.appendChild(dlBtn);
+    banner.appendChild(actionBtn);
     banner.appendChild(closeBtn);
   } catch (e) {
     // Silent — update check is non-critical
     console.warn('Update check failed:', e.message);
   }
+}
+
+
+// ── In-app updater modal ─────────────────────────────────────────
+// Opens when user clicks the banner's "Tải xuống & cài đặt" button.
+// One modal handles: start → progress → ready-to-install → restart.
+// Listens to WS "update_progress" events broadcast by the backend updater.
+
+let _updateModalState = null;   // {root, bar, label, stage, version, action}
+let _updateUnsub = null;
+
+function openUpdateModal(info) {
+  // If already open, just show it
+  if (_updateModalState) {
+    _updateModalState.root.classList.remove('hidden');
+    return;
+  }
+
+  const root = el('div', { class: 'modal-backdrop', style: { display: 'flex' } });
+  const card = el('div', { class: 'modal', style: { maxWidth: '560px' } });
+  root.appendChild(card);
+  document.body.appendChild(root);
+
+  card.appendChild(el('h3', { class: 'modal-title' },
+    `Cập nhật RedOne Creative v${info.latest}`));
+
+  // Release notes preview
+  if (info.release_notes) {
+    card.appendChild(el('div', {
+      class: 'field-help',
+      style: {
+        maxHeight: '160px', overflowY: 'auto',
+        background: 'var(--bg-2)', padding: '10px',
+        borderRadius: 'var(--r-md)', whiteSpace: 'pre-wrap',
+        marginBottom: '14px', fontSize: '12px',
+      },
+    }, info.release_notes));
+  }
+
+  // Status line + progress bar
+  const label = el('div', { class: 'field-label' }, 'Sẵn sàng tải xuống');
+  const sizeMB = info.asset_size
+    ? `(${(info.asset_size / 1024 / 1024).toFixed(1)} MB)`
+    : '';
+  const sub = el('div', { class: 'field-help' },
+    `Sẽ tải ${info.asset_name || 'release.zip'} ${sizeMB} từ GitHub. `
+    + `Dữ liệu của bạn (data/, outputs/) sẽ KHÔNG bị xóa.`);
+  const barWrap = el('div', {
+    style: {
+      marginTop: '12px', height: '10px', background: 'var(--bg-2)',
+      borderRadius: '5px', overflow: 'hidden',
+    },
+  });
+  const bar = el('div', {
+    style: {
+      height: '100%', width: '0%', background: 'var(--brand)',
+      transition: 'width 0.3s',
+    },
+  });
+  barWrap.appendChild(bar);
+
+  card.appendChild(label);
+  card.appendChild(sub);
+  card.appendChild(barWrap);
+
+  // Action button — starts as "Tải xuống", morphs to "Cài đặt & restart"
+  // or "Đóng" depending on stage.
+  const actionBtn = el('button', { class: 'btn btn-primary' }, 'Tải xuống');
+  const closeBtn = el('button', { class: 'btn btn-ghost' }, 'Đóng');
+  const actionsRow = el('div', {
+    style: { display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' },
+  }, closeBtn, actionBtn);
+  card.appendChild(actionsRow);
+
+  _updateModalState = { root, bar, label, sub, stage: 'idle',
+    version: info.latest, action: actionBtn, info };
+
+  // Wire WS subscription (lazy import avoids circular dep)
+  import('./ws.js').then(({ ws }) => {
+    if (_updateUnsub) { _updateUnsub(); _updateUnsub = null; }
+    _updateUnsub = ws.on('update_progress', (state) => {
+      if (!_updateModalState) return;
+      applyUpdateState(state);
+    });
+  });
+
+  // Fetch latest state in case download was already running (e.g. user
+  // reloaded the page mid-download)
+  api.system.updateState().then(s => {
+    if (s && s.stage !== 'idle') applyUpdateState(s);
+  }).catch(() => {});
+
+  actionBtn.addEventListener('click', async () => {
+    const st = _updateModalState;
+    if (!st) return;
+    if (st.stage === 'idle' || st.stage === 'error') {
+      // Start download
+      actionBtn.disabled = true;
+      st.label.textContent = 'Đang gửi yêu cầu…';
+      try {
+        await api.system.startUpdate();
+        // WS events will drive the bar from here
+      } catch (e) {
+        st.label.textContent = `Lỗi: ${e.message}`;
+        actionBtn.disabled = false;
+      }
+    } else if (st.stage === 'ready') {
+      // Install + restart
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Đang khởi động lại…';
+      st.label.textContent = 'Đang cài đặt — app sẽ tự mở lại trong vài giây';
+      try {
+        await api.system.applyUpdate();
+        // Backend will die. Show a "lost connection" hint after a beat.
+        setTimeout(() => {
+          st.sub.innerHTML = '';
+          st.sub.appendChild(el('div', {
+            style: { color: 'var(--brand)' },
+          }, '✓ Đã chạy installer. Tool đang khởi động lại — đợi 5-10s rồi mở lại trình duyệt nếu cần.'));
+        }, 1500);
+      } catch (e) {
+        st.label.textContent = `Lỗi: ${e.message}`;
+        actionBtn.disabled = false;
+        actionBtn.textContent = 'Thử lại';
+      }
+    }
+  });
+
+  closeBtn.addEventListener('click', () => {
+    // Allow closing only when not actively downloading — avoids accidental
+    // mid-download dismissals. The job continues in backend regardless,
+    // so closing the modal isn't destructive.
+    closeUpdateModal();
+  });
+}
+
+function applyUpdateState(state) {
+  if (!_updateModalState) return;
+  const st = _updateModalState;
+  st.stage = state.stage;
+  const pct = state.percent || 0;
+  st.bar.style.width = `${pct}%`;
+  st.label.textContent = state.message || state.stage;
+
+  if (state.stage === 'downloading') {
+    const mbDone = (state.downloaded / 1024 / 1024).toFixed(1);
+    const mbTotal = state.total ? (state.total / 1024 / 1024).toFixed(1) : '?';
+    st.label.textContent = `Đang tải ${mbDone} / ${mbTotal} MB (${pct.toFixed(0)}%)`;
+    st.action.disabled = true;
+    st.action.textContent = 'Đang tải…';
+  } else if (state.stage === 'extracting') {
+    st.bar.style.background = 'var(--accent-orange)';
+    st.action.disabled = true;
+    st.action.textContent = 'Đang giải nén…';
+  } else if (state.stage === 'ready') {
+    st.bar.style.background = 'var(--green)';
+    st.action.disabled = false;
+    st.action.textContent = 'Cài đặt & khởi động lại';
+  } else if (state.stage === 'installing') {
+    st.bar.style.background = 'var(--brand)';
+    st.action.disabled = true;
+    st.action.textContent = 'Đang cài…';
+  } else if (state.stage === 'error') {
+    st.bar.style.background = 'var(--red)';
+    st.action.disabled = false;
+    st.action.textContent = 'Thử lại';
+  }
+}
+
+function closeUpdateModal() {
+  if (!_updateModalState) return;
+  _updateModalState.root.remove();
+  _updateModalState = null;
+  if (_updateUnsub) { _updateUnsub(); _updateUnsub = null; }
 }
 
 async function init() {

@@ -149,6 +149,225 @@ async def watermark_remove(
         shutil.rmtree(src.parent, ignore_errors=True)
 
 
+# ─────────────────────── Video Watermark Remove (LaMa / OpenCV) ───────────────────────
+
+@router.get("/lama-status")
+async def lama_status():
+    """Report Python / ffmpeg / cv2 / torch / model availability.
+
+    UI uses this on the watermark page to show whether LaMa is ready or only
+    OpenCV fallback works, and to point the user to the right install step.
+    """
+    from ..services.watermark_video import lama_status as _ls
+    return await _ls()
+
+
+@router.post("/video-watermark-remove")
+async def video_watermark_remove(
+    file: UploadFile = File(...),
+    mask: Optional[UploadFile] = File(None),
+    method: str = Form("auto"),       # auto | opencv | lama | sttn | propainter
+    device: str = Form("auto"),       # auto | cpu | cuda | split
+    gpu_ratio: int = Form(70),
+    use_default_mask: bool = Form(True),  # if True and no mask uploaded, use veo3 mask
+):
+    """Remove watermark/logo from a single video.
+
+    Pipeline:
+      1. Save uploaded video to temp
+      2. Resolve mask: uploaded custom > bundled Veo3 (when use_default_mask) > error
+      3. Call watermark_video.remove_watermark_from_video() with WS progress broadcasts
+      4. Return permanent output path under outputs/video/watermark_removed/<date>/
+
+    Progress is also streamed via WebSocket — frontend can use either the
+    response (blocking) or subscribe to `watermark_*` events for realtime UI.
+    """
+    from ..ws_hub import hub
+    from ..services.watermark_video import (
+        remove_watermark_from_video, get_default_veo_mask,
+    )
+    from datetime import datetime as _dt
+
+    src_video = _save_temp(file, "wmv")
+    mask_path: Optional[Path] = None
+    mask_tmp_dir: Optional[Path] = None
+
+    if mask is not None:
+        mask_saved = _save_temp(mask, "wmv_mask")
+        mask_path = mask_saved
+        mask_tmp_dir = mask_saved.parent
+    elif use_default_mask:
+        mask_path = get_default_veo_mask()
+        if not mask_path.exists():
+            raise HTTPException(500, f"Built-in Veo mask không tồn tại: {mask_path}")
+    else:
+        raise HTTPException(400, "Phải upload mask hoặc bật use_default_mask")
+
+    today = _dt.now().strftime("%Y-%m-%d")
+    out_dir = OUTPUT_DIR / "video" / "watermark_removed" / today
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(file.filename or "video").stem or "video"
+    out_path = out_dir / f"{stem} [RedOne].mp4"
+    # Avoid collisions with existing file from a previous run
+    counter = 1
+    while out_path.exists():
+        out_path = out_dir / f"{stem} [RedOne]_{counter}.mp4"
+        counter += 1
+
+    job_id = uuid.uuid4().hex[:8]
+
+    async def _emit(label: str, pct: float) -> None:
+        await hub.broadcast("watermark_progress", {
+            "job_id": job_id, "status": label, "progress": round(pct, 1),
+            "source": str(src_video.name),
+        })
+
+    await hub.broadcast("watermark_started", {
+        "job_id": job_id, "source": file.filename,
+        "method": method, "device": device,
+    })
+    try:
+        result = await remove_watermark_from_video(
+            input_video=src_video,
+            output_video=out_path,
+            mask_path=mask_path,
+            method=method,
+            device=device,
+            gpu_ratio=gpu_ratio,
+            on_progress=_emit,
+        )
+        rel = result.relative_to(OUTPUT_DIR).as_posix()
+        payload = {
+            "job_id": job_id,
+            "ok": True,
+            "path": str(result),
+            "url": f"/files/{rel}",
+        }
+        await hub.broadcast("watermark_completed", payload)
+        return payload
+    except Exception as e:
+        log.exception("video-watermark-remove failed")
+        await hub.broadcast("watermark_error", {"job_id": job_id, "error": str(e)})
+        raise HTTPException(500, str(e))
+    finally:
+        shutil.rmtree(src_video.parent, ignore_errors=True)
+        if mask_tmp_dir:
+            shutil.rmtree(mask_tmp_dir, ignore_errors=True)
+
+
+class VideoWatermarkBatchRequest(BaseModel):
+    """Body for /video-watermark-remove-batch.
+
+    Items reference EXISTING video files on disk (not uploads) — typical use
+    case is "select N already-generated videos in the gallery and clean them
+    all". Custom mask is not supported here; use the single-file endpoint for
+    that case.
+    """
+    paths: list[str]
+    method: str = "auto"
+    device: str = "auto"
+    gpu_ratio: int = 70
+
+
+@router.post("/video-watermark-remove-batch")
+async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
+    """Sequentially clean watermark from N gallery videos using the built-in
+    Veo3 mask. Broadcasts WS progress per video. Returns list of outputs."""
+    from ..ws_hub import hub
+    from ..services.watermark_video import (
+        remove_watermark_from_video, get_default_veo_mask,
+    )
+    from datetime import datetime as _dt
+
+    if not body.paths:
+        raise HTTPException(400, "paths rỗng")
+
+    # Resolve paths — must be inside OUTPUT_DIR for safety, must exist
+    resolved: list[Path] = []
+    skipped: list[dict] = []
+    for p in body.paths:
+        try:
+            pp = Path(p).resolve()
+            pp.relative_to(OUTPUT_DIR.resolve())   # raises if outside
+            if not pp.exists():
+                skipped.append({"path": p, "error": "Không tồn tại"})
+                continue
+            resolved.append(pp)
+        except Exception:
+            skipped.append({"path": p, "error": "Path không hợp lệ"})
+
+    if not resolved:
+        raise HTTPException(400, "Không có file nào hợp lệ để xử lý")
+
+    mask_path = get_default_veo_mask()
+    today = _dt.now().strftime("%Y-%m-%d")
+    out_dir = OUTPUT_DIR / "video" / "watermark_removed" / today
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    job_id = uuid.uuid4().hex[:8]
+    total = len(resolved)
+    completed: list[dict] = []
+    errors: list[dict] = []
+
+    await hub.broadcast("watermark_batch_started", {
+        "job_id": job_id, "total": total, "method": body.method,
+    })
+
+    for idx, src in enumerate(resolved, 1):
+        stem = src.stem
+        out_path = out_dir / f"{stem} [RedOne].mp4"
+        counter = 1
+        while out_path.exists():
+            out_path = out_dir / f"{stem} [RedOne]_{counter}.mp4"
+            counter += 1
+
+        async def _emit(label: str, pct: float, _src=src.name, _idx=idx) -> None:
+            # Map per-video 0..100 into the batch's slice
+            global_pct = ((_idx - 1) + pct / 100.0) / total * 100
+            await hub.broadcast("watermark_progress", {
+                "job_id": job_id,
+                "source": _src,
+                "status": f"[{_idx}/{total}] {label}",
+                "progress": round(global_pct, 1),
+            })
+
+        try:
+            result = await remove_watermark_from_video(
+                input_video=src,
+                output_video=out_path,
+                mask_path=mask_path,
+                method=body.method,
+                device=body.device,
+                gpu_ratio=body.gpu_ratio,
+                on_progress=_emit,
+            )
+            rel = result.relative_to(OUTPUT_DIR).as_posix()
+            entry = {"src": str(src), "path": str(result), "url": f"/files/{rel}"}
+            completed.append(entry)
+            await hub.broadcast("watermark_item_completed", {
+                "job_id": job_id, "index": idx, "total": total, **entry,
+            })
+        except Exception as e:
+            log.warning(f"watermark batch item {src} failed: {e}")
+            errors.append({"src": str(src), "error": str(e)})
+            await hub.broadcast("watermark_item_error", {
+                "job_id": job_id, "index": idx, "total": total,
+                "src": str(src), "error": str(e),
+            })
+
+    await hub.broadcast("watermark_batch_done", {
+        "job_id": job_id, "total": total,
+        "completed": len(completed), "errors": len(errors),
+    })
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "completed": completed,
+        "errors": errors + skipped,
+    }
+
+
 # ─────────────────────── Upscale ───────────────────────
 
 @router.post("/upscale")

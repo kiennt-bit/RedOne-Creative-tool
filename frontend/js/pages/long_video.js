@@ -2,6 +2,7 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
+import { makeRetryFailedButton } from '../gallery_actions.js';
 
 const form = {
   prompts: ['', ''],
@@ -194,12 +195,14 @@ export function renderLongVideo(root) {
         el('h3', { class: 'card-title' }, 'Tiến độ'),
         el('div', { class: 'card-subtitle', id: 'lv-status' }, 'Chưa render'),
       ),
-      el('button', {
-        class: 'btn btn-sm btn-danger hidden',
-        id: 'lv-clear-all',
-        title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy)',
-        onclick: clearCurrentTask,
-      }, icon('trash', 14), 'Xóa danh sách'),
+      el('div', { id: 'lv-header-actions', style: { display: 'flex', gap: '8px' } },
+        el('button', {
+          class: 'btn btn-sm btn-danger hidden',
+          id: 'lv-clear-all',
+          title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy)',
+          onclick: clearCurrentTask,
+        }, icon('trash', 14), 'Xóa danh sách'),
+      ),
     ),
     el('div', { id: 'lv-progress' },
       el('div', { class: 'empty' },
@@ -315,6 +318,7 @@ export function renderLongVideo(root) {
     clear(wrap);
     const clearBtn = root.querySelector('#lv-clear-all');
     if (clearBtn) clearBtn.classList.toggle('hidden', !taskState);
+    retryBtn.refresh(taskState);
     if (!taskState) {
       wrap.appendChild(el('div', { class: 'empty' },
         el('div', { class: 'empty-icon' }, icon('play', 32)),
@@ -378,6 +382,18 @@ export function renderLongVideo(root) {
     }
     root.querySelector('#lv-status').textContent = statusText;
   }
+
+  // "Gen lại N lỗi" button — for long_video, items = scenes. Failed scenes
+  // are common (one scene fails → user wants to retry just that scene
+  // without re-rendering the whole 5-min video).
+  const retryBtn = makeRetryFailedButton({
+    getTaskState: () => {
+      const t = _taskId && tasksStore.get(_taskId);
+      return t ? { taskId: _taskId, errorCount: t.error || 0, status: t.status } : null;
+    },
+    onResetUI: (id) => tasksStore.resetErrorItems(id),
+  });
+  root.querySelector('#lv-header-actions').prepend(retryBtn);
 
   let unsubscribe = null;
   function attachToTask(taskId) {

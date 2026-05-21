@@ -1,4 +1,6 @@
-// Watermark remove page — image (with rect crop)
+// Watermark remove page — image only (rect crop + OpenCV TELEA inpaint).
+// Video watermark removal lives in pages/video_watermark.js under the
+// "Xử lý video" sidebar group.
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
@@ -12,8 +14,8 @@ export function renderWatermark(root) {
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('image', 28)),
     el('div', { class: 'hero-text' },
-      el('h2', null, 'Xóa Logo / Watermark'),
-      el('p', null, 'Vẽ vùng chứa watermark, công cụ sẽ xóa bằng inpainting'),
+      el('h2', null, 'Xóa Logo / Watermark (Ảnh)'),
+      el('p', null, 'Vẽ vùng chứa watermark, công cụ sẽ xóa bằng inpainting. Cho video → xem tab "Xóa Watermark Video".'),
     ),
   ));
 
@@ -43,7 +45,7 @@ export function renderWatermark(root) {
       icon('sparkles'), 'Xóa watermark',
     ),
     el('div', { class: 'field-help', style: { marginTop: '8px' } },
-      'Backend dùng OpenCV inpaint (TELEA). Cài LaMa (spandrel + torch) để có chất lượng cao hơn.'),
+      'Backend dùng OpenCV inpaint (TELEA). Tab Video hỗ trợ LaMa AI chất lượng cao hơn.'),
   ));
 
   const right = el('div', { class: 'card' },

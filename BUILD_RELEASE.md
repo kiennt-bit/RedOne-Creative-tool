@@ -64,10 +64,40 @@ Build mất ~2-5 phút, folder cuối cùng ~400-600 MB.
    - **Attach files**: kéo thả file `.zip` vào → upload
    - Bấm **Publish release**
 
-5. **Auto-detect**: 
+5. **Auto-detect + in-app installer** *(v1.0.4+)*:
    - Trong vòng 5 phút (do cache TTL), tool trên các máy khác sẽ tự thấy banner cập nhật khi user mở
    - Hoặc user bấm "Kiểm tra cập nhật" trong Settings để force check ngay
-   - Bấm "Tải bản mới" → mở link release → user tự tải zip + giải nén thay thế
+   - User bấm **"Tải xuống & cài đặt"** → modal hiện ra với progress bar
+   - Tool tự download zip từ GitHub release asset (stream + progress real-time qua WS)
+   - Sau khi download xong, tự extract vào `data/updates/<version>/extracted/`
+   - User bấm **"Cài đặt & khởi động lại"** → backend chạy installer batch:
+     1. Đợi 3s cho process exit
+     2. Delete `RedOne Creative.exe` + `_internal\`
+     3. xcopy bundle mới vào install dir
+     4. Tự launch lại EXE mới
+   - **`data\` và `outputs\` KHÔNG bị touch** → tất cả accounts, cookies, video đã gen, DB state đều giữ nguyên
+   - Log của quá trình install ghi vào `data/update.log`
+
+⚠️ **YÊU CẦU NGHIÊM NGẶT về tên file zip**: in-app updater chỉ nhận release có
+asset đuôi `.zip` (preference) hoặc `.exe`. Khuyến nghị đặt tên đúng pattern
+`RedOne-Creative-vX.X.X-win64.zip`. Bên trong zip phải có **đúng layout**:
+
+```
+zip root/
+  ├─ RedOne Creative.exe          ← phải đúng tên này (match APP_NAME)
+  └─ _internal/                   ← bundle PyInstaller
+```
+
+HOẶC nested trong 1 thư mục cha (PyInstaller --onedir default):
+
+```
+zip root/
+  └─ RedOne Creative/
+       ├─ RedOne Creative.exe
+       └─ _internal/
+```
+
+Updater tự detect cả 2 layout.
 
 ---
 

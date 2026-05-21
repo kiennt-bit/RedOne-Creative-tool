@@ -199,6 +199,12 @@ if FRONTEND_DIR.exists():
 
     @app.get("/{path:path}")
     async def spa(path: str):
+        # Don't swallow /api/* — let FastAPI return a proper 404 instead of
+        # silently matching the SPA fallback (which also causes 405s when
+        # the user POSTs to a not-yet-loaded route — old server, no auto-
+        # reload — because the GET fallback "claims" the path).
+        if path.startswith("api/") or path == "api":
+            return HTMLResponse("Not found", status_code=404)
         target = FRONTEND_DIR / path
         if target.is_file():
             if target.suffix == ".js":

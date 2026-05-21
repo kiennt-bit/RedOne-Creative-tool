@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
 
 // Form state survives navigation
 const form = {
@@ -198,12 +198,14 @@ export function renderContent(root) {
               el('h3', { class: 'card-title' }, 'Kết quả'),
               el('div', { class: 'card-subtitle', id: 'cnt-status' }, 'Chưa có job'),
             ),
-            el('button', {
-              class: 'btn btn-sm btn-danger hidden',
-              id: 'cnt-clear-all',
-              title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy, file vẫn còn trên ổ đĩa)',
-              onclick: clearCurrentTask,
-            }, icon('trash', 14), 'Xóa danh sách'),
+            el('div', { id: 'cnt-header-actions', style: { display: 'flex', gap: '8px' } },
+              el('button', {
+                class: 'btn btn-sm btn-danger hidden',
+                id: 'cnt-clear-all',
+                title: 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy, file vẫn còn trên ổ đĩa)',
+                onclick: clearCurrentTask,
+              }, icon('trash', 14), 'Xóa danh sách'),
+            ),
           ),
           el('div', { id: 'cnt-results' },
             el('div', { class: 'empty' },
@@ -717,6 +719,32 @@ export function renderContent(root) {
     } catch (e) { toast(e.message, 'error'); }
   });
 
+  // Bulk-remove watermark from selected video files using the built-in Veo
+  // mask. Backend processes sequentially and streams WS events
+  // (watermark_progress / _item_completed / _item_error) which tasks_store
+  // translates into per-item wm_status flags — gallery chips update via the
+  // normal notify path.
+  async function runBatchWatermark(paths) {
+    const handle = toast(
+      `Đang xóa watermark cho ${paths.length} video… (mỗi video ~5-30s)`,
+      'info', 0,
+    );
+    try {
+      const r = await api.media.videoWatermarkBatch(paths, { method: 'auto', device: 'auto' });
+      const okN = (r.completed || []).length;
+      const errN = (r.errors || []).length;
+      if (errN === 0) {
+        toast(`Đã xóa watermark ${okN} video — file mới có suffix [RedOne].mp4`, 'success');
+      } else {
+        toast(`Watermark: ${okN} OK, ${errN} lỗi (xem chip trên từng video)`, 'warning');
+      }
+    } catch (e) {
+      toast(`Watermark batch lỗi: ${e.message}`, 'error');
+    } finally {
+      if (handle && typeof handle.remove === 'function') handle.remove();
+    }
+  }
+
   async function clearCurrentTask() {
     const tid = currentTaskId();
     if (!tid) return;
@@ -747,6 +775,7 @@ export function renderContent(root) {
 
     const clearBtn = root.querySelector('#cnt-clear-all');
     if (clearBtn) clearBtn.classList.toggle('hidden', !taskState);
+    retryBtn.refresh(taskState);
 
     if (!taskState) {
       wrap.appendChild(el('div', { class: 'empty' },
@@ -771,6 +800,9 @@ export function renderContent(root) {
         onClearSelected: (paths) => {
           tasksStore.removeItemsByPath(taskState.id, paths);
           renderTaskGallery(tasksStore.get(taskState.id));
+        },
+        onRemoveWatermark: async (paths) => {
+          await runBatchWatermark(paths);
         },
       });
       wrap.appendChild(toolbar);
@@ -800,17 +832,40 @@ export function renderContent(root) {
                      : it.status === 'generating' ? 'Đang render'
                      : 'Đang chờ';
 
+      // Build actions row with download + per-card watermark chip
+      const sceneActions = (it.status === 'done' && it.output_url)
+        ? el('div', { class: 'scene-actions' },
+            el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
+              icon('download', 14), 'Tải'),
+          )
+        : null;
+      if (sceneActions) {
+        if (it.wm_status === 'running') {
+          sceneActions.appendChild(el('span', {
+            class: 'chip chip-blue', style: { marginLeft: 'auto' },
+            title: it.wm_label || '',
+          }, `Xóa WM ${Math.round(it.wm_progress || 0)}%`));
+        } else if (it.wm_status === 'done' && it.wm_url) {
+          sceneActions.appendChild(el('a', {
+            href: it.wm_url, download: '', target: '_blank',
+            class: 'chip chip-green',
+            style: { marginLeft: 'auto', textDecoration: 'none' },
+            title: 'Click để tải video đã xóa watermark',
+          }, '✓ Đã xóa WM'));
+        } else if (it.wm_status === 'error') {
+          sceneActions.appendChild(el('span', {
+            class: 'chip chip-red', style: { marginLeft: 'auto' },
+            title: it.wm_error || 'Lỗi xóa watermark',
+          }, 'WM lỗi'));
+        }
+      }
+
       card.appendChild(el('div', { class: 'scene-info' },
         el('div', { class: 'scene-meta' },
           el('span', { class: `chip ${chipClass}` }, chipText),
         ),
         el('div', { class: 'scene-prompt' }, it.prompt),
-        it.status === 'done' && it.output_url
-          ? el('div', { class: 'scene-actions' },
-              el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
-                icon('download', 14), 'Tải'),
-            )
-          : null,
+        sceneActions,
       ));
       if (it.status === 'done' && it.output_path) {
         attachCardCheckbox(card, it.output_path, toolbar);
@@ -837,6 +892,19 @@ export function renderContent(root) {
     }
     root.querySelector('#cnt-status').textContent = statusText;
   }
+
+  // "Gen lại N lỗi" button — created once, refreshed on every render.
+  // Prepended to the header actions so it sits LEFT of "Xóa danh sách"
+  // (most-relevant action when the task has failures).
+  const retryBtn = makeRetryFailedButton({
+    getTaskState: () => {
+      const id = currentTaskId();
+      const t = id && tasksStore.get(id);
+      return t ? { taskId: id, errorCount: t.error || 0, status: t.status } : null;
+    },
+    onResetUI: (id) => tasksStore.resetErrorItems(id),
+  });
+  root.querySelector('#cnt-header-actions').prepend(retryBtn);
 
   // Live subscription
   let unsubscribe = null;
