@@ -40,18 +40,28 @@ from typing import Iterable
 log = logging.getLogger("navtools.circuit_breaker")
 
 
-# Substrings that indicate Google detected automation. Lowercased compare.
+# Substrings that indicate Google detected automation, OR a side-effect of
+# the renew_token() page reload triggered by such an event. Lowercased.
 RECAPTCHA_ERROR_PATTERNS: tuple[str, ...] = (
     "403",
     "recaptcha",
     "permission_denied",
     "unusual_activity",
+    # ── Page-reload byproducts (caused by 403 → renew_token chain) ──
+    # When a 403 fires for ANY in-flight call, the FlowClient renews the
+    # session by reloading the browser page. Other concurrent calls on
+    # that same page then explode with these specific Playwright errors:
+    "execution context was destroyed",
+    "failed to fetch",
+    # Counting them as captcha-flavored makes the circuit trip faster on
+    # the user's machine (otherwise the counter ping-pongs and never
+    # reaches the threshold — observed in logs 2026-05-22).
 )
 
 
 def is_recaptcha_error(err: str) -> bool:
     """True if the error message looks like Google's "we think you're a bot"
-    response. False for non-Captcha errors (network, internal, etc.)."""
+    response (or a direct side-effect of our 403 retry path)."""
     if not err:
         return False
     err_lc = err.lower()
@@ -84,12 +94,20 @@ class CircuitBreaker:
     async def record_failure(self, error_msg: str) -> bool:
         """Update state for a failed item. Returns True only on the
         transition from closed → open (so the caller can broadcast a
-        one-shot warning event)."""
+        one-shot warning event).
+
+        Non-Captcha errors (timeout, bad prompt, model unavailable, etc.)
+        are IGNORED — they neither increment nor reset the counter. This
+        matches user intent: "chỉ lỗi 403 thì mới áp dụng kiểu skip hết
+        các video còn lại". A previous version reset the counter on any
+        non-Captcha error which caused the circuit to never trip when
+        403-induced "Execution context destroyed" errors kept ping-
+        ponging the counter back to zero.
+        """
         if not is_recaptcha_error(error_msg):
-            # Non-Captcha errors mean the session is probably fine; reset
-            # the counter so we don't trip on unrelated failures.
-            async with self._lock:
-                self._consecutive = 0
+            # Don't touch the counter — circuit only tracks 403/captcha
+            # failures. Unrelated errors are accounted at the item level
+            # (status=ERROR) but don't affect the cascade detector.
             return False
 
         async with self._lock:
