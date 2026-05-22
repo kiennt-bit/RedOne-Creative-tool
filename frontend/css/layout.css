@@ -51,6 +51,42 @@
   flex: 1;
   overflow-y: auto;
   padding: 4px 14px 16px;
+  /* Fade gradient at the bottom hints there's more content to scroll —
+     plain `overflow:auto` alone on Windows shows no scrollbar at rest,
+     so short-viewport users couldn't tell "Cài đặt" was cut off below. */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 12px,
+    black calc(100% - 24px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 12px,
+    black calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+/* Custom scrollbar that's always visible (not just on hover). Windows
+   defaults to "auto-hide" which made the sidebar look like nothing
+   could scroll on short displays. */
+.sidebar-nav::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+.sidebar-nav {
+  /* Firefox fallback (no ::-webkit-scrollbar there) */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .nav-group {
@@ -247,9 +283,41 @@
   padding: 0 32px 32px;
 }
 
-/* Responsive */
+/* ── Responsive: WIDTH ────────────────────────────────────── */
 @media (max-width: 900px) {
   #app { grid-template-columns: 220px 1fr; }
   :root { --sidebar-w: 220px; }
   .topbar, .page-container { padding-left: 20px; padding-right: 20px; }
+}
+
+/* ── Responsive: HEIGHT — tighten sidebar on short displays ─
+   Sidebar has 5 groups + 16 nav-items + brand + footer = ~900px
+   minimum at default spacing. Below ~860px viewport we'd run out of
+   vertical room; scroll still works, but for ergonomics we shrink
+   the per-row padding / group gaps so most of the menu fits without
+   scrolling on common 1366×768 laptops + 1280×720 displays. */
+@media (max-height: 860px) {
+  .sidebar-brand { padding: 14px 18px 10px; }
+  .brand-name { font-size: 15px; }
+  .brand-sub { font-size: 9.5px; }
+  .sidebar-nav { padding: 2px 12px 12px; }
+  .nav-group { margin-bottom: 10px; }
+  .nav-label { padding: 8px 6px 4px; font-size: 9.5px; }
+  .nav-item { padding: 7px 10px; font-size: 12.5px; margin-bottom: 1px; }
+  .sidebar-footer { padding: 8px 14px; }
+  .topbar { padding: 14px 24px 12px; }
+  .topbar h1 { font-size: 18px; }
+  .page-subtitle { font-size: 11.5px; }
+}
+
+@media (max-height: 720px) {
+  .sidebar-brand { padding: 10px 16px 8px; }
+  .brand-logo { width: 26px; height: 26px; }
+  .brand-name { font-size: 14px; }
+  .brand-sub { display: none; }   /* drop subtitle to save 14px */
+  .nav-group { margin-bottom: 6px; }
+  .nav-label { padding: 6px 6px 3px; font-size: 9px; }
+  .nav-item { padding: 6px 10px; font-size: 12px; }
+  .nav-item .ni { width: 16px; height: 16px; }
+  .sidebar-footer { padding: 6px 14px; font-size: 10px; }
 }
