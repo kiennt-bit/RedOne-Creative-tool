@@ -127,6 +127,54 @@ async def start_update():
     return {"ok": True, "started": True, "version": info["latest"]}
 
 
+# ─── First-run setup wizard ────────────────────────────────────────
+
+async def _run_setup_pipeline():
+    """Background task: run the first-run wizard, broadcasting progress
+    via WS. Exists at module level so asyncio.create_task() in /setup-run
+    doesn't tie its lifetime to the HTTP request handler."""
+    from ..services.setup_wizard import run_setup
+
+    async def _emit(state: dict) -> None:
+        await hub.broadcast("setup_progress", state)
+
+    try:
+        await run_setup(on_progress=_emit)
+    except Exception as e:
+        log.warning(f"Setup pipeline crashed: {e}")
+        # run_setup already updated state.error before re-raising
+
+
+@router.get("/setup-status")
+async def setup_status():
+    """Return what the wizard needs to do + whether it's already done
+    for this version. Frontend hits this on app load — if `all_ready` is
+    False and the version marker doesn't match, show the wizard modal."""
+    from ..services.setup_wizard import compute_needs, is_setup_complete_for_current_version
+    needs = await compute_needs()
+    needs["setup_complete_for_current_version"] = is_setup_complete_for_current_version()
+    return needs
+
+
+@router.get("/setup-state")
+async def setup_state():
+    """Live state snapshot — frontend reattaches to an in-progress
+    wizard after a tab reload by reading this."""
+    from ..services.setup_wizard import get_setup_state
+    return get_setup_state()
+
+
+@router.post("/setup-run")
+async def setup_run():
+    """Kick off the wizard pipeline. Rejects if one is already running."""
+    from ..services.setup_wizard import get_setup_state
+    state = get_setup_state()
+    if state["stage"] == "running":
+        raise HTTPException(409, "Setup đang chạy rồi")
+    asyncio.create_task(_run_setup_pipeline())
+    return {"ok": True, "started": True}
+
+
 # ─── LaMa AI upgrade installer ─────────────────────────────────────
 
 async def _run_lama_install_pipeline():

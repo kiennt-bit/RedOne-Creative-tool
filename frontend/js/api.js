@@ -114,6 +114,9 @@ export const api = {
     shutdown: () => request('POST', '/api/system/shutdown'),
     lamaInstall: () => request('POST', '/api/system/lama-install'),
     lamaInstallState: () => request('GET', '/api/system/lama-install-state'),
+    setupStatus: () => request('GET', '/api/system/setup-status'),
+    setupState: () => request('GET', '/api/system/setup-state'),
+    setupRun: () => request('POST', '/api/system/setup-run'),
   },
 
   tasks: {

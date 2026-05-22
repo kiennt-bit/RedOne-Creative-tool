@@ -83,6 +83,18 @@ def detect_python() -> Optional[str]:
     if _PYTHON_CACHE:
         return _PYTHON_CACHE
 
+    # Setup wizard's persisted path takes priority — it points at the
+    # Python the wizard installed/verified, which is the one with torch
+    # + simple_lama_inpainting already in its site-packages.
+    try:
+        from .setup_wizard import get_persisted_python_path
+        persisted = get_persisted_python_path()
+        if persisted:
+            _PYTHON_CACHE = persisted
+            return persisted
+    except Exception:
+        pass
+
     # When running in dev (not frozen), sys.executable IS a real Python and
     # has access to the same site-packages we developed against. Use it.
     if not IS_FROZEN:

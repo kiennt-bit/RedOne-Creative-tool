@@ -439,6 +439,20 @@ async function init() {
   setupShutdown();
   setupSidebar();
   setupWS();
+
+  // First-run setup wizard. Blocks the rest of init() until the user
+  // completes (or the backend reports everything is already in place).
+  // Skipping this would let the watermark video page render with missing
+  // deps, leading to confusing error toasts later.
+  try {
+    const { maybeRunSetupWizard } = await import('./setup_wizard.js');
+    await maybeRunSetupWizard();
+  } catch (e) {
+    console.warn('Setup wizard failed:', e);
+    // Non-blocking: if the wizard itself errors out, let the app boot
+    // and the user can still try to use OpenCV features.
+  }
+
   await Promise.all([refreshAccounts(), loadSettings()]);
 
   const initialPage = (location.hash || '#content').slice(1);
