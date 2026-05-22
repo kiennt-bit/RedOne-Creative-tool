@@ -91,9 +91,10 @@ export function renderVideoWatermark(root) {
   );
   left.appendChild(depsCard);
 
-  // Wire refresh button — re-runs the deps check immediately
+  // Wire refresh button — bypasses the 60s server-side cache so a check
+  // right after installing reflects the new state.
   depsCard.querySelector('#vwm-deps-refresh').addEventListener('click', () => {
-    loadDepsStatus(root);
+    loadDepsStatus(root, true);
   });
 
   // ─── RIGHT: queue ────────────────────────────────────
@@ -367,11 +368,11 @@ export function renderVideoWatermark(root) {
 }
 
 
-async function loadDepsStatus(root) {
+async function loadDepsStatus(root, force = false) {
   const wrap = root.querySelector('#vwm-deps');
   const card = root.querySelector('#vwm-deps-card');
   try {
-    const st = await api.media.lamaStatus();
+    const st = await api.media.lamaStatus(force);
     lamaStatusCache = st;
 
     // Hide entirely if LaMa is fully ready — nothing to upgrade.

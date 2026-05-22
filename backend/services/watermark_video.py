@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from .ffmpeg_utils import find_ffmpeg
+from .ffmpeg_utils import find_ffmpeg, subprocess_no_window_kwargs
 from ..config import IS_FROZEN
 
 log = logging.getLogger("navtools.watermark_video")
@@ -116,14 +116,36 @@ def detect_python() -> Optional[str]:
     return None
 
 
+# Re-export the canonical no-window helper from ffmpeg_utils so existing
+# callers in this file keep working without changes. New code should
+# import `subprocess_no_window_kwargs` directly from ffmpeg_utils.
+_subprocess_kwargs = subprocess_no_window_kwargs
+
+
 async def _check_module(python: str, module: str) -> bool:
     """Return True if external Python can import the module."""
     proc = await asyncio.create_subprocess_exec(
         python, "-c", f"import {module}",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        **_subprocess_kwargs(),
     )
     return (await proc.wait()) == 0
+
+
+# Cache the lama_status() answer for a short window. The frontend's
+# loadDepsStatus() fires on every page visit; without the cache that
+# means 4-5 subprocess spawns per visit (cv2, torch, simple-lama, cuda).
+# 60s is short enough to feel fresh, long enough to absorb tab-flicking.
+_STATUS_CACHE: dict = {"data": None, "ts": 0.0}
+_STATUS_TTL_SECONDS = 60.0
+
+
+def invalidate_status_cache() -> None:
+    """Call after an install completes so the UI sees fresh chip state
+    on the next loadDepsStatus() poll."""
+    _STATUS_CACHE["data"] = None
+    _STATUS_CACHE["ts"] = 0.0
 
 
 def _builtin_cv2_available() -> bool:
@@ -154,7 +176,7 @@ def _builtin_torch_available() -> bool:
         return False
 
 
-async def lama_status() -> dict:
+async def lama_status(force: bool = False) -> dict:
     """Report whether everything LaMa needs is installed + cached.
 
     Returned by the /api/media/lama-status endpoint so the UI can light up
@@ -166,7 +188,17 @@ async def lama_status() -> dict:
       - torch:       same dual check — frozen bundles usually exclude it
       - simple_lama: same
       - model:       filesystem check in well-known cache locations
+
+    Results are cached for _STATUS_TTL_SECONDS so navigating to and from
+    the watermark page doesn't spam 4 subprocess spawns each round-trip
+    (which was making CMD windows flash on Windows). Pass force=True
+    after an install completes to bypass the cache.
     """
+    import time
+    now = time.time()
+    cached = _STATUS_CACHE.get("data")
+    if not force and cached and (now - _STATUS_CACHE.get("ts", 0)) < _STATUS_TTL_SECONDS:
+        return dict(cached)
     py = detect_python()
     have_builtin_cv2 = _builtin_cv2_available()
     info: dict = {
@@ -204,6 +236,7 @@ async def lama_status() -> dict:
         proc = await asyncio.create_subprocess_exec(
             py, "-c", "import torch; print(int(torch.cuda.is_available()))",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            **_subprocess_kwargs(),
         )
         out, _ = await proc.communicate()
         info["cuda"] = bool(out and out.strip() == b"1")
@@ -226,6 +259,8 @@ async def lama_status() -> dict:
         info["python_ok"] and info["ffmpeg_ok"]
         and info["torch"] and info["simple_lama"] and info["model_ok"]
     )
+    _STATUS_CACHE["data"] = dict(info)
+    _STATUS_CACHE["ts"] = now
     return info
 
 
@@ -264,6 +299,7 @@ async def _probe_video(path: Path) -> dict:
             "-show_entries", "stream=width,height,r_frame_rate",
             "-of", "json", str(path),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            **_subprocess_kwargs(),
         )
         out, _ = await proc.communicate()
         try:
@@ -281,6 +317,7 @@ async def _probe_video(path: Path) -> dict:
     proc = await asyncio.create_subprocess_exec(
         ffmpeg, "-i", str(path),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        **_subprocess_kwargs(),
     )
     _, err = await proc.communicate()
     import re
@@ -380,6 +417,7 @@ async def remove_watermark_from_video(
             str(frames_in / "%05d.png"),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **_subprocess_kwargs(),
         )
         _, err = await proc.communicate()
         if proc.returncode != 0:
@@ -397,6 +435,7 @@ async def remove_watermark_from_video(
             str(mask_resized),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **_subprocess_kwargs(),
         )
         _, err = await proc.communicate()
         if proc.returncode != 0:
@@ -409,6 +448,7 @@ async def remove_watermark_from_video(
                 str(mask_resized),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                **_subprocess_kwargs(),
             )
             _, err = await proc.communicate()
             if proc.returncode != 0:
@@ -468,6 +508,7 @@ async def remove_watermark_from_video(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **_subprocess_kwargs(),
             )
 
             async def _drain_stdout():
@@ -540,6 +581,7 @@ async def remove_watermark_from_video(
             str(output_video),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **_subprocess_kwargs(),
         )
         _, err = await proc.communicate()
         if proc.returncode != 0:

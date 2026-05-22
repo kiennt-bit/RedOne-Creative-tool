@@ -152,10 +152,15 @@ async def install_lama(on_progress: Optional[ProgressCB] = None) -> bool:
                 "opencv-python", "simple-lama-inpainting", "torch",
             ]
             log.info(f"spawn: {' '.join(args)}")
+            # CREATE_NO_WINDOW + STARTUPINFO/SW_HIDE: pip is long-running
+            # (5-15 min). Without these, a CMD window pops up next to the
+            # EXE for the entire install on windowed builds.
+            from .ffmpeg_utils import subprocess_no_window_kwargs
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                **subprocess_no_window_kwargs(),
             )
             assert proc.stdout
 
@@ -239,6 +244,12 @@ async def install_lama(on_progress: Optional[ProgressCB] = None) -> bool:
                 log.info(f"Downloaded {target} ({downloaded} bytes)")
 
             # ── 4. Done ──
+            # Invalidate the status cache so the next lama_status() call
+            # reflects the new install instead of returning the stale
+            # "not installed" answer cached at page load.
+            from .watermark_video import invalidate_status_cache
+            invalidate_status_cache()
+
             _INSTALL_STATE["stage"] = "done"
             _INSTALL_STATE["label"] = "LaMa AI đã sẵn sàng! Restart tool để dùng."
             _INSTALL_STATE["percent"] = 100

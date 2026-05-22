@@ -1,13 +1,45 @@
-"""FFmpeg wrappers for video concat, audio merge, subtitle burn."""
+"""FFmpeg wrappers for video concat, audio merge, subtitle burn.
+
+Also exports `subprocess_no_window_kwargs()` — the canonical helper for
+suppressing the CMD flash that windowed PyInstaller EXEs would otherwise
+spawn for every subprocess call. Other services (`watermark_video`,
+`lama_installer`) re-export this so we only have one source of truth.
+"""
 from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+import sys
 import logging
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("navtools.ffmpeg")
+
+
+def subprocess_no_window_kwargs() -> dict:
+    """Kwargs for `asyncio.create_subprocess_exec` / `subprocess.Popen`
+    that fully suppress the console window on Windows.
+
+    Belt-and-suspenders: combines the modern `creationflags=CREATE_NO_WINDOW`
+    AND the legacy `startupinfo.wShowWindow=SW_HIDE` path because we've seen
+    Windows 10 / 11 edge-cases where one alone leaks a brief CMD flash
+    (depends on host Python build + which event loop is in use).
+
+    `stdin=DEVNULL` is added as a small extra — some child processes that
+    fail early write a stack trace to stderr (already DEVNULL'd by caller)
+    and try to read stdin, allocating a console as a side-effect.
+    """
+    if sys.platform != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": si,
+        "stdin": asyncio.subprocess.DEVNULL,
+    }
 
 
 def find_ffmpeg() -> Optional[str]:
@@ -36,6 +68,7 @@ async def run_ffmpeg(args: list[str], timeout: int = 600) -> tuple[int, str]:
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        **subprocess_no_window_kwargs(),
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)

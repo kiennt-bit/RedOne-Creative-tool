@@ -152,14 +152,19 @@ async def watermark_remove(
 # ─────────────────────── Video Watermark Remove (LaMa / OpenCV) ───────────────────────
 
 @router.get("/lama-status")
-async def lama_status():
+async def lama_status(force: bool = False):
     """Report Python / ffmpeg / cv2 / torch / model availability.
 
     UI uses this on the watermark page to show whether LaMa is ready or only
     OpenCV fallback works, and to point the user to the right install step.
+
+    Results are cached for 60s in the service to avoid spawning subprocess
+    probes (which flash CMD windows on Windows) every time the user
+    navigates back to the page. Pass `?force=true` from the "Kiểm tra lại"
+    button to bypass the cache after an install.
     """
     from ..services.watermark_video import lama_status as _ls
-    return await _ls()
+    return await _ls(force=force)
 
 
 @router.post("/video-watermark-remove")

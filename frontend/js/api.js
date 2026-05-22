@@ -89,7 +89,7 @@ export const api = {
     videoWatermarkBatch: (paths, opts = {}) => request('POST', '/api/media/video-watermark-remove-batch',
       { body: { paths, method: opts.method || 'auto', device: opts.device || 'auto',
                 gpu_ratio: opts.gpuRatio || 70 } }),
-    lamaStatus: () => request('GET', '/api/media/lama-status'),
+    lamaStatus: (force = false) => request('GET', '/api/media/lama-status', { params: { force } }),
     upscale: (form) => request('POST', '/api/media/upscale', { form }),
     audioMerge: (form) => request('POST', '/api/media/audio-merge', { form }),
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
