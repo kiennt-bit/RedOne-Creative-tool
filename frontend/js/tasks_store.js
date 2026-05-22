@@ -190,6 +190,10 @@ export const tasksStore = {
     t.done = t.items.filter(x => x.status === 'done').length;
     t.status = 'running';
     t.error_message = null;
+    // Clear the 403 cooldown flag — user explicitly asked for a retry,
+    // presumably after waiting out Google's cooldown window.
+    t.circuit_tripped = false;
+    t.circuit_message = null;
     notify(taskId);
     return n;
   },
@@ -408,6 +412,28 @@ ws.on('task_cancelled', (d) => {
   if (!t) return;
   t.status = 'cancelled';
   notify(d.task_id);
+});
+
+// Circuit breaker tripped — Google flagged the session and the backend
+// stopped processing further items. Surface a sticky warning on the task
+// so the gallery can render a clear banner, and pop a toast once.
+ws.on('task_circuit_tripped', (d) => {
+  if (!d || !d.task_id) return;
+  const t = tasks.get(d.task_id);
+  if (!t) return;
+  t.circuit_tripped = true;
+  t.circuit_message = d.message
+    || `${d.threshold || 3} items liên tiếp bị Google reCAPTCHA chặn — đợi 10-15p rồi retry.`;
+  notify(d.task_id);
+  // One-shot toast — only on the transition. Backend broadcasts this
+  // event exactly once per task lifecycle.
+  try {
+    // Use a lazy import to avoid a circular toast/tasks_store loop at
+    // module load. window.toast() exists if ui.js has been loaded.
+    import('./ui.js').then(({ toast }) => {
+      toast(t.circuit_message, 'warning', 12000);
+    });
+  } catch (_) {}
 });
 
 // Long-video specific

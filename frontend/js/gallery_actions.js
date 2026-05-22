@@ -296,14 +296,19 @@ export function makeRetryFailedButton({ getTaskState, onResetUI }) {
       btn.classList.add('hidden');
       return;
     }
-    // Don't show while task is still running — would race with the WS stream.
-    // Backend also rejects retry on PENDING/RUNNING with 400.
-    if (taskState.status === 'running' || taskState.status === 'pending') {
-      btn.classList.add('hidden');
-      return;
-    }
-    labelSpan.textContent = `Gen lại ${taskState.error} lỗi`;
+    // Visible whenever there's at least 1 error so the user knows the
+    // option exists — but disabled while the task is still running.
+    // Backend also rejects retry on PENDING/RUNNING with 400; the
+    // disabled state mirrors that without surprising users with toasts.
     btn.classList.remove('hidden');
+    const isLocked = taskState.status === 'running' || taskState.status === 'pending';
+    btn.disabled = isLocked;
+    btn.title = isLocked
+      ? 'Đợi task xong hoặc bấm Hủy trước khi gen lại'
+      : 'Gen lại các item bị lỗi (giữ nguyên item đã hoàn thành)';
+    labelSpan.textContent = isLocked
+      ? `Đợi xong (${taskState.error} lỗi)`
+      : `Gen lại ${taskState.error} lỗi`;
   };
 
   return btn;

@@ -90,10 +90,37 @@ async def _process_image_task(task_id: int):
         counter_lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(parallelism)
 
+        # Per-task 403 circuit breaker — Google sometimes flags an image
+        # session after a few generations; once flagged the remaining
+        # items in the task all fail. Stop launching new ones after 3
+        # consecutive reCAPTCHA errors so we don't burn credits.
+        from ..services.circuit_breaker import CircuitBreaker
+        breaker = CircuitBreaker(threshold=3)
+
         import random as _rng
 
         async def _process_one(item):
             async with semaphore:
+                if await breaker.is_open():
+                    cooldown_msg = (
+                        "Skipped — Google reCAPTCHA cooldown đang active. "
+                        "Đợi 10-15 phút rồi bấm 'Gen lại N lỗi' để retry."
+                    )
+                    db.update_item(item["id"], status=ItemStatus.ERROR.value,
+                                   error_message=cooldown_msg)
+                    async with counter_lock:
+                        counters["error"] += 1
+                        d, e = counters["done"], counters["error"]
+                    await hub.broadcast("item_error", {
+                        "task_id": task_id, "item_id": item["id"],
+                        "error": cooldown_msg,
+                    })
+                    db.update_task(task_id, done_count=d, error_count=e)
+                    await hub.broadcast("task_progress", {
+                        "task_id": task_id, "done": d, "error": e, "total": len(items),
+                    })
+                    return
+
                 # Jitter to avoid hammering Google at the same ms
                 await asyncio.sleep(_rng.uniform(0.0, 1.2))
                 await hub.broadcast("item_status", {
@@ -136,6 +163,7 @@ async def _process_image_task(task_id: int):
                         output_path=str(out_path),
                         extra_json=json.dumps(extra),
                     )
+                    await breaker.record_success()   # reset 403 streak
                     async with counter_lock:
                         counters["done"] += 1
                         d, e = counters["done"], counters["error"]
@@ -161,12 +189,26 @@ async def _process_image_task(task_id: int):
                     })
                     raise
                 except Exception as ex:
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(ex))
+                    err_str = str(ex)
+                    tripped_now = await breaker.record_failure(err_str)
+                    if tripped_now:
+                        log.warning(
+                            f"Image task {task_id}: 403 circuit tripped"
+                        )
+                        await hub.broadcast("task_circuit_tripped", {
+                            "task_id": task_id,
+                            "threshold": 3,
+                            "message": (
+                                "3 ảnh liên tiếp bị Google reCAPTCHA chặn — "
+                                "pause task. Đợi 10-15p rồi bấm 'Gen lại N lỗi'."
+                            ),
+                        })
+                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)
                     async with counter_lock:
                         counters["error"] += 1
                         d, e = counters["done"], counters["error"]
                     await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"], "error": str(ex),
+                        "task_id": task_id, "item_id": item["id"], "error": err_str,
                     })
 
                 db.update_task(task_id, done_count=d, error_count=e)

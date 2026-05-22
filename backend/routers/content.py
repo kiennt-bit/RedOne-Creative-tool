@@ -75,6 +75,13 @@ TRANSIENT_PATTERNS = (
 )
 MAX_ITEM_RETRIES = 3
 
+# Once N items fail back-to-back with a Google reCAPTCHA verdict (403 /
+# unusual_activity), the rest of the task is essentially doomed because
+# Google's risk score for this session won't recover without ~10-15 minutes
+# of inactivity. Trip the circuit at that point so the remaining items
+# don't waste credit + clock time on calls that are guaranteed to fail.
+CIRCUIT_THRESHOLD = 3
+
 
 async def _process_task(task_id: int):
     task = db.get_task(task_id)
@@ -111,11 +118,38 @@ async def _process_task(task_id: int):
         counter_lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(parallelism)
 
+        # Per-task 403 circuit breaker — stops launching new items once
+        # Google has flagged the session 3 times in a row.
+        from ..services.circuit_breaker import CircuitBreaker
+        breaker = CircuitBreaker(threshold=CIRCUIT_THRESHOLD)
+
         import random as _rng
 
         async def _process_one(item, idx):
             """Generate + wait + download a single item, respecting the semaphore."""
             async with semaphore:
+                # Fast-fail if the circuit has tripped — don't waste a
+                # generation slot on a call we know will 403.
+                if await breaker.is_open():
+                    cooldown_msg = (
+                        "Skipped — Google reCAPTCHA cooldown đang active. "
+                        "Đợi 10-15 phút rồi bấm 'Gen lại N lỗi' để retry."
+                    )
+                    db.update_item(item["id"], status=ItemStatus.ERROR.value,
+                                   error_message=cooldown_msg)
+                    async with counter_lock:
+                        counters["error"] += 1
+                        d, e = counters["done"], counters["error"]
+                    await hub.broadcast("item_error", {
+                        "task_id": task_id, "item_id": item["id"],
+                        "error": cooldown_msg,
+                    })
+                    db.update_task(task_id, done_count=d, error_count=e)
+                    await hub.broadcast("task_progress", {
+                        "task_id": task_id, "done": d, "error": e, "total": len(items),
+                    })
+                    return
+
                 # Small jitter so concurrent items don't hit Google at the exact same ms
                 await asyncio.sleep(_rng.uniform(0.0, 1.5))
                 await hub.broadcast("item_status", {
@@ -190,6 +224,7 @@ async def _process_task(task_id: int):
                         raise RuntimeError("Download failed")
 
                     db.update_item(item["id"], status=ItemStatus.COMPLETED.value, output_path=str(out_path))
+                    await breaker.record_success()   # reset the 403 streak
                     async with counter_lock:
                         counters["done"] += 1
                         d, e = counters["done"], counters["error"]
@@ -213,12 +248,31 @@ async def _process_task(task_id: int):
                     # Propagate so the outer try() can disable the account
                     raise
                 except Exception as ex:
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(ex))
+                    err_str = str(ex)
+                    # Update the circuit. record_failure() returns True
+                    # exactly once — on the transition from closed→open —
+                    # so we broadcast the "tripped" event only once.
+                    tripped_now = await breaker.record_failure(err_str)
+                    if tripped_now:
+                        log.warning(
+                            f"Task {task_id}: 403 circuit tripped after "
+                            f"{CIRCUIT_THRESHOLD} consecutive reCAPTCHA failures"
+                        )
+                        await hub.broadcast("task_circuit_tripped", {
+                            "task_id": task_id,
+                            "threshold": CIRCUIT_THRESHOLD,
+                            "message": (
+                                f"{CIRCUIT_THRESHOLD} items liên tiếp bị Google "
+                                f"reCAPTCHA chặn — đã pause task để tránh phí "
+                                f"credit. Đợi 10-15 phút rồi bấm 'Gen lại N lỗi'."
+                            ),
+                        })
+                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)
                     async with counter_lock:
                         counters["error"] += 1
                         d, e = counters["done"], counters["error"]
                     await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"], "error": str(ex),
+                        "task_id": task_id, "item_id": item["id"], "error": err_str,
                     })
                 # Progress update
                 db.update_task(task_id, done_count=d, error_count=e)
