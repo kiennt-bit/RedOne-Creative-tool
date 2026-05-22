@@ -185,35 +185,90 @@ def _check_msvc_redist() -> bool:
         return False
 
 
+def _is_microsoft_store_alias(python_path: str) -> bool:
+    """Detect the Windows 10/11 App Execution Alias stub for Python.
+
+    Windows ships `python.exe` and `python3.exe` shortcuts in
+    %LOCALAPPDATA%\\Microsoft\\WindowsApps\\ that look like real Python
+    but actually do nothing useful: running them with no args opens
+    the Microsoft Store install page, and running with args prints
+    "Python was not found; run without arguments to install from the
+    Microsoft Store..." and exits 9009.
+
+    The wizard was accepting this shim as a real Python, then pip
+    install would explode. Detect by path — `WindowsApps` is the
+    canonical alias directory.
+    """
+    if not python_path:
+        return False
+    return "WindowsApps" in python_path.replace("/", "\\")
+
+
+def _verify_python(python_path: str) -> bool:
+    """Run `python -c "import sys"` to confirm it's actually a working
+    Python interpreter, not a Microsoft Store stub or broken install.
+
+    Synchronous (uses subprocess directly) because we call this from
+    _check_python() which is called outside an async context too.
+    """
+    import subprocess as _sp
+    try:
+        r = _sp.run(
+            [python_path, "-c", "import sys; print(sys.version_info[:2])"],
+            capture_output=True, timeout=8,
+            **subprocess_no_window_kwargs(),
+        )
+        # Real Python prints `(3, 12)` on stdout. Stub prints store
+        # error on stderr and exits 9009. Reject any non-zero exit.
+        return r.returncode == 0 and b"(" in (r.stdout or b"")
+    except Exception:
+        return False
+
+
 def _check_python() -> Optional[str]:
     """Find an external Python 3.x interpreter (skip the frozen EXE).
 
-    Order: persisted path → PATH search → common install dirs. Returns
-    absolute path string or None.
+    Order: persisted path → PATH search (skipping Microsoft Store
+    aliases + the frozen EXE itself) → common install dirs. The result
+    is verified with `--version` so we never return a path that pip
+    install would choke on.
     """
     persisted = get_persisted_python_path()
-    if persisted:
+    if persisted and _verify_python(persisted):
         return persisted
 
+    candidates: list[str] = []
     for name in ("python3", "python", "py"):
         p = shutil.which(name)
-        # Skip if it points at OUR frozen EXE (can happen when frozen)
-        if p and IS_FROZEN and Path(p).resolve() == Path(sys.executable).resolve():
+        if not p:
             continue
-        if p:
-            return p
+        # Skip the frozen EXE itself
+        if IS_FROZEN and Path(p).resolve() == Path(sys.executable).resolve():
+            continue
+        # Skip Microsoft Store alias shims — they look real but only
+        # run `pip install ...` to be redirected to the Store.
+        if _is_microsoft_store_alias(p):
+            log.debug(f"Skipping Microsoft Store alias: {p}")
+            continue
+        candidates.append(p)
 
+    # Common install paths after PATH search
     if sys.platform == "win32":
-        candidates = [
+        for c in [
             Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python",
             Path("C:/Program Files/Python312"),
             Path("C:/Program Files/Python313"),
             Path("C:/Program Files/Python311"),
-        ]
-        for c in candidates:
+        ]:
             if c.exists():
                 for sub in c.rglob("python.exe"):
-                    return str(sub)
+                    if not _is_microsoft_store_alias(str(sub)):
+                        candidates.append(str(sub))
+
+    # Verify each candidate actually works
+    for c in candidates:
+        if _verify_python(c):
+            return c
     return None
 
 
