@@ -129,6 +129,41 @@ function setupTheme() {
   }
 }
 
+// Shutdown button (topbar). Confirms before killing the backend so an
+// accidental click doesn't trash an in-flight task.
+function setupShutdown() {
+  const btn = $('#shutdown-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const { confirm } = await import('./ui.js');
+    if (!await confirm(
+      'Tắt tool sẽ dừng backend Python + giải phóng port 8000. '
+      + 'Các task đang chạy sẽ bị huỷ. Tiếp tục?',
+      'Xác nhận tắt tool',
+    )) return;
+    try {
+      await api.system.shutdown();
+      toast('Đang tắt tool — trang sẽ trở thành "không kết nối được"', 'info');
+      // Backend dies in ~0.5s. Replace the entire page with a clear
+      // "tool is gone" message so the user doesn't sit waiting for the
+      // usual loading spinner.
+      setTimeout(() => {
+        document.body.innerHTML =
+          '<div style="display:flex;align-items:center;justify-content:center;'
+          + 'height:100vh;font-family:sans-serif;color:#666;text-align:center;'
+          + 'padding:20px;background:#fff">'
+          + '<div><h2 style="color:#dc2626;margin-bottom:12px">'
+          + 'RedOne Creative đã tắt</h2>'
+          + '<p>Có thể đóng tab này. Để mở lại tool, double-click '
+          + '<code>RedOne Creative.exe</code> hoặc chạy <code>python launch.py</code>.</p>'
+          + '</div></div>';
+      }, 1500);
+    } catch (e) {
+      toast(e.message || 'Tắt tool lỗi', 'error');
+    }
+  });
+}
+
 function showSessionDeadBanner(d) {
   const banner = $('#session-banner');
   if (!banner) return;
@@ -401,6 +436,7 @@ function closeUpdateModal() {
 
 async function init() {
   setupTheme();
+  setupShutdown();
   setupSidebar();
   setupWS();
   await Promise.all([refreshAccounts(), loadSettings()]);

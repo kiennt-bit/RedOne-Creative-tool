@@ -27,7 +27,7 @@ export function renderAccounts(root) {
     [
       { label: 'Tổng accounts', value: accs.length, glow: 'blue' },
       { label: 'Đang bật', value: active, glow: 'green' },
-      { label: 'Tổng credits', value: credits.toLocaleString('vi-VN'), glow: 'purple' },
+      { label: 'Tổng Tín dụng Flow', value: credits.toLocaleString('vi-VN'), glow: 'purple' },
       { label: 'Tier ULTRA', value: ultra, glow: 'orange' },
     ].forEach(s => {
       stats.appendChild(el('div', { class: `stat-card glow-${s.glow}` },
@@ -59,7 +59,7 @@ export function renderAccounts(root) {
           el('div', { style: { flex: 1, minWidth: 0 } },
             el('div', { class: 'account-email' }, acc.email),
             el('div', { class: 'account-meta' },
-              el('span', null, `${(acc.credit || 0).toLocaleString('vi-VN')} credits`),
+              el('span', null, `${(acc.credit || 0).toLocaleString('vi-VN')} Tín dụng Flow`),
               el('span', { style: { margin: '0 6px' } }, '•'),
               tierChip,
             ),
@@ -142,8 +142,23 @@ export function renderAccounts(root) {
     try {
       toast('Đang check session...', 'info');
       const r = await api.accounts.check(id);
-      if (r.ok && r.alive) toast(`Account OK • ${r.credit || 0} credits`, 'success');
-      else toast(r.message || 'Session chết', 'error');
+      if (!r.ok) {
+        toast(r.message || 'Check thất bại', 'error');
+      } else if (!r.alive) {
+        toast(r.message || 'Session chết — login lại', 'error');
+      } else if (r.credit_fetch_ok && typeof r.credit === 'number') {
+        // Successful credit read — including genuine 0
+        toast(`Account OK • ${r.credit.toLocaleString('vi-VN')} Tín dụng Flow`, 'success');
+      } else {
+        // Session alive but credit detection failed (Google changed UI,
+        // page didn't fully load, etc.). DB credit untouched — UI keeps
+        // showing the previously-known value.
+        toast(
+          `Account OK • Không đọc được credit (${r.credit_fetch_error || 'unknown'}) — `
+          + `credit cũ giữ nguyên`,
+          'warning',
+        );
+      }
       await reload();
     } catch (e) { toast(e.message, 'error'); }
   }

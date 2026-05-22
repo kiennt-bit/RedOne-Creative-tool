@@ -1440,34 +1440,92 @@ class FlowClient:
         except Exception:
             await asyncio.sleep(3)
         
-        # ── Method 1: Try tRPC API directly ──
+        # ── Method 1: Hit the aisandbox-pa credits endpoint directly ──
+        # CONFIRMED via user's network capture (2026-05-22):
+        #   GET https://aisandbox-pa.googleapis.com/v1/credits?key=<AIza...>
+        #   Headers: Authorization: Bearer <NextAuth token>
+        #   Response (JSON):
+        #     {
+        #       "credits": 35871,              ← total = subscription + topUp
+        #       "userPaygateTier": "PAYGATE_TIER_TWO",
+        #       "sku": "G1_TIER2",
+        #       "serviceTier": "SERVICE_TIER_ADVANCED",
+        #       "topUpCredits": 25000,         ← purchased (one-off packs)
+        #       "subscriptionCredits": 10871   ← THE NUMBER WE WANT — what
+        #                                       Google shows in popup as
+        #                                       "10871 Tín dụng Flow"
+        #     }
+        # User explicitly wants the "Tín dụng Flow" subscription number,
+        # not the total — that matches what the avatar popup shows so they
+        # can sanity-check by clicking the ULTRA badge.
+        #
+        # NOTE on the ?key= param: Google's other aisandbox endpoints we
+        # already call (videoGen, imageGen, upsampleImage) work with Bearer
+        # alone — no key needed. We try the same way first. If that 401s
+        # we fall back to extracting the page's embedded API key from a
+        # global config object.
         try:
-            api_credits = await self._page.evaluate('''async () => {
-                try {
-                    const r = await fetch("/fx/api/trpc/user.getUserSettings");
-                    if (r.ok) {
+            api_credits = await self._page.evaluate('''async ([token]) => {
+                async function tryFetch(url, extraHeaders) {
+                    try {
+                        const r = await fetch(url, {
+                            method: "GET",
+                            headers: Object.assign(
+                                {"Authorization": "Bearer " + token},
+                                extraHeaders || {},
+                            ),
+                            credentials: "include",
+                        });
+                        if (!r.ok) return null;
                         const data = await r.json();
-                        // Try multiple paths in the response
-                        const result = data?.result?.data?.json || data?.result?.data || data;
-                        const credits = result?.remainingCredits 
-                            ?? result?.credits 
-                            ?? result?.aiCredits
-                            ?? result?.creditBalance;
-                        if (typeof credits === 'number') return credits;
-                        // Deep search for any credit-like field
-                        const str = JSON.stringify(data);
-                        const m = str.match(/"(?:remaining|ai|credit|balance)[Cc]?redits?"\\s*:\\s*(\\d+)/);
-                        if (m) return parseInt(m[1]);
-                    }
-                    return null;
-                } catch(e) { return null; }
-            }''')
-            
-            if api_credits is not None and isinstance(api_credits, (int, float)):
-                log.info(f"[{self._account_email}] Credits from API: {int(api_credits)}")
-                return {"remainingCredits": int(api_credits)}
+                        // Prefer subscriptionCredits — matches the "Tín dụng
+                        // Flow" number Google shows in the popup. Fall back
+                        // to `credits` (total) only if subscriptionCredits
+                        // is missing.
+                        if (typeof data.subscriptionCredits === "number")
+                            return data.subscriptionCredits;
+                        if (typeof data.credits === "number")
+                            return data.credits;
+                        return null;
+                    } catch(e) { return null; }
+                }
+
+                // 1st attempt: Bearer only (same pattern as videoGen etc.)
+                const baseUrl = "https://aisandbox-pa.googleapis.com/v1/credits";
+                let credits = await tryFetch(baseUrl);
+                if (credits != null) return { value: credits, source: "bearer" };
+
+                // 2nd: with ?key= extracted from page bundle globals.
+                // Labs frontend embeds a public API key in __NEXT_DATA__ /
+                // window config — search for any AIza... string.
+                let apiKey = null;
+                try {
+                    const html = document.documentElement.outerHTML;
+                    const m = html.match(/AIza[0-9A-Za-z_\\-]{35}/);
+                    if (m) apiKey = m[0];
+                } catch(e) {}
+                if (apiKey) {
+                    credits = await tryFetch(baseUrl + "?key=" + apiKey);
+                    if (credits != null) return { value: credits, source: "bearer+key" };
+                }
+
+                // 3rd: relative fetch via labs.google (in case CORS blocks
+                // direct aisandbox call but labs proxies it)
+                credits = await tryFetch("/fx/api/credits");
+                if (credits != null) return { value: credits, source: "labs-proxy" };
+
+                return null;
+            }''', [self._token or ""])
+
+            if api_credits and isinstance(api_credits, dict) and isinstance(api_credits.get("value"), (int, float)):
+                value = int(api_credits["value"])
+                log.info(
+                    f"[{self._account_email}] Credits from aisandbox: {value} "
+                    f"(auth: {api_credits.get('source')})"
+                )
+                return {"remainingCredits": value}
         except Exception as e:
-            log.debug(f"[{self._account_email}] API credit check failed: {e}")
+            log.debug(f"[{self._account_email}] aisandbox credits endpoint failed: {e}")
         
         # ── Method 2: Read credit text from page directly (no popup) ──
         try:
@@ -1476,9 +1534,12 @@ class FlowClient:
                     const text = document.body.innerText;
                     // Try multiple patterns
                     const patterns = [
+                        // Google renamed label in May 2026: "T\u00edn d\u1ee5ng AI" \u2192 "T\u00edn d\u1ee5ng Flow"
+                        /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*Flow/i,
+                        /(\d[\d,.\s]*)\s*Flow\s*credits?/i,
                         /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*AI/i,
                         /(\d[\d,.\s]*)\s*AI\s*credits?/i,
-                        /T\u00edn\s*d\u1ee5ng\s*AI\s*:?\s*(\d[\d,.\s]*)/i,
+                        /T\u00edn\s*d\u1ee5ng\s*(?:AI|Flow)\s*:?\s*(\d[\d,.\s]*)/i,
                         /credits?\s*:?\s*(\d[\d,.\s]*)/i,
                         /(\d[\d,.\s]*)\s*credits?\s*remaining/i,
                     ];
@@ -1492,7 +1553,11 @@ class FlowClient:
                 }
             ''')
             
-            if page_credits is not None and page_credits > 0:
+            # Accept 0 as a valid reading — user might genuinely be out of
+            # credit. Previously `> 0` silently dropped 0 and fell through
+            # to other methods which also failed → end result "credit=None"
+            # which the frontend rendered as "0 credits" anyway. False alarm.
+            if page_credits is not None and page_credits >= 0:
                 log.info(f"[{self._account_email}] Credits from page text: {page_credits}")
                 return {"remainingCredits": page_credits}
         except Exception as e:
@@ -1577,9 +1642,12 @@ class FlowClient:
                     try {
                         const text = document.body.innerText;
                         const patterns = [
+                            // Google renamed label May 2026: "T\u00edn d\u1ee5ng AI" \u2192 "T\u00edn d\u1ee5ng Flow"
+                            /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*Flow/i,
+                            /(\d[\d,.\s]*)\s*Flow\s*credits?/i,
                             /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*AI/i,
                             /(\d[\d,.\s]*)\s*AI\s*credits?/i,
-                            /T\u00edn\s*d\u1ee5ng\s*AI\s*:?\s*(\d[\d,.\s]*)/i,
+                            /T\u00edn\s*d\u1ee5ng\s*(?:AI|Flow)\s*:?\s*(\d[\d,.\s]*)/i,
                             /AI\s*credits?\s*:?\s*(\d[\d,.\s]*)/i,
                             /credits?\s*remaining\s*:?\s*(\d[\d,.\s]*)/i,
                             /(\d[\d,.\s]*)\s*credits?\s*left/i,
@@ -1589,7 +1657,7 @@ class FlowClient:
                             const m = text.match(p);
                             if (m) {
                                 const num = parseInt(m[1].replace(/[,.\s]/g, ''));
-                                if (num > 0 && num < 1000000) return num;
+                                if (num >= 0 && num < 10000000) return num;
                             }
                         }
                         return null;
@@ -1604,7 +1672,9 @@ class FlowClient:
             except Exception:
                 pass
             
-            if credits is not None and credits > 0:
+            # Accept 0 — see note in Method 2. A genuine "0 credits" reading
+            # is more useful than False-None which the UI also rendered as 0.
+            if credits is not None and credits >= 0:
                 log.info(f"[{self._account_email}] Credits from badge popup: {credits}")
                 return {"remainingCredits": credits}
             

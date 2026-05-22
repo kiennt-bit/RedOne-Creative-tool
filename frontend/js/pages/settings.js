@@ -81,7 +81,9 @@ export function renderSettings(root) {
   );
   layout.appendChild(infoCard);
 
-  // App info row (full width)
+  // App info row (full width). "Tắt tool" used to live here too but moved
+  // to the topbar (always-visible icon) so user doesn't have to navigate
+  // here just to shut down.
   const appInfo = el('div', { class: 'card', style: { gridColumn: '1 / -1' } },
     el('div', { class: 'card-header' },
       el('h3', { class: 'card-title' }, 'Về RedOne Creative'),

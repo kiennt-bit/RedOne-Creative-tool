@@ -123,17 +123,6 @@
         </div>
       </nav>
 
-      <div class="sidebar-theme">
-        <button class="theme-toggle" id="theme-toggle" title="Đổi giao diện sáng / tối">
-          <span class="theme-toggle-icon light">
-            <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          </span>
-          <span class="theme-toggle-label" id="theme-toggle-label">Light Mode</span>
-          <span class="theme-toggle-icon dark">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/></svg>
-          </span>
-        </button>
-      </div>
       <div class="sidebar-footer">
         <div class="status-pill">
           <span class="dot dot-green" id="server-dot"></span>
@@ -169,10 +158,28 @@
               <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2 L15 9 L22 10 L17 15 L18 22 L12 19 L6 22 L7 15 L2 10 L9 9 Z" fill="currentColor"/></svg>
             </div>
             <div>
-              <div class="chip-label">Credits</div>
+              <div class="chip-label">Tín dụng Flow</div>
               <div class="chip-value" id="topbar-credits">0</div>
             </div>
           </div>
+          <!-- Theme + power buttons live in the topbar instead of the
+               sidebar so they don't get pushed off-screen when the sidebar
+               nav grows. Sun/moon swap based on current data-theme. -->
+          <div class="topbar-actions">
+            <button class="icon-btn" id="theme-toggle" title="Đổi giao diện sáng / tối">
+              <span class="theme-icon-light">
+                <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </span>
+              <span class="theme-icon-dark">
+                <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/></svg>
+              </span>
+            </button>
+            <button class="icon-btn icon-btn-danger" id="shutdown-btn" title="Tắt tool (kill process backend)">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 4v8M8 6a8 8 0 1 0 8 0" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <!-- Kept hidden for backward-compat with code that reads label -->
+          <span id="theme-toggle-label" style="display:none">Light Mode</span>
         </div>
       </header>
 

@@ -126,37 +126,81 @@ async def _check_module(python: str, module: str) -> bool:
     return (await proc.wait()) == 0
 
 
+def _builtin_cv2_available() -> bool:
+    """Is cv2 importable from the same process that runs this code?
+
+    In a frozen EXE the PyInstaller bundle ships opencv-python under
+    `_internal/`, so cv2 imports cleanly without any external Python or
+    user setup. In dev mode this only succeeds if the developer ran
+    `pip install opencv-python`. Either way, when True we can run the
+    OpenCV inpainting method IN-PROCESS — skip the subprocess hop.
+    """
+    try:
+        import cv2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _builtin_torch_available() -> bool:
+    """Whether torch is importable in-process. Almost always False because
+    we deliberately exclude torch from the EXE bundle (too big). Returns
+    True only if the running environment happens to have torch installed
+    (dev mode, or user manually pip-installed into the bundle directory)."""
+    try:
+        import torch  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 async def lama_status() -> dict:
     """Report whether everything LaMa needs is installed + cached.
 
     Returned by the /api/media/lama-status endpoint so the UI can light up
     the right "ready" chips and surface concrete fix instructions.
+
+    Detection priority for each component:
+      - cv2:         in-process first (bundled into EXE), fall back to
+                     external Python's `import cv2`
+      - torch:       same dual check — frozen bundles usually exclude it
+      - simple_lama: same
+      - model:       filesystem check in well-known cache locations
     """
     py = detect_python()
+    have_builtin_cv2 = _builtin_cv2_available()
     info: dict = {
         "python": py,
         "python_ok": bool(py),
         "ffmpeg": find_ffmpeg(),
         "ffmpeg_ok": bool(find_ffmpeg()),
-        "cv2": False,
-        "torch": False,
+        "cv2": have_builtin_cv2,
+        "torch": _builtin_torch_available(),
         "simple_lama": False,
         "model_path": None,
         "model_ok": False,
         "cuda": False,
         "lama_ok": False,
-        "opencv_ok": False,
+        "opencv_ok": have_builtin_cv2,    # built-in OpenCV is enough
+        "opencv_inprocess": have_builtin_cv2,
     }
-    if not py:
-        return info
 
-    info["cv2"] = await _check_module(py, "cv2")
-    info["torch"] = await _check_module(py, "torch")
-    info["simple_lama"] = await _check_module(py, "simple_lama_inpainting")
-    info["opencv_ok"] = info["cv2"]
+    # Even if we have a builtin, also probe the external Python so the UI
+    # can show the user where their `pip install` would land. Only run
+    # subprocess probes if we don't already know the answer.
+    if py:
+        if not info["cv2"]:
+            info["cv2"] = await _check_module(py, "cv2")
+            info["opencv_ok"] = info["cv2"]
+        if not info["torch"]:
+            info["torch"] = await _check_module(py, "torch")
+        info["simple_lama"] = await _check_module(py, "simple_lama_inpainting")
 
-    if info["torch"]:
-        # Check CUDA availability
+    if info["torch"] and py:
+        # Check CUDA availability via the external Python (the one that
+        # will actually run the LaMa subprocess). Skip if no external
+        # Python — even if our bundle has torch we won't use it for LaMa
+        # (LaMa always runs via subprocess to isolate GPU memory).
         proc = await asyncio.create_subprocess_exec(
             py, "-c", "import torch; print(int(torch.cuda.is_available()))",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
@@ -186,7 +230,13 @@ async def lama_status() -> dict:
 
 
 async def resolve_method(requested: str) -> str:
-    """Translate `auto` to a concrete method based on availability."""
+    """Translate `auto` to a concrete method based on availability.
+
+    Priority:
+      • lama if all deps installed (best quality, slowest)
+      • opencv otherwise (works out-of-box in bundled EXE because cv2
+        is collected into _internal/)
+    """
     if requested in ("opencv", "lama", "sttn", "propainter"):
         return requested
     # auto
@@ -197,8 +247,9 @@ async def resolve_method(requested: str) -> str:
         return "opencv"
     # Nothing works — raise so the caller can show a clean error
     raise RuntimeError(
-        "Không có engine inpaint khả dụng. Cần cài: Python 3, ffmpeg, opencv-python "
-        "(và simple-lama-inpainting + big-lama.pt nếu muốn dùng LaMa)."
+        "Không có engine inpaint khả dụng. cv2 chưa import được — "
+        "bản EXE đáng lẽ phải bundle sẵn opencv-python. Bạn đang chạy dev "
+        "mode? Chạy: pip install opencv-python"
     )
 
 
@@ -280,18 +331,26 @@ async def remove_watermark_from_video(
     if not ffmpeg:
         raise RuntimeError("FFmpeg không tìm thấy. Cài: pip install imageio-ffmpeg.")
 
-    python = detect_python()
-    if not python:
-        raise RuntimeError(
-            "Python 3 không tìm thấy trên máy. Cần cài Python 3 + opencv-python "
-            "để dùng tính năng xóa watermark video."
-        )
-
     method = await resolve_method(method)
     await _emit(f"Engine: {method.upper()}", 1)
 
+    # OpenCV runs IN-PROCESS (cv2 bundled into the EXE → no Python subprocess
+    # needed). LaMa still needs the subprocess path because torch is too big
+    # to bundle. The wizard installs torch + simple_lama_inpainting + model
+    # into an external Python that we then spawn.
+    use_subprocess = (method != "opencv") or not _builtin_cv2_available()
+
+    python = None
+    if use_subprocess:
+        python = detect_python()
+        if not python:
+            raise RuntimeError(
+                "Cần cài Python 3 + torch + simple-lama-inpainting để dùng "
+                "LaMa AI. Hoặc chọn method=opencv (chạy luôn trong EXE)."
+            )
+
     lama_script = get_lama_script()
-    if not lama_script.exists():
+    if use_subprocess and not lama_script.exists():
         raise RuntimeError(f"Script inpaint không có ở: {lama_script}")
 
     mask_src = mask_path or get_default_veo_mask()
@@ -355,69 +414,110 @@ async def remove_watermark_from_video(
             if proc.returncode != 0:
                 raise RuntimeError("Mask preparation failed")
 
-        # 3. Run inpaint subprocess + parse JSON progress
+        # 3. Run inpaint — either in-process (OpenCV, fastest startup) or
+        #    via subprocess (LaMa, needs external Python with torch).
         await _emit("Đang xóa watermark…", 8)
-        args = [
-            python, str(lama_script), method,
-            str(frames_in), str(mask_resized), str(frames_out),
-            "--device", device, "--gpu-ratio", str(gpu_ratio),
-        ]
-        log.info(f"spawn: {' '.join(args)}")
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
 
-        async def _drain_stdout():
-            """Parse JSON progress lines. Each line is one event from the script."""
-            assert proc.stdout
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                try:
-                    msg = json.loads(line.decode("utf-8").strip())
-                except Exception:
-                    continue
-                if "error" in msg:
-                    # Don't raise here — let the wait() pick up the non-zero exit
-                    log.warning(f"inpaint error: {msg['error']}")
-                    continue
-                if msg.get("status") == "done":
-                    await _emit("Hoàn tất inpaint", 85)
-                elif "progress" in msg:
-                    # Script emits 0-100; map into our 8-85 working range
-                    p = float(msg["progress"])
+        if not use_subprocess:
+            # IN-PROCESS path: import lama_inpaint and call run_opencv()
+            # directly. Saves the subprocess spawn overhead and lets us
+            # forward progress without parsing JSON from stdout. The
+            # callback runs synchronously (cv2 work is mostly C, GIL gets
+            # released) but the event loop is blocked while we crunch,
+            # which is fine for short videos and acceptable for long ones.
+            await _emit("In-process OpenCV (bundled)…", 9)
+            loop = asyncio.get_running_loop()
+
+            def _sync_cb(payload: dict) -> None:
+                # lama_inpaint emits the same payload shape as in CLI mode.
+                # Translate to our async _emit on the event loop thread.
+                if "progress" in payload:
+                    p = float(payload["progress"])
                     pct = 8 + (p / 100.0) * 77
                     label = (
-                        f"AI inpainting {msg.get('frame','?')}/{msg.get('total','?')}"
-                        if "frame" in msg else f"AI inpainting {p:.0f}%"
+                        f"OpenCV {payload.get('frame','?')}/{payload.get('total','?')}"
+                        if "frame" in payload else f"OpenCV {p:.0f}%"
                     )
-                    await _emit(label, pct)
-                elif "status" in msg:
-                    await _emit(msg["status"], 50)
+                    asyncio.run_coroutine_threadsafe(_emit(label, pct), loop)
+                elif payload.get("status") == "done":
+                    asyncio.run_coroutine_threadsafe(_emit("Hoàn tất inpaint", 85), loop)
+                elif "status" in payload:
+                    asyncio.run_coroutine_threadsafe(_emit(payload["status"], 50), loop)
+                # `error` payloads will raise out of run_opencv as RuntimeError
+                # so we don't need to handle them here.
 
-        async def _drain_stderr():
-            assert proc.stderr
-            buf = b""
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                buf += line
-                # Surface tracebacks to logs but don't terminate — exit code rules.
-                log.debug(f"inpaint stderr: {line.decode('utf-8', errors='replace').rstrip()}")
-            return buf
+            try:
+                # Run in a thread because cv2.inpaint is CPU-bound and would
+                # otherwise block the event loop for the entire pipeline.
+                from . import lama_inpaint as _li
+                await asyncio.to_thread(
+                    _li.run_opencv, frames_in, mask_resized, frames_out, _sync_cb,
+                )
+            except Exception as e:
+                raise RuntimeError(f"OpenCV inpaint thất bại: {e}")
+        else:
+            # SUBPROCESS path: external Python runs lama_inpaint.py and
+            # streams JSON progress lines.
+            args = [
+                python, str(lama_script), method,
+                str(frames_in), str(mask_resized), str(frames_out),
+                "--device", device, "--gpu-ratio", str(gpu_ratio),
+            ]
+            log.info(f"spawn: {' '.join(args)}")
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
 
-        stdout_task = asyncio.create_task(_drain_stdout())
-        stderr_task = asyncio.create_task(_drain_stderr())
-        rc = await proc.wait()
-        await stdout_task
-        stderr_buf = await stderr_task
-        if rc != 0:
-            tail = stderr_buf.decode("utf-8", errors="replace")[-500:]
-            raise RuntimeError(f"Inpaint exited with code {rc}: {tail}")
+            async def _drain_stdout():
+                """Parse JSON progress lines. Each line = one script event."""
+                assert proc.stdout
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    try:
+                        msg = json.loads(line.decode("utf-8").strip())
+                    except Exception:
+                        continue
+                    if "error" in msg:
+                        # Don't raise here — let wait() pick up non-zero exit
+                        log.warning(f"inpaint error: {msg['error']}")
+                        continue
+                    if msg.get("status") == "done":
+                        await _emit("Hoàn tất inpaint", 85)
+                    elif "progress" in msg:
+                        # Script emits 0-100; map into our 8-85 working range
+                        p = float(msg["progress"])
+                        pct = 8 + (p / 100.0) * 77
+                        label = (
+                            f"AI inpainting {msg.get('frame','?')}/{msg.get('total','?')}"
+                            if "frame" in msg else f"AI inpainting {p:.0f}%"
+                        )
+                        await _emit(label, pct)
+                    elif "status" in msg:
+                        await _emit(msg["status"], 50)
+
+            async def _drain_stderr():
+                assert proc.stderr
+                buf = b""
+                while True:
+                    line = await proc.stderr.readline()
+                    if not line:
+                        break
+                    buf += line
+                    log.debug(f"inpaint stderr: {line.decode('utf-8', errors='replace').rstrip()}")
+                return buf
+
+            stdout_task = asyncio.create_task(_drain_stdout())
+            stderr_task = asyncio.create_task(_drain_stderr())
+            rc = await proc.wait()
+            await stdout_task
+            stderr_buf = await stderr_task
+            if rc != 0:
+                tail = stderr_buf.decode("utf-8", errors="replace")[-500:]
+                raise RuntimeError(f"Inpaint exited with code {rc}: {tail}")
 
         # Sanity: at least some frames must have been written
         n_out = sum(1 for _ in frames_out.glob("*.png"))

@@ -80,7 +80,17 @@ async def upload_cookie(account_id: int, file: UploadFile = File(...)):
 
 @router.post("/{account_id}/check")
 async def check_account(account_id: int):
-    """Check session validity + credits via Playwright."""
+    """Check session validity + credits via Playwright.
+
+    Distinguishes 3 outcomes for credit:
+      - successfully read a number (incl. genuine 0) → credit_fetch_ok=True
+      - fetch failed (Google changed UI, page didn't load, etc.) → False
+      - session dead (alive=False) → credit not attempted
+
+    Only writes credit back to DB on a successful read — keeps the old
+    value when fetch fails so the UI doesn't suddenly show 0 from a
+    transient failure.
+    """
     acc = db.get_account(account_id)
     if not acc:
         raise HTTPException(404, "Account not found")
@@ -104,24 +114,51 @@ async def check_account(account_id: int):
         # If redirected to signin → session dead
         alive = "accounts.google.com" not in (page.url or "")
         credit = None
+        credit_fetch_error: str | None = None
         if alive:
             client = fc_mod.FlowClient(
                 page, cookie_path=acc["cookie_path"], account_email=acc["email"],
             )
             try:
                 info = await client.check_credits()
-                if isinstance(info, dict):
-                    credit = info.get("remainingCredits")
+                # check_credits returns either {"remainingCredits": int} on
+                # success or {"error": "..."} on failure (or None).
+                if isinstance(info, dict) and "remainingCredits" in info:
+                    credit = info["remainingCredits"]
+                elif isinstance(info, dict) and "error" in info:
+                    credit_fetch_error = info["error"]
+                    log.warning(
+                        f"[{acc['email']}] check_credits returned error: "
+                        f"{credit_fetch_error}"
+                    )
+                else:
+                    credit_fetch_error = "Không đọc được credit (Google đã đổi UI?)"
+                    log.warning(f"[{acc['email']}] check_credits returned no data")
             except Exception as e:
+                credit_fetch_error = str(e)
                 log.warning(f"check_credits failed: {e}")
 
         update_fields = {}
-        if credit is not None:
+        # Only write to DB when we got a real number — including genuine 0.
+        if credit is not None and isinstance(credit, (int, float)):
             update_fields["credit"] = int(credit)
         if update_fields:
             db.update_account(account_id, **update_fields)
-        await hub.broadcast("account_updated", {"id": account_id, "credit": credit, "alive": alive})
-        return {"ok": True, "alive": alive, "credit": credit}
+
+        await hub.broadcast("account_updated", {
+            "id": account_id,
+            "credit": credit,
+            "alive": alive,
+            "credit_fetch_ok": credit is not None,
+            "credit_fetch_error": credit_fetch_error,
+        })
+        return {
+            "ok": True,
+            "alive": alive,
+            "credit": credit,
+            "credit_fetch_ok": credit is not None,
+            "credit_fetch_error": credit_fetch_error,
+        }
     except Exception as e:
         log.exception(f"check_account failed for {account_id}")
         return {"ok": False, "reason": "error", "message": str(e)}

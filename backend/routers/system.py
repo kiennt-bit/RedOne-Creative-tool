@@ -127,6 +127,73 @@ async def start_update():
     return {"ok": True, "started": True, "version": info["latest"]}
 
 
+# ─── LaMa AI upgrade installer ─────────────────────────────────────
+
+async def _run_lama_install_pipeline():
+    """Background task: install LaMa deps + download model, broadcasting
+    progress via WS. Lives at module level so the asyncio.create_task() in
+    /lama-install doesn't tie its lifetime to the request handler."""
+    from ..services.lama_installer import install_lama
+
+    async def _emit(state: dict) -> None:
+        await hub.broadcast("lama_install_progress", state)
+
+    try:
+        await install_lama(on_progress=_emit)
+    except Exception as e:
+        log.warning(f"LaMa install pipeline crashed: {e}")
+        # _emit already fired by install_lama() before re-raising
+
+
+@router.get("/lama-install-state")
+async def lama_install_state():
+    """Snapshot of the in-progress (or last completed) LaMa install.
+
+    Frontend uses this on page mount to reattach to an ongoing install
+    after a refresh — same pattern as /update-state for the auto-updater.
+    """
+    from ..services.lama_installer import get_install_state
+    return get_install_state()
+
+
+@router.post("/lama-install")
+async def lama_install():
+    """Kick off the LaMa upgrade pipeline as a background task.
+
+    Returns immediately; frontend subscribes to WS `lama_install_progress`
+    events for live progress. Rejects with 409 if an install is already
+    running so the user doesn't accidentally start two concurrent pip
+    invocations (they'd race on the same cache).
+    """
+    from ..services.lama_installer import get_install_state
+    state = get_install_state()
+    if state["stage"] in ("detecting", "installing_pip", "downloading_model"):
+        raise HTTPException(409, "Install đang chạy rồi")
+    asyncio.create_task(_run_lama_install_pipeline())
+    return {"ok": True, "started": True}
+
+
+@router.post("/shutdown")
+async def shutdown():
+    """Kill the server process. Called from Settings → "Tắt tool".
+
+    Browser tabs only disconnect — they don't kill the backend. Without this
+    endpoint, the EXE keeps running in the background after the user closes
+    the last tab, hogging port 8000 + RAM. Calls os._exit(0) after a tiny
+    delay so the HTTP response flushes first.
+    """
+    import os
+    import asyncio
+    log.info("Shutdown requested via /api/system/shutdown — exiting in 0.5s")
+    await hub.broadcast("server_shutting_down", {})
+
+    async def _bye():
+        await asyncio.sleep(0.5)   # let response flush
+        os._exit(0)
+    asyncio.create_task(_bye())
+    return {"ok": True, "message": "Đang tắt tool..."}
+
+
 @router.post("/apply-update")
 async def apply_update():
     """Swap to the staged build and restart. THIS PROCESS DIES.

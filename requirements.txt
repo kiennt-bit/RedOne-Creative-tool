@@ -7,6 +7,9 @@ google-genai>=0.3.0
 Pillow>=10.0.0
 yt-dlp>=2024.1.0
 imageio-ffmpeg>=0.4.9
+# opencv-python is REQUIRED from v1.0.4 — bundled into EXE so the Xóa
+# Watermark Video feature works out-of-box without external Python.
+opencv-python>=4.9.0
 
 # Optional — stealth Chromium for bypassing Google reCAPTCHA detection.
 # User chooses backend in Settings → "Trình duyệt sử dụng". If not

@@ -374,35 +374,47 @@ async function loadDepsStatus(root) {
     const st = await api.media.lamaStatus();
     lamaStatusCache = st;
 
-    // Hide the entire card when LaMa is fully ready — user doesn't need
-    // to see install chips on every visit if everything works.
+    // Hide entirely if LaMa is fully ready — nothing to upgrade.
     if (st.lama_ok) {
       card.style.display = 'none';
       return;
     }
     card.style.display = '';
-
     clear(wrap);
 
+    // ── Case 1: OpenCV ready (bundled in EXE) — offer LaMa upgrade ──
+    // This is the happy path for users on the official EXE. Watermark
+    // removal already works; the wizard is OPTIONAL for higher quality.
+    if (st.opencv_ok) {
+      wrap.appendChild(el('div', {
+        class: 'chip chip-green',
+        style: { fontSize: '12px', fontWeight: 600, marginBottom: '10px' },
+      }, '✓ Đang dùng OpenCV — sẵn sàng xóa watermark Veo'));
+
+      wrap.appendChild(el('div', { class: 'field-help', style: { marginBottom: '12px' } },
+        'Muốn chất lượng cao hơn cho watermark phức tạp? Cài LaMa AI '
+        + '(~700MB-1.5GB tùy hardware). Chỉ cài 1 lần, dùng mãi.'));
+
+      wrap.appendChild(el('button', {
+        class: 'btn btn-warm', style: { width: '100%' },
+        onclick: () => openLamaWizard(root),
+      }, icon('sparkles', 14), 'Nâng cấp lên LaMa AI'));
+      return;
+    }
+
+    // ── Case 2: OpenCV NOT available — dev mode or broken EXE ──
+    // Show the chips + copy-paste install command (old behavior).
     const chip = (ok, text) => el('span', {
       class: ok ? 'chip chip-green' : 'chip chip-yellow',
       style: { marginRight: '6px', marginBottom: '6px' },
     }, `${ok ? '✓' : '⚠'} ${text}`);
 
-    const chipsRow = el('div', { style: { marginBottom: '10px' } },
+    wrap.appendChild(el('div', { style: { marginBottom: '10px' } },
       chip(st.python_ok, 'Python 3'),
       chip(st.ffmpeg_ok, 'FFmpeg'),
       chip(st.cv2, 'opencv-python'),
-      chip(st.torch, 'PyTorch'),
-      chip(st.simple_lama, 'simple-lama-inpainting'),
-      chip(st.model_ok, 'big-lama.pt model'),
-      ...(st.cuda ? [chip(true, 'CUDA GPU')] : []),
-    );
-    wrap.appendChild(chipsRow);
+    ));
 
-    // Show server's Python path so user can see WHICH interpreter we're
-    // checking against. Catches the common gotcha: user installs with
-    // `py -m pip` but server runs a different Python → status stays ⚠.
     if (st.python) {
       wrap.appendChild(el('div', {
         class: 'field-help',
@@ -411,92 +423,207 @@ async function loadDepsStatus(root) {
           fontFamily: 'JetBrains Mono, monospace',
           color: 'var(--text-muted)',
         },
-        title: 'Server đang dùng Python này — phải cài packages vào ĐÚNG Python này',
       }, `🔍 Đang kiểm tra: ${st.python}`));
     }
 
-    // Verdict line
-    let verdict, verdictClass;
-    if (st.opencv_ok) {
-      verdict = '✓ Chạy được với OpenCV — cài thêm để có LaMa quality cao hơn';
-      verdictClass = 'chip-green';
-    } else if (!st.python_ok) {
-      verdict = '✕ Cần cài Python 3 trước';
-      verdictClass = 'chip-red';
-    } else {
-      verdict = '⚠ Cần cài thêm — xem hướng dẫn bên dưới';
-      verdictClass = 'chip-yellow';
-    }
     wrap.appendChild(el('div', {
-      class: `chip ${verdictClass}`,
+      class: `chip ${st.python_ok ? 'chip-yellow' : 'chip-red'}`,
       style: { fontSize: '12px', fontWeight: 600 },
-    }, verdict));
+    }, st.python_ok ? '⚠ Cần cài opencv-python — xem lệnh bên dưới'
+                    : '✕ Cần cài Python 3 trước'));
 
-    // Install instructions block — always shown when card is visible
-    // (we only get here if !lama_ok, so something IS missing).
-    //
-    // CRITICAL: use the SAME interpreter the server is running. On Windows
-    // it's common to have multiple Python installs (Anaconda, py launcher,
-    // python.org). If the user installs with `py -m pip` but the server
-    // runs `python launch.py`, packages land in the WRONG Python and the
-    // status chips stay ⚠ even after a "successful" install.
-    //
-    // We always show the server's actual sys.executable in the command and
-    // wrap it in quotes for safety (path may contain spaces).
-    const missingMin = !st.opencv_ok;
-    {
-      const serverPython = st.python || 'python';
-      const needsQuote = serverPython.includes(' ');
-      const pyArg = needsQuote ? `"${serverPython}"` : serverPython;
-      const minCmd = `${pyArg} -m pip install opencv-python simple-lama-inpainting torch imageio-ffmpeg`;
-      const helpBox = el('div', {
-        style: {
-          marginTop: '14px',
-          padding: '12px',
-          background: 'var(--bg-2)',
-          borderRadius: 'var(--r-md)',
-          border: '1px solid var(--border)',
-        },
+    const serverPython = st.python || 'python';
+    const needsQuote = serverPython.includes(' ');
+    const pyArg = needsQuote ? `"${serverPython}"` : serverPython;
+    const minCmd = `${pyArg} -m pip install opencv-python`;
+
+    wrap.appendChild(el('div', {
+      style: {
+        marginTop: '14px', padding: '12px',
+        background: 'var(--bg-2)', borderRadius: 'var(--r-md)',
+        border: '1px solid var(--border)',
       },
-        el('div', { style: { fontWeight: 600, marginBottom: '8px' } },
-          missingMin ? 'Để chạy được (1 lần):' : 'Để dùng LaMa AI quality (khuyến nghị):'),
-        el('div', { style: {
-          fontFamily: 'JetBrains Mono, monospace',
-          fontSize: '12px',
-          background: 'var(--bg-1)',
-          padding: '8px',
-          borderRadius: '6px',
-          wordBreak: 'break-all',
-          marginBottom: '8px',
-        } }, minCmd),
-        el('button', {
-          class: 'btn btn-sm btn-primary',
-          onclick: async () => {
-            try {
-              await navigator.clipboard.writeText(minCmd);
-              toast('Đã copy lệnh — paste vào PowerShell / cmd rồi Enter', 'success');
-            } catch (e) {
-              toast('Copy thất bại — copy thủ công từ ô trên', 'error');
-            }
-          },
-        }, icon('copy', 14), 'Copy lệnh'),
-        el('div', { class: 'field-help', style: { marginTop: '10px' } },
-          missingMin
-            ? '→ Mở PowerShell (Win + X → Terminal) → paste lệnh trên → Enter → đợi 2-5 phút (~2GB tải) → '
-              + 'restart RedOne. Lần đầu chạy LaMa sẽ tự download model ~204MB.'
-            : '→ OpenCV đã cài, dùng được luôn. LaMa cho chất lượng cao hơn nếu bạn muốn.'),
-        el('div', { class: 'field-help', style: { marginTop: '6px' } },
-          'Nếu báo "py: not recognized" → chưa cài Python. '),
-        st.python_ok ? null : el('div', {
-          class: 'field-help',
-          style: { marginTop: '6px', color: 'var(--red)' },
-        }, '⚠ Chưa thấy Python — tải từ https://python.org/downloads/ (tick "Add Python to PATH" khi cài)'),
-      );
-      wrap.appendChild(helpBox);
-    }
+    },
+      el('div', { style: { fontWeight: 600, marginBottom: '8px' } },
+        'Lệnh cài để chạy được (1 lần):'),
+      el('div', { style: {
+        fontFamily: 'JetBrains Mono, monospace', fontSize: '12px',
+        background: 'var(--bg-1)', padding: '8px',
+        borderRadius: '6px', wordBreak: 'break-all', marginBottom: '8px',
+      } }, minCmd),
+      el('button', {
+        class: 'btn btn-sm btn-primary',
+        onclick: async () => {
+          try {
+            await navigator.clipboard.writeText(minCmd);
+            toast('Đã copy — paste vào PowerShell rồi Enter', 'success');
+          } catch (e) { toast('Copy thất bại', 'error'); }
+        },
+      }, icon('copy', 14), 'Copy lệnh'),
+      st.python_ok ? null : el('div', {
+        class: 'field-help',
+        style: { marginTop: '8px', color: 'var(--red)' },
+      }, '⚠ Tải Python tại https://python.org/downloads/ (tick "Add Python to PATH")'),
+    ));
   } catch (e) {
     wrap.innerHTML = '';
     wrap.appendChild(el('div', { style: { color: 'var(--red)' } },
       `Không check được: ${e.message}`));
   }
+}
+
+
+// ── LaMa upgrade wizard modal ────────────────────────────────────
+// Triggered from the deps card's "Nâng cấp lên LaMa AI" button. Backend
+// runs pip install + downloads the big-lama.pt model in a background
+// task; WS events drive the progress bar.
+
+let _wizardState = null;   // { root, bar, label, logBox, status, actionBtn }
+let _wizardUnsub = null;
+
+function openLamaWizard(pageRoot) {
+  if (_wizardState) {
+    _wizardState.root.style.display = 'flex';
+    return;
+  }
+
+  const root = el('div', { class: 'modal-backdrop', style: { display: 'flex' } });
+  const card = el('div', { class: 'modal', style: { maxWidth: '600px' } });
+  root.appendChild(card);
+  document.body.appendChild(root);
+
+  card.appendChild(el('h3', { class: 'modal-title' }, 'Nâng cấp lên LaMa AI'));
+  card.appendChild(el('div', { class: 'field-help' },
+    'Cài 3 thứ vào Python trên máy bạn: '
+    + 'opencv-python · simple-lama-inpainting · torch (~700MB) — '
+    + 'và tải model big-lama.pt (~204MB). Mất 5-15 phút tùy mạng. '
+    + 'Sau khi xong, vẫn cần restart RedOne để áp dụng.'));
+
+  const label = el('div', {
+    class: 'field-label',
+    style: { marginTop: '14px', wordBreak: 'break-all' },
+  }, 'Sẵn sàng cài đặt');
+
+  const barWrap = el('div', {
+    style: {
+      marginTop: '10px', height: '10px', background: 'var(--bg-2)',
+      borderRadius: '5px', overflow: 'hidden',
+    },
+  });
+  const bar = el('div', {
+    style: {
+      height: '100%', width: '0%', background: 'var(--brand)',
+      transition: 'width 0.3s',
+    },
+  });
+  barWrap.appendChild(bar);
+
+  // Scrolling log panel showing pip's last 20 lines
+  const logBox = el('div', {
+    style: {
+      marginTop: '12px', maxHeight: '180px', overflowY: 'auto',
+      background: 'var(--bg-1)', padding: '8px', borderRadius: '6px',
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+      color: 'var(--text-muted)', whiteSpace: 'pre-wrap',
+      display: 'none',
+    },
+  });
+
+  card.appendChild(label);
+  card.appendChild(barWrap);
+  card.appendChild(logBox);
+
+  const actionBtn = el('button', { class: 'btn btn-primary' }, 'Bắt đầu cài');
+  const closeBtn = el('button', { class: 'btn btn-ghost' }, 'Đóng');
+  card.appendChild(el('div', {
+    style: { display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' },
+  }, closeBtn, actionBtn));
+
+  _wizardState = { root, bar, label, logBox, actionBtn, stage: 'idle' };
+
+  // Subscribe to live progress events
+  import('../ws.js').then(({ ws }) => {
+    if (_wizardUnsub) { _wizardUnsub(); _wizardUnsub = null; }
+    _wizardUnsub = ws.on('lama_install_progress', (state) => {
+      if (!_wizardState) return;
+      applyWizardState(state);
+    });
+  });
+
+  // Reattach to in-progress install (e.g. user reloaded page mid-install)
+  api.system.lamaInstallState().then(s => {
+    if (s && s.stage !== 'idle') applyWizardState(s);
+  }).catch(() => {});
+
+  actionBtn.addEventListener('click', async () => {
+    const st = _wizardState;
+    if (!st) return;
+    if (st.stage === 'idle' || st.stage === 'error') {
+      actionBtn.disabled = true;
+      label.textContent = 'Đang gửi yêu cầu…';
+      try {
+        await api.system.lamaInstall();
+        // WS events take over from here
+      } catch (e) {
+        label.textContent = `Lỗi: ${e.message}`;
+        actionBtn.disabled = false;
+      }
+    } else if (st.stage === 'done') {
+      // "Restart tool" path — call shutdown then user has to reopen
+      try {
+        await api.system.shutdown();
+        document.body.innerHTML =
+          '<div style="display:flex;align-items:center;justify-content:center;'
+          + 'height:100vh;font-family:sans-serif;color:#666;text-align:center;'
+          + 'padding:20px;background:#fff">'
+          + '<div><h2 style="color:#dc2626;margin-bottom:12px">Đã tắt RedOne</h2>'
+          + '<p>LaMa AI đã cài xong. Mở lại tool để bắt đầu dùng.</p>'
+          + '</div></div>';
+      } catch (e) {
+        toast(`Không tắt được tool: ${e.message}. Tắt thủ công rồi mở lại.`, 'warning');
+      }
+    }
+  });
+
+  closeBtn.addEventListener('click', closeLamaWizard);
+}
+
+function applyWizardState(state) {
+  if (!_wizardState) return;
+  const w = _wizardState;
+  w.stage = state.stage;
+  w.bar.style.width = `${state.percent || 0}%`;
+  w.label.textContent = state.label || state.stage;
+
+  // Show the pip log panel when we have lines to show
+  if (Array.isArray(state.pip_log_tail) && state.pip_log_tail.length) {
+    w.logBox.style.display = 'block';
+    w.logBox.textContent = state.pip_log_tail.slice(-20).join('\n');
+    w.logBox.scrollTop = w.logBox.scrollHeight;
+  }
+
+  if (state.stage === 'installing_pip') {
+    w.bar.style.background = 'var(--accent-orange)';
+    w.actionBtn.disabled = true;
+    w.actionBtn.textContent = 'Đang cài pip packages…';
+  } else if (state.stage === 'downloading_model') {
+    w.bar.style.background = 'var(--brand)';
+    w.actionBtn.disabled = true;
+    w.actionBtn.textContent = 'Đang tải model…';
+  } else if (state.stage === 'done') {
+    w.bar.style.background = 'var(--green)';
+    w.actionBtn.disabled = false;
+    w.actionBtn.textContent = 'Tắt & restart tool';
+  } else if (state.stage === 'error') {
+    w.bar.style.background = 'var(--red)';
+    w.actionBtn.disabled = false;
+    w.actionBtn.textContent = 'Thử lại';
+  }
+}
+
+function closeLamaWizard() {
+  if (!_wizardState) return;
+  _wizardState.root.remove();
+  _wizardState = null;
+  if (_wizardUnsub) { _wizardUnsub(); _wizardUnsub = null; }
 }

@@ -20,15 +20,22 @@ datas = [
     (str(project_root / 'backend' / 'resources'), 'backend/resources'),
     (str(project_root / 'backend' / 'services' / 'lama_inpaint.py'), 'backend/services'),
 ]
+binaries = []   # native DLLs/.so added by collect_all() — see loop below
 
 # Heavy 3rd-party packages need full collection (binaries + data + submodules)
 # Note: 'cloakbrowser' is optional — if user uses Cloak backend, the package
 # is bundled but its Chromium binary (~200MB) auto-downloads on first run.
+#
+# 'cv2' (opencv-python) is bundled so the Xóa Watermark Video feature works
+# out-of-box on a fresh machine without needing `pip install opencv-python`.
+# Adds ~50MB to the EXE. LaMa quality (torch + simple-lama-inpainting) is
+# still external — install via the in-app upgrade wizard.
 for pkg in ('playwright', 'curl_cffi', 'httpx', 'uvicorn', 'fastapi', 'starlette',
-            'websockets', 'pydantic_core', 'cloakbrowser'):
+            'websockets', 'pydantic_core', 'cloakbrowser', 'cv2', 'imageio_ffmpeg'):
     try:
         d, b, h = collect_all(pkg)
         datas += d
+        binaries += b   # cv2 ships native DLLs (opencv_world*.dll, ffmpeg, ...)
     except Exception:
         pass
 
@@ -44,6 +51,12 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('backend')
 hiddenimports += collect_submodules('playwright')
+# cv2 has a complex C-extension layout; collect_submodules helps PyInstaller
+# pick up the data files (haarcascade XMLs etc.) it can't auto-discover.
+try:
+    hiddenimports += collect_submodules('cv2')
+except Exception:
+    pass
 try:
     hiddenimports += collect_submodules('cloakbrowser')
 except Exception:
@@ -53,7 +66,7 @@ except Exception:
 a = Analysis(
     ['launch.py'],
     pathex=[str(project_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -12,26 +12,54 @@ import json
 from pathlib import Path
 
 
-def run_opencv(input_dir, mask_path, output_dir):
-    """Fast inpainting using OpenCV TELEA algorithm."""
+def run_opencv(input_dir, mask_path, output_dir, on_event=None):
+    """Fast inpainting using OpenCV TELEA algorithm.
+
+    Two call modes:
+      • CLI (subprocess): `on_event` is None → emit JSON progress to stdout.
+        This is the original mode; main() calls it this way when the script
+        is invoked as a subprocess.
+      • In-process (callable): pass `on_event=callback(dict)` to receive
+        progress updates without subprocess. Used by the bundled EXE where
+        cv2 is available in-process and we skip the subprocess hop entirely.
+
+    Returns True on success, raises on failure (callable mode).
+    In CLI mode, sys.exit(1) on failure to signal non-zero exit code.
+    """
     import cv2
     import numpy as np
     from PIL import Image
 
+    def _emit(payload):
+        """Route a status payload to either stdout (CLI) or the callback."""
+        if on_event is not None:
+            try:
+                on_event(payload)
+            except Exception:
+                pass   # callback errors shouldn't kill the inpainting
+        else:
+            print(json.dumps(payload), flush=True)
+
+    def _fail(msg):
+        _emit({"error": msg})
+        if on_event is None:
+            sys.exit(1)
+        raise RuntimeError(msg)
+
     # Load mask
     mask_img = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask_img is None:
-        print(json.dumps({"error": f"Cannot read mask: {mask_path}"}))
-        sys.exit(1)
+        _fail(f"Cannot read mask: {mask_path}")
+        return False
 
     frames = sorted(input_dir.glob('*.png'))
     total = len(frames)
 
     if total == 0:
-        print(json.dumps({"error": "No PNG frames found"}))
-        sys.exit(1)
+        _fail("No PNG frames found")
+        return False
 
-    print(json.dumps({"status": f"Processing {total} frames with OpenCV...", "total": total}), flush=True)
+    _emit({"status": f"Processing {total} frames with OpenCV...", "total": total})
 
     # Check for static watermark fast path
     mask_pil = Image.open(str(mask_path)).convert('L')
@@ -39,7 +67,7 @@ def run_opencv(input_dir, mask_path, output_dir):
     crop_box, _ = _find_crop_region(mask_pil, first_pil.size)
 
     if crop_box is not None:
-        is_static, _ = _check_static_watermark(frames, crop_box)
+        is_static, _ = _check_static_watermark(frames, crop_box, on_event=on_event)
         if is_static:
             x1, y1, x2, y2 = crop_box
             # Inpaint first frame only
@@ -53,7 +81,7 @@ def run_opencv(input_dir, mask_path, output_dir):
             result = cv2.inpaint(img, cur_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
             clean_patch = result[y1:y2, x1:x2].copy()
 
-            print(json.dumps({"status": f"Static watermark → applying patch to {total} frames (parallel)..."}), flush=True)
+            _emit({"status": f"Static watermark → applying patch to {total} frames (parallel)..."})
             from concurrent.futures import ThreadPoolExecutor
             def _apply_patch_cv(frame_path):
                 frame = cv2.imread(str(frame_path))
@@ -62,9 +90,9 @@ def run_opencv(input_dir, mask_path, output_dir):
             with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
                 list(pool.map(_apply_patch_cv, frames))
 
-            print(json.dumps({"progress": 100, "frame": total, "total": total}), flush=True)
-            print(json.dumps({"status": "done", "progress": 100}), flush=True)
-            return
+            _emit({"progress": 100, "frame": total, "total": total})
+            _emit({"status": "done", "progress": 100})
+            return True
 
     # Full per-frame inpainting
     for i, frame_path in enumerate(frames):
@@ -91,9 +119,10 @@ def run_opencv(input_dir, mask_path, output_dir):
         cv2.imwrite(str(output_dir / frame_path.name), result)
 
         progress = round((i + 1) / total * 100, 1)
-        print(json.dumps({"progress": progress, "frame": i + 1, "total": total}), flush=True)
+        _emit({"progress": progress, "frame": i + 1, "total": total})
 
-    print(json.dumps({"status": "done", "progress": 100}), flush=True)
+    _emit({"status": "done", "progress": 100})
+    return True
 
 
 def _load_lama_model():
@@ -134,12 +163,23 @@ def _find_crop_region(mask_img, frame_size, pad=64):
     return (x1, y1, x2, y2), mask_np
 
 
-def _check_static_watermark(frames, crop_box, max_check=None):
+def _check_static_watermark(frames, crop_box, max_check=None, on_event=None):
     """Check if watermark region is identical across all frames.
     Progressive: compare frame[i+1] vs frame[i], stop on first mismatch.
-    Returns (is_static, ref_crop_np) where ref_crop_np is the first frame's crop."""
+    Returns (is_static, ref_crop_np) where ref_crop_np is the first frame's crop.
+
+    `on_event` (optional callback) is forwarded from run_opencv so this
+    helper's status messages reach the in-process caller too.
+    """
     import numpy as np
     from PIL import Image
+
+    def _emit(payload):
+        if on_event is not None:
+            try: on_event(payload)
+            except Exception: pass
+        else:
+            print(json.dumps(payload), flush=True)
 
     if len(frames) < 2:
         return False, None
@@ -151,9 +191,7 @@ def _check_static_watermark(frames, crop_box, max_check=None):
     ref_img = Image.open(frames[0]).convert('RGB')
     ref_crop = np.array(ref_img.crop((x1, y1, x2, y2)), dtype=np.float32)
 
-    print(json.dumps({
-        "status": f"Checking static watermark ({check_count} frames)...",
-    }), flush=True)
+    _emit({"status": f"Checking static watermark ({check_count} frames)..."})
 
     for i in range(1, check_count):
         cur_img = Image.open(frames[i]).convert('RGB')
@@ -162,16 +200,12 @@ def _check_static_watermark(frames, crop_box, max_check=None):
         # Mean absolute difference — threshold 2/255 for JPEG artifacts
         diff = np.mean(np.abs(ref_crop - cur_crop))
         if diff > 2.0:
-            print(json.dumps({
-                "status": f"Watermark region differs at frame {i+1} (diff={diff:.2f}), using full inpaint",
-            }), flush=True)
+            _emit({"status": f"Watermark region differs at frame {i+1} (diff={diff:.2f}), using full inpaint"})
             return False, None
 
         ref_crop = cur_crop  # progressive: compare N vs N-1
 
-    print(json.dumps({
-        "status": f"Static watermark detected! All {check_count} frames identical → single inpaint",
-    }), flush=True)
+    _emit({"status": f"Static watermark detected! All {check_count} frames identical → single inpaint"})
     return True, ref_crop
 
 

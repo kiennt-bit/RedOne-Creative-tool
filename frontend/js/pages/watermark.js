@@ -73,48 +73,75 @@ export function renderWatermark(root) {
     const wrap = root.querySelector('#wm-canvas-wrap');
     clear(wrap);
     const container = el('div', { style: { position: 'relative', display: 'inline-block', maxWidth: '100%' } });
-    imageEl = el('img', { src: URL.createObjectURL(file),
-      style: { maxWidth: '100%', borderRadius: '8px', cursor: 'crosshair', display: 'block' } });
-    const overlay = el('div', { id: 'wm-overlay',
-      style: { position: 'absolute', inset: 0, pointerEvents: 'none' } });
-    const rectBox = el('div', { id: 'wm-rect-box',
-      style: { position: 'absolute', border: '2px dashed #00d4ff', background: 'rgba(0,212,255,0.12)', display: 'none' } });
+    // draggable=false: <img> elements are draggable by default in browsers
+    // (native HTML5 drag-and-drop). That hijacks pointer events and shows a
+    // ghost image instead of letting us draw a rect. -webkit-user-drag in
+    // CSS is the Safari/Chrome equivalent for older engines.
+    imageEl = el('img', {
+      src: URL.createObjectURL(file),
+      draggable: 'false',
+      style: {
+        maxWidth: '100%', borderRadius: '8px', cursor: 'crosshair',
+        display: 'block', WebkitUserDrag: 'none', userSelect: 'none',
+        pointerEvents: 'none',   // events go to the overlay instead
+      },
+    });
+    // Overlay is the ACTUAL event target — sits on top of the img and
+    // catches pointer events. Previously we listened on the img directly
+    // but browsers' native image drag kept hijacking the drag.
+    const overlay = el('div', {
+      style: {
+        position: 'absolute', inset: 0,
+        cursor: 'crosshair', userSelect: 'none', touchAction: 'none',
+      },
+    });
+    const rectBox = el('div', {
+      style: {
+        position: 'absolute', border: '2px dashed #00d4ff',
+        background: 'rgba(0,212,255,0.12)', display: 'none',
+        pointerEvents: 'none',   // don't block the overlay's events
+      },
+    });
     overlay.appendChild(rectBox);
     container.appendChild(imageEl);
     container.appendChild(overlay);
     wrap.appendChild(container);
 
-    imageEl.addEventListener('pointerdown', (e) => {
-      drawing = true;
-      const r = imageEl.getBoundingClientRect();
-      startPt = { x: e.clientX - r.left, y: e.clientY - r.top };
-      rectBox.style.display = 'block';
-      rectBox.style.left = startPt.x + 'px';
-      rectBox.style.top = startPt.y + 'px';
-      rectBox.style.width = '0px';
-      rectBox.style.height = '0px';
-      imageEl.setPointerCapture(e.pointerId);
-    });
-    imageEl.addEventListener('pointermove', (e) => {
-      if (!drawing) return;
-      const r = imageEl.getBoundingClientRect();
-      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+    function localCoords(e) {
+      const r = overlay.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+    function updateBoxFrom(cx, cy) {
       const x = Math.min(cx, startPt.x), y = Math.min(cy, startPt.y);
       const w = Math.abs(cx - startPt.x), h = Math.abs(cy - startPt.y);
       rectBox.style.left = x + 'px';
       rectBox.style.top = y + 'px';
       rectBox.style.width = w + 'px';
       rectBox.style.height = h + 'px';
+    }
+
+    overlay.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      drawing = true;
+      startPt = localCoords(e);
+      rectBox.style.display = 'block';
+      updateBoxFrom(startPt.x, startPt.y);
+      overlay.setPointerCapture(e.pointerId);
     });
-    imageEl.addEventListener('pointerup', (e) => {
+    overlay.addEventListener('pointermove', (e) => {
+      if (!drawing) return;
+      const { x: cx, y: cy } = localCoords(e);
+      updateBoxFrom(cx, cy);
+    });
+    overlay.addEventListener('pointerup', (e) => {
       if (!drawing) return;
       drawing = false;
-      // Scale to natural image coords
-      const scale = imageEl.naturalWidth / imageEl.clientWidth;
-      const r = imageEl.getBoundingClientRect();
-      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      try { overlay.releasePointerCapture(e.pointerId); } catch (_) {}
+      // Convert displayed-pixel rect → natural image pixel rect
+      const { x: cx, y: cy } = localCoords(e);
       const x = Math.min(cx, startPt.x), y = Math.min(cy, startPt.y);
       const w = Math.abs(cx - startPt.x), h = Math.abs(cy - startPt.y);
+      const scale = imageEl.naturalWidth / imageEl.clientWidth;
       rect = {
         x: Math.round(x * scale),
         y: Math.round(y * scale),
@@ -126,6 +153,9 @@ export function renderWatermark(root) {
       root.querySelector('#wm-w').value = rect.w;
       root.querySelector('#wm-h').value = rect.h;
     });
+    // Cancel a half-drawn rect if the pointer leaves while still down
+    // (e.g. user dragged off the page edge)
+    overlay.addEventListener('pointercancel', () => { drawing = false; });
   }
 
   root.querySelector('#wm-go').addEventListener('click', async () => {

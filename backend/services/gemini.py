@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +16,23 @@ try:
     HAS_GENAI = True
 except Exception:
     HAS_GENAI = False
+
+
+def _missing_lib_msg() -> str:
+    """Build a copy-pasteable install command that points at the SAME Python
+    that's currently running the server. Avoids the common "I installed it
+    but the server still says missing" trap where `pip` and `python` resolve
+    to different interpreters on Windows."""
+    py = sys.executable or "python"
+    needs_quote = " " in py
+    py_arg = f'"{py}"' if needs_quote else py
+    return (
+        "Thư viện google-genai chưa cài. Mở PowerShell rồi chạy:\n"
+        f"  {py_arg} -m pip install google-genai\n"
+        "→ Sau đó restart tool. Hoặc cài hết deps một lượt:\n"
+        f"  {py_arg} -m pip install -r requirements.txt"
+    )
+
 
 from ..config import GEMINI_MODELS_CHAIN
 from ..database import db
@@ -44,7 +62,7 @@ async def generate_text(
 ) -> dict:
     """Generate with model fallback chain. Returns {text, model_used, fallback_log}."""
     if not HAS_GENAI:
-        raise RuntimeError("google-genai library not installed. Run: pip install google-genai")
+        raise RuntimeError(_missing_lib_msg())
     client = _client()
     if not client:
         raise RuntimeError("Gemini API key not configured. Set in Settings → API Keys.")
