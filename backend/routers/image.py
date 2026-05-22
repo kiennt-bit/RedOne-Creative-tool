@@ -86,7 +86,12 @@ async def _process_image_task(task_id: int):
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
         log.info(f"Image task {task_id}: {len(items)} items, parallelism={parallelism}")
 
-        counters = {"done": 0, "error": 0}
+        # Pre-seed `done` with items already COMPLETED (retry path —
+        # /api/tasks/{id}/retry keeps completed items intact).
+        initial_done = sum(
+            1 for it in items if it.get("status") == ItemStatus.COMPLETED.value
+        )
+        counters = {"done": initial_done, "error": 0}
         counter_lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(parallelism)
 
@@ -100,11 +105,18 @@ async def _process_image_task(task_id: int):
         import random as _rng
 
         async def _process_one(item):
+            # Skip already-completed items — happens on retry where the
+            # /retry endpoint preserves COMPLETED state. Don't regenerate
+            # things we already have output for.
+            if item.get("status") == ItemStatus.COMPLETED.value:
+                return
+
             async with semaphore:
                 if await breaker.is_open():
                     cooldown_msg = (
-                        "Skipped — Google reCAPTCHA cooldown đang active. "
-                        "Đợi 10-15 phút rồi bấm 'Gen lại N lỗi' để retry."
+                        "Skipped — 403 reCAPTCHA cooldown. Có thể bấm 'Gen "
+                        "lại lỗi' ngay (nếu thử ngay vẫn fail thì đợi vài "
+                        "phút để Google reset risk score)."
                     )
                     db.update_item(item["id"], status=ItemStatus.ERROR.value,
                                    error_message=cooldown_msg)
@@ -199,8 +211,8 @@ async def _process_image_task(task_id: int):
                             "task_id": task_id,
                             "threshold": 3,
                             "message": (
-                                "3 ảnh liên tiếp bị Google reCAPTCHA chặn — "
-                                "pause task. Đợi 10-15p rồi bấm 'Gen lại N lỗi'."
+                                "3 ảnh liên tiếp bị 403 — đã pause task. "
+                                "Bấm 'Gen lại N lỗi' để retry ngay."
                             ),
                         })
                     db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)

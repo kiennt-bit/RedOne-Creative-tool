@@ -113,8 +113,16 @@ async def _process_task(task_id: int):
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
         log.info(f"Task {task_id}: processing {len(items)} items with parallelism={parallelism}")
 
-        # Shared mutable counters guarded by a lock
-        counters = {"done": 0, "error": 0}
+        # Shared mutable counters guarded by a lock.
+        # Pre-seed `done` with items that are already COMPLETED — happens on
+        # retry where /api/tasks/{id}/retry keeps the completed items intact
+        # and only resets ERROR/PENDING ones. Without this pre-seed, the
+        # progress chip would jump from "0/8" back to "5/8" as we walk
+        # through the completed items in the loop.
+        initial_done = sum(
+            1 for it in items if it.get("status") == ItemStatus.COMPLETED.value
+        )
+        counters = {"done": initial_done, "error": 0}
         counter_lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(parallelism)
 
@@ -126,14 +134,27 @@ async def _process_task(task_id: int):
         import random as _rng
 
         async def _process_one(item, idx):
-            """Generate + wait + download a single item, respecting the semaphore."""
+            """Generate + wait + download a single item, respecting the semaphore.
+
+            Items already COMPLETED are skipped entirely (they keep their
+            output_path from the previous successful run). This is the
+            retry path — only ERROR/PENDING items get regenerated.
+            """
+            # Skip COMPLETED items — DON'T re-generate already-good videos.
+            # The retry endpoint left these untouched on purpose; if we
+            # called generate_video for them, we'd burn credit on items
+            # the user already has output for.
+            if item.get("status") == ItemStatus.COMPLETED.value:
+                return
+
             async with semaphore:
                 # Fast-fail if the circuit has tripped — don't waste a
                 # generation slot on a call we know will 403.
                 if await breaker.is_open():
                     cooldown_msg = (
-                        "Skipped — Google reCAPTCHA cooldown đang active. "
-                        "Đợi 10-15 phút rồi bấm 'Gen lại N lỗi' để retry."
+                        "Skipped — 403 reCAPTCHA cooldown. Có thể bấm 'Gen "
+                        "lại lỗi' ngay (nếu thử ngay vẫn fail thì đợi vài "
+                        "phút để Google reset risk score)."
                     )
                     db.update_item(item["id"], status=ItemStatus.ERROR.value,
                                    error_message=cooldown_msg)
@@ -262,9 +283,9 @@ async def _process_task(task_id: int):
                             "task_id": task_id,
                             "threshold": CIRCUIT_THRESHOLD,
                             "message": (
-                                f"{CIRCUIT_THRESHOLD} items liên tiếp bị Google "
-                                f"reCAPTCHA chặn — đã pause task để tránh phí "
-                                f"credit. Đợi 10-15 phút rồi bấm 'Gen lại N lỗi'."
+                                f"{CIRCUIT_THRESHOLD} items liên tiếp bị 403 — "
+                                f"đã pause task. Bấm 'Gen lại N lỗi' để retry "
+                                f"ngay (nếu vẫn fail thì đợi vài phút)."
                             ),
                         })
                     db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)

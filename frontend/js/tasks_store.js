@@ -423,7 +423,7 @@ ws.on('task_circuit_tripped', (d) => {
   if (!t) return;
   t.circuit_tripped = true;
   t.circuit_message = d.message
-    || `${d.threshold || 3} items liên tiếp bị Google reCAPTCHA chặn — đợi 10-15p rồi retry.`;
+    || `${d.threshold || 3} items liên tiếp bị 403 — đã pause task. Bấm 'Gen lại N lỗi' để retry.`;
   notify(d.task_id);
   // One-shot toast — only on the transition. Backend broadcasts this
   // event exactly once per task lifecycle.
