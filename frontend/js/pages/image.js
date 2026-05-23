@@ -545,9 +545,11 @@ export function renderImage(root) {
         const actions = el('div', { class: 'scene-actions' },
           el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
             icon('download', 14), 'Tải'),
-          el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy URL', onclick: () => {
-            navigator.clipboard.writeText(location.origin + it.output_url);
-            toast('Đã copy URL', 'success');
+          el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy prompt', onclick: () => {
+            const p = (it.prompt || '').trim();
+            if (!p) return toast('Không có prompt để copy', 'warning');
+            navigator.clipboard.writeText(p);
+            toast('Đã copy prompt', 'success');
           } }, icon('copy', 14)),
         );
         // Upscale status chip — shows realtime progress when 2K/4K is running
@@ -587,7 +589,14 @@ export function renderImage(root) {
     const err = taskState.error;
     let statusText;
     if (taskState.status === 'running') {
-      statusText = `Đang tạo ${done + err}/${total} • OK: ${done}, lỗi: ${err}`;
+      if (taskState.batch_cooldown) {
+        const cd = taskState.batch_cooldown;
+        const elapsed = (Date.now() - cd.started_at) / 1000;
+        const remaining = Math.max(0, Math.ceil((cd.seconds || 0) - elapsed));
+        statusText = `Đang nghỉ ${remaining}s giữa đợt gen (${cd.batch_done}/${cd.batch_total}) • ${done}/${total} xong`;
+      } else {
+        statusText = `Đang tạo ${done + err}/${total} • OK: ${done}, lỗi: ${err}`;
+      }
       cancelBtn.classList.remove('hidden');
     } else if (taskState.status === 'completed') {
       statusText = `Hoàn tất: ${done} OK / ${err} lỗi`;

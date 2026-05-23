@@ -832,11 +832,17 @@ export function renderContent(root) {
                      : it.status === 'generating' ? 'Đang render'
                      : 'Đang chờ';
 
-      // Build actions row with download + per-card watermark chip
+      // Build actions row with download + copy-prompt + per-card watermark chip
       const sceneActions = (it.status === 'done' && it.output_url)
         ? el('div', { class: 'scene-actions' },
             el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
               icon('download', 14), 'Tải'),
+            el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy prompt', onclick: () => {
+              const p = (it.prompt || '').trim();
+              if (!p) return toast('Không có prompt để copy', 'warning');
+              navigator.clipboard.writeText(p);
+              toast('Đã copy prompt', 'success');
+            } }, icon('copy', 14)),
           )
         : null;
       if (sceneActions) {
@@ -878,7 +884,16 @@ export function renderContent(root) {
     const total = taskState.total || taskState.items.length;
     let statusText;
     if (taskState.status === 'running') {
-      statusText = `Đang render • ${taskState.done + taskState.error}/${total} (OK: ${taskState.done}, lỗi: ${taskState.error})`;
+      // If we're currently inside a between-batch cooldown, surface the
+      // wait time so user knows tool isn't frozen.
+      if (taskState.batch_cooldown) {
+        const cd = taskState.batch_cooldown;
+        const elapsed = (Date.now() - cd.started_at) / 1000;
+        const remaining = Math.max(0, Math.ceil((cd.seconds || 0) - elapsed));
+        statusText = `Đang nghỉ ${remaining}s giữa đợt gen (${cd.batch_done}/${cd.batch_total}) • ${taskState.done}/${total} xong`;
+      } else {
+        statusText = `Đang render • ${taskState.done + taskState.error}/${total} (OK: ${taskState.done}, lỗi: ${taskState.error})`;
+      }
       cancelBtn.classList.remove('hidden');
     } else if (taskState.status === 'completed') {
       statusText = `Hoàn tất: ${taskState.done} OK / ${taskState.error} lỗi`;

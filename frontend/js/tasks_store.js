@@ -436,6 +436,36 @@ ws.on('task_circuit_tripped', (d) => {
   } catch (_) {}
 });
 
+// Task is sleeping between batches — surface a temporary status flag so
+// the gallery can render a "Đang nghỉ Xs" chip. Cleared on next
+// task_progress or task_completed event.
+ws.on('task_batch_cooldown', (d) => {
+  if (!d || !d.task_id) return;
+  const t = tasks.get(d.task_id);
+  if (!t) return;
+  t.batch_cooldown = {
+    seconds: d.seconds,
+    min: d.min,
+    max: d.max,
+    batch_done: d.batch_done,
+    batch_total: d.batch_total,
+    started_at: Date.now(),
+  };
+  notify(d.task_id);
+  // Auto-clear after the cooldown window. Backend will send another
+  // task_progress soon afterward anyway (next batch starts), but the
+  // timeout guards against edge cases (network drop, etc.) leaving the
+  // chip stuck.
+  const ms = Math.ceil((d.seconds || 0) * 1000) + 500;
+  setTimeout(() => {
+    const tt = tasks.get(d.task_id);
+    if (tt && tt.batch_cooldown && tt.batch_cooldown.started_at === t.batch_cooldown.started_at) {
+      tt.batch_cooldown = null;
+      notify(d.task_id);
+    }
+  }, ms);
+});
+
 // Long-video specific
 ws.on('scene_started', (d) => {
   if (!d || !d.task_id) return;
