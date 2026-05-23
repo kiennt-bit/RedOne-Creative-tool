@@ -420,6 +420,24 @@ function _delay(ms) {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg && msg.type === "GET_METRICS") {
         (async () => {
+            // Active probe — re-verify backend reachability before
+            // reporting status. Without this, a freshly-woken service
+            // worker would still have `_connected = false` (its initial
+            // value) and the popup would falsely show "Mất kết nối" for
+            // up to one poll interval (~1.5s) after each wake.
+            try {
+                const r = await fetch(`${BRIDGE_HOST}/sync/status`, {
+                    signal: AbortSignal.timeout(3000),
+                });
+                _connected = r.ok;
+            } catch (_) {
+                _connected = false;
+            }
+            // While we have the SW awake, also ensure the poll loop is
+            // running. After a SW restart, the poll alarm doesn't fire
+            // for up to 30s — kicking off pollLoop here closes that gap.
+            if (!_polling) _pollLoop();
+
             const tab = await _findLabsTab();
             const signedIn = await _isSignedIn();
             sendResponse({
@@ -442,3 +460,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     return false;
 });
+
+// ── Initial poll on every service worker wake ─────────────────────────
+// MV3 service workers go idle when not processing events. Each wake-up
+// re-evaluates this file from the top — kick off the poll loop here so
+// the connection is restored immediately, rather than waiting up to 30s
+// for the first alarm tick. The `if (_polling) return` guard inside
+// _pollLoop prevents duplicate loops.
+_pollLoop();
