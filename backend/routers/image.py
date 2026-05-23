@@ -70,11 +70,16 @@ async def _process_image_task(task_id: int):
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
         return
 
+    client = None
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
-        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
         try:
             await client.ensure_token()
         except fc_mod.SessionDeadError as sde:
@@ -84,7 +89,14 @@ async def _process_image_task(task_id: int):
         model = task["image_model"]
         aspect = task["aspect_ratio"]
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
-        log.info(f"Image task {task_id}: {len(items)} items, parallelism={parallelism}")
+        # Random pause between batches — see content.py for rationale.
+        # Shares the same settings keys so user only tunes once.
+        from .content import _read_cooldown_range
+        cd_min, cd_max = _read_cooldown_range()
+        log.info(
+            f"Image task {task_id}: {len(items)} items "
+            f"(batch_size={parallelism}, cooldown={cd_min}-{cd_max}s)"
+        )
 
         # Pre-seed `done` with items already COMPLETED (retry path —
         # /api/tasks/{id}/retry keeps completed items intact).
@@ -93,7 +105,6 @@ async def _process_image_task(task_id: int):
         )
         counters = {"done": initial_done, "error": 0}
         counter_lock = asyncio.Lock()
-        semaphore = asyncio.Semaphore(parallelism)
 
         # Per-task 403 circuit breaker — Google sometimes flags an image
         # session after a few generations; once flagged the remaining
@@ -111,7 +122,8 @@ async def _process_image_task(task_id: int):
             if item.get("status") == ItemStatus.COMPLETED.value:
                 return
 
-            async with semaphore:
+            # Concurrency is bounded by the outer batch loop. No semaphore.
+            if True:
                 if await breaker.is_open():
                     cooldown_msg = (
                         "Skipped — 403 reCAPTCHA cooldown. Có thể bấm 'Gen "
@@ -228,15 +240,76 @@ async def _process_image_task(task_id: int):
                     "task_id": task_id, "done": d, "error": e, "total": len(items),
                 })
 
-        results = await asyncio.gather(
-            *(_process_one(item) for item in items),
-            return_exceptions=True,
-        )
-        # Catch session-dead surfacing from any item
-        for r in results:
-            if isinstance(r, fc_mod.SessionDeadError):
-                await _handle_session_dead_img(task_id, acc, r)
-                return
+        # Batch-by-batch processing with per-batch cooldown. Same pattern
+        # as content.py — see that file for rationale.
+        pending = [
+            it for it in items
+            if it.get("status") != ItemStatus.COMPLETED.value
+        ]
+        batches = [
+            pending[i:i + parallelism]
+            for i in range(0, len(pending), parallelism)
+        ]
+
+        session_dead_err: Optional[fc_mod.SessionDeadError] = None
+        for batch_idx, batch in enumerate(batches):
+            if await breaker.is_open():
+                cooldown_msg = (
+                    "Skipped — 403 reCAPTCHA cooldown. Bấm 'Gen lại lỗi' để retry."
+                )
+                # Flush this batch + all remaining batches as errored
+                for remaining in [batch] + list(batches[batch_idx + 1:]):
+                    for it in remaining:
+                        db.update_item(it["id"], status=ItemStatus.ERROR.value,
+                                       error_message=cooldown_msg)
+                        async with counter_lock:
+                            counters["error"] += 1
+                            d, e = counters["done"], counters["error"]
+                        await hub.broadcast("item_error", {
+                            "task_id": task_id, "item_id": it["id"],
+                            "error": cooldown_msg,
+                        })
+                        db.update_task(task_id, done_count=d, error_count=e)
+                        await hub.broadcast("task_progress", {
+                            "task_id": task_id, "done": d, "error": e,
+                            "total": len(items),
+                        })
+                break
+
+            batch_results = await asyncio.gather(
+                *(_process_one(it) for it in batch),
+                return_exceptions=True,
+            )
+
+            for r in batch_results:
+                if isinstance(r, fc_mod.SessionDeadError):
+                    session_dead_err = r
+                    break
+            if session_dead_err:
+                break
+
+            is_last_batch = (batch_idx == len(batches) - 1)
+            if cd_max > 0 and not is_last_batch:
+                import random as _rnd
+                wait_s = round(_rnd.uniform(cd_min, cd_max), 1)
+                await hub.broadcast("task_batch_cooldown", {
+                    "task_id": task_id,
+                    "seconds": wait_s,
+                    "min": cd_min,
+                    "max": cd_max,
+                    "batch_done": batch_idx + 1,
+                    "batch_total": len(batches),
+                    "kind": "image",
+                })
+                log.info(
+                    f"Image task {task_id}: batch {batch_idx + 1}/{len(batches)} "
+                    f"done, sleeping {wait_s}s (random in [{cd_min}, {cd_max}])"
+                )
+                await asyncio.sleep(wait_s)
+
+        if session_dead_err is not None:
+            await _handle_session_dead_img(task_id, acc, session_dead_err)
+            return
 
         done = counters["done"]
         err = counters["error"]
@@ -251,6 +324,11 @@ async def _process_image_task(task_id: int):
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": str(e)})
     finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
         _active_tasks.pop(task_id, None)
 
 
@@ -371,11 +449,16 @@ async def upscale_existing(item_id: int, resolution: str = "4k"):
     acc = _pick_account()
     if not acc:
         raise HTTPException(400, "Không có account khả dụng")
+    client = None
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
-        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
         await client.ensure_token()
         result = await _do_upscale_one(client, item_id, media_id, resolution, task)
         return {"ok": True, **result}
@@ -384,6 +467,12 @@ async def upscale_existing(item_id: int, resolution: str = "4k"):
     except Exception as e:
         log.exception(f"Upscale item={item_id} failed")
         raise HTTPException(500, str(e))
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 
 class UpscaleBatchRequest(BaseModel):
@@ -441,11 +530,16 @@ async def upscale_batch(body: UpscaleBatchRequest):
     completed: list[dict] = []
     errors: list[dict] = []
 
+    client = None
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
-        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
         try:
             await client.ensure_token()
         except fc_mod.SessionDeadError as sde:
@@ -509,3 +603,9 @@ async def upscale_batch(body: UpscaleBatchRequest):
     except Exception as e:
         log.exception("Upscale batch crashed")
         raise HTTPException(500, str(e))
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass

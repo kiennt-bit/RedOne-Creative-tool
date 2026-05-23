@@ -173,6 +173,38 @@ export function renderAccounts(root) {
   }
 
   async function loginOne(id) {
+    // Check auth_mode first — in extension mode the legacy Cloak login
+    // flow is useless (cookies end up in Cloak profile, but bridge reads
+    // from real Chrome). Tell user the right flow instead.
+    let authMode = 'extension';
+    try {
+      const s = await api.settings.get();
+      authMode = (s.settings?.auth_mode || 'extension').toLowerCase();
+    } catch (_) { /* default to extension */ }
+
+    if (authMode === 'extension') {
+      const proceed = await confirm(
+        'Bạn đang dùng Auth mode = Extension Bridge.\n\n' +
+        'KHÔNG cần bấm Login trong tool — Cloak browser bật ra sẽ KHÔNG giúp gì ' +
+        '(extension chỉ thấy được Chrome thật của bạn).\n\n' +
+        'Workflow đúng:\n' +
+        '1) Mở Chrome THẬT (chrome.exe — chỗ đã cài extension "RedOne Auth Helper")\n' +
+        '2) Mở tab mới: https://labs.google/fx/tools/flow\n' +
+        '3) Bấm Sign in → chọn account Google muốn dùng\n' +
+        '4) Đợi tab load xong → quay lại RedOne UI → gen task\n\n' +
+        'Muốn t mở giúp tab labs.google không?',
+        'Extension Bridge — không cần Login button',
+      );
+      if (proceed) {
+        // Best we can do from web UI — opens labs.google in user's default
+        // browser. If their default is Chrome (with ext) → perfect.
+        window.open('https://labs.google/fx/tools/flow', '_blank');
+        toast('Đã mở labs.google. Login Google trong tab đó.', 'info', 8000);
+      }
+      return;
+    }
+
+    // Legacy Playwright/Cloak login flow
     if (!await confirm(
       'Sẽ mở 1 cửa sổ Chrome thật để bạn đăng nhập Google.\n\n' +
       '⚠️ BƯỚC QUAN TRỌNG sau khi nhập mật khẩu:\n' +

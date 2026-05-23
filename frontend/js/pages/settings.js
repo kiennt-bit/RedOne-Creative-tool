@@ -68,7 +68,18 @@ export function renderSettings(root) {
         + 'bạn chủ động chọn file muốn giữ qua nút "Lưu vào outputs" ở gallery.'),
     ),
     el('div', { class: 'field-group' },
-      el('label', { class: 'field-label' }, 'Trình duyệt sử dụng'),
+      el('label', { class: 'field-label' }, 'Auth mode'),
+      el('select', { class: 'select', id: 'st-authmode' },
+        el('option', { value: 'extension' }, 'Chrome Extension Bridge (Recommended — ít 403)'),
+        el('option', { value: 'playwright' }, 'Playwright/Cloak (Legacy)'),
+      ),
+      el('div', { class: 'field-help' },
+        'Extension Bridge: token + cookies tới từ Chrome thật → Google không flag bot. '
+        + 'Cần cài extension "RedOne Auth Helper" (thư mục extension/ — Chrome > Extensions > Load unpacked).'),
+      el('div', { id: 'st-bridge-status', style: { marginTop: '6px' } }),
+    ),
+    el('div', { class: 'field-group', id: 'st-backend-wrap' },
+      el('label', { class: 'field-label' }, 'Trình duyệt sử dụng (chỉ khi Playwright)'),
       el('select', { class: 'select', id: 'st-backend' },
         el('option', { value: 'chrome' }, 'Google Chrome (mặc định)'),
         el('option', { value: 'cloak' }, 'CloakBrowser — Stealth Chromium (chống detect tốt hơn)'),
@@ -76,6 +87,27 @@ export function renderSettings(root) {
       el('div', { class: 'field-help', id: 'st-backend-help' },
         'Chuyển sang CloakBrowser nếu hay bị reCAPTCHA 403 / 429. Lần đầu sẽ auto-download binary ~200MB.'),
       el('div', { id: 'st-cloak-status', style: { marginTop: '6px' } }),
+    ),
+    el('div', { class: 'field-group' },
+      el('label', { class: 'field-label' }, 'Đợi giữa các đợt gen (giây)'),
+      el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+        el('input', {
+          type: 'number', class: 'input', id: 'st-cooldown-min',
+          min: '0', max: '300', step: '1', style: { width: '100px' },
+          placeholder: '5',
+        }),
+        el('span', { style: { color: 'var(--muted)' } }, '→'),
+        el('input', {
+          type: 'number', class: 'input', id: 'st-cooldown-max',
+          min: '0', max: '300', step: '1', style: { width: '100px' },
+          placeholder: '10',
+        }),
+        el('span', { style: { color: 'var(--muted)' } }, 'giây'),
+      ),
+      el('div', { class: 'field-help' },
+        'Sau mỗi đợt gen (= số luồng song song), tool đợi ngẫu nhiên trong '
+        + 'khoảng này rồi mới gen tiếp đợt sau. Mặc định 5–10s — giúp giảm '
+        + 'tỉ lệ Google flag 403. Để 0–0 nếu muốn gen liên tục.'),
     ),
     el('button', { class: 'btn btn-primary', id: 'st-save2' }, icon('check'), 'Lưu hệ thống'),
   );
@@ -120,6 +152,32 @@ export function renderSettings(root) {
       root.querySelector('#st-autosave').checked = autosave;
       const backend = (s.browser_backend || 'chrome').toLowerCase();
       root.querySelector('#st-backend').value = backend;
+      // New: auth mode (default extension)
+      const authMode = (s.auth_mode || 'extension').toLowerCase();
+      root.querySelector('#st-authmode').value = authMode;
+      // Show legacy browser dropdown only in playwright mode
+      const wrap = root.querySelector('#st-backend-wrap');
+      if (wrap) wrap.style.display = authMode === 'playwright' ? '' : 'none';
+      // Live extension status — poll once on load
+      try {
+        const br = await fetch('/sync/state').then(r => r.json());
+        const stWrap = root.querySelector('#st-bridge-status');
+        if (stWrap) {
+          stWrap.innerHTML = '';
+          if (br.extension_live) {
+            stWrap.appendChild(el('div', { class: 'chip chip-green' },
+              `✓ Extension đã kết nối · Chrome tab: ${br.last_tab_status}`));
+          } else {
+            stWrap.appendChild(el('div', { class: 'chip chip-yellow' },
+              'Extension chưa kết nối — cài extension và mở Chrome có tab labs.google'));
+          }
+        }
+      } catch (e) { /* ignore */ }
+      // Cooldown range — fall back to defaults if user hasn't set yet
+      const cdMin = (s.batch_cooldown_min_seconds ?? 5);
+      const cdMax = (s.batch_cooldown_max_seconds ?? 10);
+      root.querySelector('#st-cooldown-min').value = cdMin;
+      root.querySelector('#st-cooldown-max').value = cdMax;
       // Show Cloak install status under the dropdown
       try {
         const cs = await api.settings.cloakStatus();
@@ -193,11 +251,23 @@ export function renderSettings(root) {
   });
   root.querySelector('#st-save2').addEventListener('click', async () => {
     try {
+      // Parse cooldown range. Empty / NaN → server default. We also
+      // silently swap if user typed them backwards (max < min) to match
+      // backend behavior.
+      let cdMin = parseInt(root.querySelector('#st-cooldown-min').value, 10);
+      let cdMax = parseInt(root.querySelector('#st-cooldown-max').value, 10);
+      if (Number.isNaN(cdMin) || cdMin < 0) cdMin = 0;
+      if (Number.isNaN(cdMax) || cdMax < 0) cdMax = 0;
+      if (cdMax < cdMin) { const t = cdMin; cdMin = cdMax; cdMax = t; }
+
       await api.settings.update({
         default_aspect: root.querySelector('#st-aspect').value,
         default_quality: root.querySelector('#st-quality').value,
         auto_save_outputs: root.querySelector('#st-autosave').checked,
         browser_backend: root.querySelector('#st-backend').value,
+        auth_mode: root.querySelector('#st-authmode').value,
+        batch_cooldown_min_seconds: cdMin,
+        batch_cooldown_max_seconds: cdMax,
       });
       // Sync into in-memory store so newly-opened pages pick up the changes.
       // Pages already initialized keep their form values (intentional — user's

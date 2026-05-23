@@ -94,7 +94,31 @@ class FlowClient:
         if self._token_lock is None:
             self._token_lock = asyncio.Lock()
         return self._token_lock
-        
+
+    # ── Subprocess reCAPTCHA provider (DISABLED) ──────────────────
+    # Earlier in this session we tried wiring NAV Tools' SubprocessTokenProvider
+    # pattern (separate CloakBrowser instance harvesting tokens) to reduce
+    # 403 cascades. In practice it made things worse: the headless Cloak
+    # harvester had a different fingerprint from the main visible Cloak
+    # session, so Google flagged the mismatch immediately and — because
+    # the harvester was cached as a singleton per account — that flagged
+    # state then poisoned every subsequent task on the account.
+    #
+    # The code in `recaptcha_provider.py` is kept as-is (dead code) so we
+    # can revisit when we figure out how to match fingerprints. For now,
+    # `ensure_provider()` is a no-op and `get_recaptcha_token()` uses the
+    # in-page harvest path only.
+
+    async def ensure_provider(self) -> None:
+        """No-op. Subprocess harvester disabled — see comment above."""
+        return
+
+    async def close(self) -> None:
+        """No-op cleanup hook. Kept so callers in routers don't need
+        conditional checks; will become useful again if/when we re-enable
+        the subprocess harvester."""
+        return
+
     # ── Session & Auth ────────────────────────────────────────────
     
     async def ensure_token(self):
@@ -1202,9 +1226,12 @@ class FlowClient:
     # ── reCAPTCHA (NAV Tools pattern) ─────────────────────────
     
     async def get_recaptcha_token(self, action: str = "VIDEO_GENERATION") -> str:
-        """Get reCAPTCHA token via browser (NAV Tools CDP pattern)."""
+        """Get reCAPTCHA token via in-page harvest on the main browser
+        page (NAV Tools CDP pattern). Subprocess provider path was tried
+        and reverted — see `ensure_provider()` comment.
+        """
         lock = _get_recaptcha_lock(self._account_email)
-        
+
         async with lock:
             log.info(f"Harvesting reCAPTCHA (action={action})...")
 

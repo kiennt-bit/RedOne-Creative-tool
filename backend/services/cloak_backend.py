@@ -53,6 +53,9 @@ class CloakBrowserManager:
         self._contexts: dict[int, "BrowserContext"] = {}
         self._pages: dict[int, "Page"] = {}
         self._ref_counts: dict[int, int] = {}
+        # account_id → email mapping for releasing the matching reCAPTCHA
+        # harvester on teardown (harvester cache is keyed by email).
+        self._emails: dict[int, str] = {}
         self._lock = asyncio.Lock()
 
     # ────────────────────── Public API ──────────────────────
@@ -66,6 +69,7 @@ class CloakBrowserManager:
     ) -> "Page":
         """Get or create a stealth page for an account."""
         self._ref_counts[account_id] = self._ref_counts.get(account_id, 0) + 1
+        self._emails[account_id] = email
 
         async with self._lock:
             # Reuse alive page
@@ -180,6 +184,17 @@ class CloakBrowserManager:
         return []
 
     async def _close_account_internal(self, account_id: int):
+        """Tear down Cloak context for this account. Also releases the
+        matching reCAPTCHA harvester singleton.
+        """
+        email = self._emails.pop(account_id, None)
+        if email:
+            try:
+                from .recaptcha_provider import release_for_account
+                await release_for_account(email)
+            except Exception as e:
+                log.debug(f"Harvester release failed for {email}: {e}")
+
         if account_id in self._pages:
             try:
                 if not self._pages[account_id].is_closed():

@@ -21,6 +21,7 @@ from .routers import (
     accounts, content, image as image_router, analyzer, long_video,
     media_tools, settings as settings_router, files as files_router,
     tasks as tasks_router, system as system_router,
+    sync as sync_router,
 )
 from .queue_manager import queue as task_queue
 
@@ -123,6 +124,7 @@ app.include_router(settings_router.router)
 app.include_router(files_router.router)
 app.include_router(tasks_router.router)
 app.include_router(system_router.router)
+app.include_router(sync_router.router)
 
 
 @app.get("/api/health")

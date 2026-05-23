@@ -21,7 +21,18 @@ class SettingsUpdate(BaseModel):
     theme: str | None = None
     auto_rotate_accounts: bool | None = None
     auto_save_outputs: bool | None = None
-    browser_backend: str | None = None    # "chrome" | "cloak"
+    browser_backend: str | None = None    # "chrome" | "cloak" (legacy, only when auth_mode=playwright)
+    # New: route all Google calls through the Chrome extension bridge
+    # instead of Playwright. Default "extension" — proven to dramatically
+    # reduce 403 cascades (token comes from user's real Chrome).
+    auth_mode: str | None = None          # "extension" | "playwright"
+    # Random pause between batches. Each batch finishes → tool sleeps a
+    # uniform random number of seconds in [min, max] before launching the
+    # next batch. Helps reduce Google's rate-based bot detection — the
+    # randomization in particular avoids the "consistent N-second gap"
+    # signature that flagged constant cooldowns. 0/0 = no wait.
+    batch_cooldown_min_seconds: int | None = None
+    batch_cooldown_max_seconds: int | None = None
 
 
 @router.get("")

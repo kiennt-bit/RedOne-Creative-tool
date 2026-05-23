@@ -125,6 +125,9 @@ class BrowserManager:
         self._contexts: dict[int, BrowserContext] = {}
         self._pages: dict[int, Page] = {}
         self._ref_counts: dict[int, int] = {}
+        # account_id → email mapping. Needed when tearing down so we can
+        # release the matching reCAPTCHA harvester (which is keyed by email).
+        self._emails: dict[int, str] = {}
         self._lock = asyncio.Lock()
     
     async def get_page(
@@ -151,6 +154,7 @@ class BrowserManager:
 
         # Default Chrome flow
         self._ref_counts[account_id] = self._ref_counts.get(account_id, 0) + 1
+        self._emails[account_id] = email
 
         async with self._lock:
             if account_id in self._pages:
@@ -288,7 +292,19 @@ class BrowserManager:
             await self._close_account_internal(account_id)
     
     async def _close_account_internal(self, account_id: int):
-        """Internal close without lock (call from within locked context)."""
+        """Internal close without lock (call from within locked context).
+
+        Also releases the reCAPTCHA harvester for this account (singleton
+        lifetime is tied to the main browser).
+        """
+        email = self._emails.pop(account_id, None)
+        if email:
+            try:
+                from .recaptcha_provider import release_for_account
+                await release_for_account(email)
+            except Exception as e:
+                log.debug(f"Harvester release failed for {email}: {e}")
+
         if account_id in self._pages:
             try:
                 if not self._pages[account_id].is_closed():

@@ -51,11 +51,16 @@ async def _run_long_video(task_id: int):
         return
     acc = max(accounts, key=lambda a: a.get("credit") or 0)
 
+    client = None
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
-        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
         await client.ensure_token()
 
         quality = task["quality"]
@@ -148,6 +153,11 @@ async def _run_long_video(task_id: int):
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": str(e)})
     finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
         _active_jobs.pop(task_id, None)
 
 

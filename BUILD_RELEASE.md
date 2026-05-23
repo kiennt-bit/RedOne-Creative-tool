@@ -55,6 +55,21 @@ Build mất ~2-5 phút, folder cuối cùng ~400-600 MB.
 3. **Đóng gói cho release**:
    - Zip thư mục `dist\RedOne Creative\` (chuột phải → Send to → Compressed folder)
    - Đặt tên: `RedOne-Creative-v1.0.1-win64.zip`
+   - **QUAN TRỌNG (v1.1+)**: Trước khi zip, copy folder `extension/` từ source repo
+     vào trong `dist\RedOne Creative\` để user mới có ext bundled sẵn:
+     ```bat
+     xcopy /E /I extension "dist\RedOne Creative\extension"
+     ```
+     Layout cuối:
+     ```
+     dist\RedOne Creative\
+     ├── RedOne Creative.exe
+     ├── _internal\
+     └── extension\              ← user load unpacked từ folder này
+         ├── manifest.json
+         ├── background.js
+         └── ...
+     ```
 
 4. **Tạo GitHub Release**:
    - Vào https://github.com/kiennt-bit/RedOne-Creative-tool/releases/new
@@ -130,13 +145,36 @@ Giữ nguyên `data\` và `outputs\` → settings + accounts + tasks lịch sử
 
 ---
 
-## Đăng nhập Google trên mỗi máy
+## Đăng nhập Google — 2 mode
 
-Mỗi máy chạy tool sẽ:
-1. User bấm **Login** trong tab "Tài Khoản"
-2. Tool mở Chrome thật của máy đó (`google-chrome.exe`)
-3. User đăng nhập Google bằng tài khoản của họ
-4. Cookies lưu vào `data\cookies\<id>_cookies.json` của máy đó
+### Mode mặc định (v1.1+): Chrome Extension Bridge
+
+User **KHÔNG** bấm Login trong tool. Workflow:
+
+1. Sau khi giải nén zip, vào folder `extension\`
+2. Mở Chrome thật → `chrome://extensions/` → bật **Developer mode**
+3. Click **Load unpacked** → chọn folder `extension\` đó
+4. Extension "RedOne Auth Helper" xuất hiện (icon R đỏ)
+5. Mở tab https://labs.google/fx/tools/flow → login Google bình thường
+6. Chạy `RedOne Creative.exe` → web UI mở
+7. Settings → Auth mode = **Chrome Extension Bridge (Recommended)** → Save
+8. Tạo task gen → tool gọi extension trong Chrome thật → request đi ra từ
+   browser thật → Google không flag bot → 403 giảm về gần 0
+
+**Win**: token + cookies + API call đều đi qua Chrome thật của user → Google
+scoring system thấy "real user, real fingerprint" → traffic indistinguishable
+from manual usage.
+
+### Mode legacy: Playwright/Cloak
+
+Nếu user không muốn cài extension hoặc Chrome đang dùng cho việc khác:
+
+1. Settings → Auth mode = **Playwright/Cloak (Legacy)** → Save
+2. Tab "Tài Khoản" → bấm Login
+3. Tool spawn Cloak/Chrome riêng để user đăng nhập
+4. Cookies lưu vào `data\cookies\<id>_cookies.json`
+
+Mode này có rate-limit nhiều hơn (403 occasional). Giữ làm fallback.
 
 Mỗi máy **độc lập** — cookies không sync giữa máy. Đây là intentional vì:
 - Tránh "1 account dùng song song nhiều máy" → Google detect bất thường

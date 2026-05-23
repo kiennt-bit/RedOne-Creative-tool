@@ -83,6 +83,31 @@ MAX_ITEM_RETRIES = 3
 CIRCUIT_THRESHOLD = 3
 
 
+def _read_cooldown_range() -> tuple[float, float]:
+    """Read (min, max) batch cooldown seconds from settings.
+
+    Defaults to (5, 10) — randomized pauses in that range mimic natural
+    user pacing and avoid the constant-gap signature that flagged the old
+    fixed-cooldown approach.
+
+    Returns a tuple clamped so:
+      - both values are non-negative
+      - max >= min (silently swaps if user entered them backwards)
+    """
+    def _to_float(key: str, default: float) -> float:
+        try:
+            v = db.get_setting(key, default)
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            return default
+
+    cd_min = _to_float("batch_cooldown_min_seconds", 5.0)
+    cd_max = _to_float("batch_cooldown_max_seconds", 10.0)
+    if cd_max < cd_min:
+        cd_min, cd_max = cd_max, cd_min
+    return cd_min, cd_max
+
+
 async def _process_task(task_id: int):
     task = db.get_task(task_id)
     items = db.get_task_items(task_id)
@@ -97,11 +122,16 @@ async def _process_task(task_id: int):
         await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
         return
 
+    client = None
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(acc["id"], acc["email"], cookie_path=acc.get("cookie_path"))
-        client = fc_mod.FlowClient(page, cookie_path=acc.get("cookie_path") or "", account_email=acc["email"])
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)  # None in extension mode
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
         try:
             await client.ensure_token()
         except fc_mod.SessionDeadError as sde:
@@ -111,7 +141,17 @@ async def _process_task(task_id: int):
         quality = task["quality"]
         aspect = task["aspect_ratio"]
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
-        log.info(f"Task {task_id}: processing {len(items)} items with parallelism={parallelism}")
+        # Random pause between batches — applied AFTER each batch of
+        # `parallelism` items finishes, before launching the next.
+        # Randomization (not a fixed value) is intentional: a constant
+        # N-second gap is itself a signature Google's rate-detector can
+        # pick up. Drawing from a uniform [min, max] interval mimics
+        # natural user pacing.
+        cd_min, cd_max = _read_cooldown_range()
+        log.info(
+            f"Task {task_id}: processing {len(items)} items "
+            f"(batch_size={parallelism}, cooldown={cd_min}-{cd_max}s)"
+        )
 
         # Shared mutable counters guarded by a lock.
         # Pre-seed `done` with items that are already COMPLETED — happens on
@@ -124,7 +164,6 @@ async def _process_task(task_id: int):
         )
         counters = {"done": initial_done, "error": 0}
         counter_lock = asyncio.Lock()
-        semaphore = asyncio.Semaphore(parallelism)
 
         # Per-task 403 circuit breaker — stops launching new items once
         # Google has flagged the session 3 times in a row.
@@ -147,7 +186,9 @@ async def _process_task(task_id: int):
             if item.get("status") == ItemStatus.COMPLETED.value:
                 return
 
-            async with semaphore:
+            # Concurrency is bounded by the outer batch loop (each batch is
+            # gathered with at most `parallelism` items). No semaphore needed.
+            if True:
                 # Fast-fail if the circuit has tripped — don't waste a
                 # generation slot on a call we know will 403.
                 if await breaker.is_open():
@@ -301,18 +342,103 @@ async def _process_task(task_id: int):
                     "task_id": task_id, "done": d, "error": e, "total": len(items),
                 })
 
-        # Launch all items concurrently; semaphore caps how many run at once
-        results = await asyncio.gather(
-            *(_process_one(item, idx) for idx, item in enumerate(items)),
-            return_exceptions=True,
-        )
+        # Batch-by-batch processing. Each batch of `parallelism` items runs
+        # concurrently via gather; after a batch finishes we sleep
+        # `cooldown_seconds` before launching the next. The user-configured
+        # cooldown is the key knob for tuning vs Google's rate detection.
+        #
+        # Already-COMPLETED items (from a retry path) are skipped here too —
+        # they were excluded from the work, so we don't waste a batch slot
+        # on a no-op `_process_one`.
+        pending = [
+            (idx, it) for idx, it in enumerate(items)
+            if it.get("status") != ItemStatus.COMPLETED.value
+        ]
+        batches = [
+            pending[i:i + parallelism]
+            for i in range(0, len(pending), parallelism)
+        ]
 
-        # If any item raised SessionDeadError, disable the account so the
-        # queue doesn't keep picking it for future tasks.
-        for r in results:
-            if isinstance(r, fc_mod.SessionDeadError):
-                await _handle_session_dead(task_id, acc, r)
-                return
+        session_dead_err: Optional[fc_mod.SessionDeadError] = None
+        for batch_idx, batch in enumerate(batches):
+            # If the circuit tripped during the previous batch, don't even
+            # launch the next one — mark them all as skipped and break.
+            if await breaker.is_open():
+                cooldown_msg = (
+                    "Skipped — 403 reCAPTCHA cooldown. Bấm 'Gen lại lỗi' để retry."
+                )
+                for _, it in batch:
+                    db.update_item(it["id"], status=ItemStatus.ERROR.value,
+                                   error_message=cooldown_msg)
+                    async with counter_lock:
+                        counters["error"] += 1
+                        d, e = counters["done"], counters["error"]
+                    await hub.broadcast("item_error", {
+                        "task_id": task_id, "item_id": it["id"],
+                        "error": cooldown_msg,
+                    })
+                    db.update_task(task_id, done_count=d, error_count=e)
+                    await hub.broadcast("task_progress", {
+                        "task_id": task_id, "done": d, "error": e, "total": len(items),
+                    })
+                # Also flush remaining batches as skipped so progress
+                # completes (otherwise the chip stalls at N/Total).
+                for remaining in batches[batch_idx + 1:]:
+                    for _, it in remaining:
+                        db.update_item(it["id"], status=ItemStatus.ERROR.value,
+                                       error_message=cooldown_msg)
+                        async with counter_lock:
+                            counters["error"] += 1
+                            d, e = counters["done"], counters["error"]
+                        await hub.broadcast("item_error", {
+                            "task_id": task_id, "item_id": it["id"],
+                            "error": cooldown_msg,
+                        })
+                        db.update_task(task_id, done_count=d, error_count=e)
+                        await hub.broadcast("task_progress", {
+                            "task_id": task_id, "done": d, "error": e,
+                            "total": len(items),
+                        })
+                break
+
+            batch_results = await asyncio.gather(
+                *(_process_one(it, idx) for idx, it in batch),
+                return_exceptions=True,
+            )
+
+            # Surface SessionDead at batch boundary — no point sleeping +
+            # running more batches if the account is dead.
+            for r in batch_results:
+                if isinstance(r, fc_mod.SessionDeadError):
+                    session_dead_err = r
+                    break
+            if session_dead_err:
+                break
+
+            # Cooldown between batches — random in [cd_min, cd_max]. Skip
+            # if this was the last batch or if range is 0..0.
+            is_last_batch = (batch_idx == len(batches) - 1)
+            if cd_max > 0 and not is_last_batch:
+                import random as _rnd
+                wait_s = round(_rnd.uniform(cd_min, cd_max), 1)
+                await hub.broadcast("task_batch_cooldown", {
+                    "task_id": task_id,
+                    "seconds": wait_s,
+                    "min": cd_min,
+                    "max": cd_max,
+                    "batch_done": batch_idx + 1,
+                    "batch_total": len(batches),
+                })
+                log.info(
+                    f"Task {task_id}: batch {batch_idx + 1}/{len(batches)} done, "
+                    f"sleeping {wait_s}s (random in [{cd_min}, {cd_max}]) "
+                    f"before next batch"
+                )
+                await asyncio.sleep(wait_s)
+
+        if session_dead_err is not None:
+            await _handle_session_dead(task_id, acc, session_dead_err)
+            return
 
         done = counters["done"]
         err = counters["error"]
@@ -325,6 +451,11 @@ async def _process_task(task_id: int):
         db.update_task(task_id, status=TaskStatus.ERROR.value)
         await hub.broadcast("task_error", {"task_id": task_id, "error": str(e)})
     finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
         _active_tasks.pop(task_id, None)
 
 

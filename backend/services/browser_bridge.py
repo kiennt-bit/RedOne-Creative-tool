@@ -1,0 +1,257 @@
+"""BrowserBridge — backend ↔ Chrome extension task broker.
+
+Replaces the Playwright-based call path that fired requests against
+Google's API directly. Instead, every Google-bound request becomes a
+*task* enqueued here, picked up by the Chrome extension, executed inside
+the user's real Chrome (so it carries the user's real session cookies
+and the user's real browser fingerprint), and the result is delivered
+back to the awaiting coroutine.
+
+Public API (sync to use from routers / FlowClient):
+
+    await bridge.harvest_recaptcha(site_key, action) -> str (token)
+    await bridge.proxy_fetch(url, method, headers, body) -> dict
+    await bridge.proxy_fetch_binary(url, ...) -> bytes
+
+Internals:
+    - Each task gets a UUID + asyncio.Future. Extension polls via
+      `bridge.pop_task_for_extension()`, runs it, then submits the result
+      via `bridge.deliver_result(task_id, result)` which resolves the
+      Future.
+    - Tasks expire after TASK_TTL_S to avoid leaking if the extension
+      goes offline mid-task. Awaiters get a `BridgeTimeoutError`.
+    - Bridge tracks extension liveness (last seen tab + status) so
+      diagnostics endpoints can show "Extension offline" hints.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+log = logging.getLogger("redone.bridge")
+
+# How long a task can sit in the queue / be in-flight before we give up.
+# Tuned higher than typical API call latency to tolerate brief ext lag.
+TASK_TTL_S = 120.0
+
+# Heartbeat freshness threshold. If the extension hasn't polled within
+# this window we consider it disconnected (used by snapshot_state).
+EXT_LIVE_THRESHOLD_S = 10.0
+
+
+class BridgeTimeoutError(Exception):
+    """Raised when a task times out waiting for the extension."""
+
+
+class BridgeExtensionOfflineError(Exception):
+    """Raised when we try to issue a task but the extension hasn't
+    polled recently — fail fast rather than wait the full TTL."""
+
+
+@dataclass
+class _BridgeTask:
+    """One outstanding task waiting on the extension.
+
+    The `future` resolves with the result dict once the extension
+    posts back via /sync/task-result. If TASK_TTL_S elapses first, the
+    awaiter gets BridgeTimeoutError instead.
+    """
+    id: str
+    kind: str  # "recaptcha" | "proxy_fetch"
+    payload: dict
+    created_at: float = field(default_factory=time.time)
+    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+
+    def is_expired(self) -> bool:
+        return (time.time() - self.created_at) > TASK_TTL_S
+
+    def to_dict(self) -> dict:
+        """Wire format sent to the extension."""
+        return {"id": self.id, "kind": self.kind, "payload": self.payload}
+
+
+class BrowserBridge:
+    """Singleton-style broker. Routers / FlowClient call its async
+    methods; the extension polls / posts via routers/sync.py.
+    """
+
+    def __init__(self):
+        # Pending = waiting for extension to claim.
+        self._pending: asyncio.Queue[_BridgeTask] = asyncio.Queue()
+        # In-flight = claimed by extension, awaiting result.
+        self._in_flight: dict[str, _BridgeTask] = {}
+        # Extension liveness tracking
+        self._ext_last_poll: float = 0.0
+        self._ext_last_status: str = "unknown"  # "ready" | "no_tab" | "no_login" | "unknown"
+        self._ext_last_url: str = ""
+
+    # ── State / diagnostics ─────────────────────────────────────────
+
+    def update_tab_state(self, status: str, url: str) -> None:
+        """Called by /sync/next-task. Updates our view of what the
+        extension currently can/can't do."""
+        self._ext_last_poll = time.time()
+        self._ext_last_status = status or "unknown"
+        self._ext_last_url = url or ""
+
+    def is_extension_live(self) -> bool:
+        return (time.time() - self._ext_last_poll) < EXT_LIVE_THRESHOLD_S
+
+    def snapshot_state(self) -> dict:
+        return {
+            "extension_live": self.is_extension_live(),
+            "last_poll_age_s": round(time.time() - self._ext_last_poll, 1)
+                if self._ext_last_poll else None,
+            "last_tab_status": self._ext_last_status,
+            "last_tab_url": self._ext_last_url,
+            "pending_tasks": self._pending.qsize(),
+            "in_flight_tasks": len(self._in_flight),
+        }
+
+    # ── Extension-facing (called from routers/sync.py) ──────────────
+
+    async def pop_task_for_extension(self, timeout: float = 0.0) -> Optional[_BridgeTask]:
+        """Extension polls; we hand it the next pending task, or None.
+
+        `timeout=0.0` returns immediately if queue is empty (matches the
+        extension's short-poll model). We can extend to long-poll later
+        by passing a positive timeout.
+        """
+        try:
+            if timeout > 0:
+                task = await asyncio.wait_for(self._pending.get(), timeout=timeout)
+            else:
+                task = self._pending.get_nowait()
+        except (asyncio.TimeoutError, asyncio.QueueEmpty):
+            return None
+        # Skip expired tasks (shouldn't happen because awaiters drop them
+        # via cancellation, but defensive).
+        while task.is_expired():
+            try:
+                task = self._pending.get_nowait()
+            except asyncio.QueueEmpty:
+                return None
+        self._in_flight[task.id] = task
+        return task
+
+    def deliver_result(self, task_id: str, result: dict) -> bool:
+        """Resolve the Future for the task. Returns True if delivered,
+        False if the task no longer exists (expired / cancelled)."""
+        task = self._in_flight.pop(task_id, None)
+        if task is None:
+            return False
+        if not task.future.done():
+            task.future.set_result(result)
+        return True
+
+    # ── Public API (called from FlowClient / routers) ───────────────
+
+    async def _enqueue_and_wait(self, kind: str, payload: dict) -> dict:
+        """Common enqueue+await flow shared by all task kinds.
+
+        Fails fast with BridgeExtensionOfflineError if the extension
+        hasn't polled recently — saves the caller waiting TTL_S for a
+        task that no one will pick up.
+        """
+        if not self.is_extension_live():
+            raise BridgeExtensionOfflineError(
+                "Extension chưa kết nối. Mở Chrome có cài 'RedOne Auth Helper' "
+                "+ tab labs.google đã đăng nhập."
+            )
+        task = _BridgeTask(id=uuid.uuid4().hex, kind=kind, payload=payload)
+        await self._pending.put(task)
+        try:
+            return await asyncio.wait_for(task.future, timeout=TASK_TTL_S)
+        except asyncio.TimeoutError:
+            # Drop from in_flight if it got claimed but never returned
+            self._in_flight.pop(task.id, None)
+            raise BridgeTimeoutError(
+                f"Extension không phản hồi task {kind} sau {TASK_TTL_S}s"
+            )
+
+    async def harvest_recaptcha(
+        self,
+        site_key: str = "",
+        action: str = "VIDEO_GENERATION",
+    ) -> str:
+        """Ask the extension to harvest a fresh reCAPTCHA token from a
+        labs.google tab. site_key="" → extension auto-discovers it.
+
+        Returns the token string. Raises if extension errors out.
+        """
+        result = await self._enqueue_and_wait("recaptcha", {
+            "site_key": site_key,
+            "action": action,
+        })
+        token = result.get("token")
+        if not token:
+            err = result.get("error") or "unknown error"
+            raise RuntimeError(f"reCAPTCHA harvest failed: {err}")
+        return token
+
+    async def proxy_fetch(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        body: Optional[str] = None,
+        response_mode: str = "json",   # "json" | "text" | "arraybuffer"
+        timeout_ms: int = 60000,
+    ) -> dict:
+        """Run a fetch from inside the user's labs.google tab. The
+        request carries the user's session cookies automatically
+        (`credentials: "include"` on the JS side).
+
+        Returns a dict:
+            {
+              "status": int,
+              "headers": dict,
+              "body": <parsed JSON or text>,
+              # If response_mode="arraybuffer": "body_b64" instead of "body"
+              "error": str | None,
+            }
+        """
+        payload = {
+            "url": url,
+            "method": method,
+            "headers": headers or {},
+            "body": body,
+            "response_mode": response_mode,
+            "timeout_ms": timeout_ms,
+        }
+        result = await self._enqueue_and_wait("proxy_fetch", payload)
+        return result
+
+    async def proxy_fetch_binary(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[dict] = None,
+        body: Optional[str] = None,
+        timeout_ms: int = 120000,
+    ) -> tuple[int, bytes, dict]:
+        """Convenience wrapper for binary downloads (video/image bytes).
+        Returns (status, raw_bytes, headers).
+        """
+        result = await self.proxy_fetch(
+            url=url,
+            method=method,
+            headers=headers,
+            body=body,
+            response_mode="arraybuffer",
+            timeout_ms=timeout_ms,
+        )
+        if result.get("error"):
+            raise RuntimeError(f"proxy_fetch_binary {url}: {result['error']}")
+        b64 = result.get("body_b64", "")
+        raw = base64.b64decode(b64) if b64 else b""
+        return result.get("status", 0), raw, result.get("headers", {})
+
+
+# Module-level singleton — imported by routers/sync.py and FlowClient.
+bridge = BrowserBridge()
