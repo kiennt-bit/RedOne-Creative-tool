@@ -401,8 +401,13 @@ export function renderContent(root) {
     // Header — image count + "Clear all" button. Only useful when there
     // are images to clear; hidden when zero (the dropzone above conveys
     // the empty state).
-    const refCount = form.refs.filter(Boolean).length;
-    if (refCount === 0) return;   // all slots null → treat as empty
+    //
+    // Note: variable is named `headerCount` (not `refCount`) because
+    // `refCount` is re-declared further down in the mismatch-warning
+    // block — JS would throw SyntaxError if we used the same name twice
+    // in this function scope.
+    const headerCount = form.refs.filter(Boolean).length;
+    if (headerCount === 0) return;   // all slots null → treat as empty
     const header = el('div', {
       style: {
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -410,7 +415,7 @@ export function renderContent(root) {
       },
     },
       el('span', { class: 'field-help', style: { fontWeight: 600, color: 'var(--text)' } },
-        `${refCount} ảnh đã upload`),
+        `${headerCount} ảnh đã upload`),
       el('button', {
         class: 'btn btn-sm btn-ghost',
         style: { color: 'var(--accent-red, #ef4444)' },
@@ -418,13 +423,13 @@ export function renderContent(root) {
         onclick: async () => {
           const { confirm } = await import('../ui.js');
           if (!await confirm(
-            `Xóa tất cả ${refCount} ảnh đã upload?\n\nPrompts sẽ giữ nguyên — chỉ ảnh tham chiếu bị xóa.`,
+            `Xóa tất cả ${headerCount} ảnh đã upload?\n\nPrompts sẽ giữ nguyên — chỉ ảnh tham chiếu bị xóa.`,
             'Xác nhận xóa ảnh',
           )) return;
           form.refs = [];
           refreshRefPairing();
           refreshList();
-          toast(`Đã xóa ${refCount} ảnh`, 'info');
+          toast(`Đã xóa ${headerCount} ảnh`, 'info');
         },
       }, icon('trash', 12), 'Xóa tất cả'),
     );
