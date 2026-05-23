@@ -286,12 +286,16 @@
 }
 
 /* ── Responsive: HEIGHT — tighten sidebar on short displays ─
-   Sidebar has 5 groups + 16 nav-items + brand + footer = ~900px
-   minimum at default spacing. Below ~860px viewport we'd run out of
-   vertical room; scroll still works, but for ergonomics we shrink
-   the per-row padding / group gaps so most of the menu fits without
-   scrolling on common 1366×768 laptops + 1280×720 displays. */
-@media (max-height: 860px) {
+   Sidebar = brand + 5 groups (16 nav-items total) + footer.
+   At default spacing the content runs ~940px. On 1920×1080 screens with
+   any combo of Windows taskbar + Chrome chrome + bookmarks bar, the
+   effective viewport drops to 900-1020px, so the last item ("Cài đặt")
+   falls below the fold without tightening.
+
+   Threshold 1100px catches the WHOLE 1080p family (with/without
+   bookmarks bar, DPI 100/125/150%). Progressively tighter at 860 /
+   720 / 600 / 480 for smaller screens. */
+@media (max-height: 1100px) {
   .sidebar-brand { padding: 14px 18px 10px; }
   .brand-name { font-size: 15px; }
   .brand-sub { font-size: 9.5px; }
