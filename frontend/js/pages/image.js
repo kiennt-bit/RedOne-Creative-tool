@@ -94,7 +94,17 @@ export function renderImage(root) {
           el('div', { class: 'field-help' }, 'Tùy chọn — model sẽ tham chiếu phong cách / nhân vật'),
           el('input', { type: 'file', accept: 'image/*', multiple: 'true', id: 'img-ref-file', style: { display: 'none' } }),
         ),
-        el('div', { id: 'img-ref-list', style: { marginTop: '8px', display: 'flex', flexWrap: 'wrap', gap: '6px' } }),
+        // Header strip: count + clear-all button. Visible only when ref
+        // list is non-empty (handled in refreshRefHeader()).
+        el('div', {
+          id: 'img-ref-header',
+          style: {
+            display: 'none',
+            justifyContent: 'space-between', alignItems: 'center',
+            marginTop: '8px', padding: '0 2px',
+          },
+        }),
+        el('div', { id: 'img-ref-list', style: { marginTop: '6px', display: 'flex', flexWrap: 'wrap', gap: '6px' } }),
       ),
       el('div', { style: { display: 'flex', gap: '8px', marginTop: '20px' } },
         el('button', { class: 'btn btn-primary', style: { flex: 1 }, id: 'img-start' },
@@ -372,12 +382,50 @@ export function renderImage(root) {
           form.refImagePreviews.splice(idx, 1);
         }
         node.remove();
+        refreshRefHeader();
       } }, icon('x', 12)),
     );
     refListEl.appendChild(node);
+    refreshRefHeader();
   }
+
+  // Show/hide the "N ảnh — Xóa tất cả" header depending on whether the
+  // list is empty. Rebuilt on each call so the count stays accurate.
+  function refreshRefHeader() {
+    const header = root.querySelector('#img-ref-header');
+    if (!header) return;
+    const count = form.refImagePreviews.length;
+    if (count === 0) {
+      header.style.display = 'none';
+      header.innerHTML = '';
+      return;
+    }
+    header.style.display = 'flex';
+    clear(header);
+    header.appendChild(el('span', { class: 'field-help', style: { fontWeight: 600, color: 'var(--text)' } },
+      `${count} ảnh đã upload`));
+    header.appendChild(el('button', {
+      class: 'btn btn-sm btn-ghost',
+      style: { color: 'var(--accent-red, #ef4444)' },
+      title: 'Xóa tất cả ảnh tham chiếu',
+      onclick: async () => {
+        const { confirm } = await import('../ui.js');
+        if (!await confirm(
+          `Xóa tất cả ${count} ảnh tham chiếu?\n\nPrompts giữ nguyên — chỉ ảnh bị xóa.`,
+          'Xác nhận xóa ảnh',
+        )) return;
+        form.refImagePaths = [];
+        form.refImagePreviews = [];
+        clear(refListEl);
+        refreshRefHeader();
+        toast(`Đã xóa ${count} ảnh`, 'info');
+      },
+    }, icon('trash', 12), 'Xóa tất cả'));
+  }
+
   // Restore previously uploaded ref thumbs
   form.refImagePreviews.forEach(appendRefThumb);
+  refreshRefHeader();
 
   async function handleRefFiles() {
     for (const file of refFi.files) {

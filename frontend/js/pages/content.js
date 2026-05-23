@@ -398,6 +398,38 @@ export function renderContent(root) {
     clear(wrap);
     if (form.refs.length === 0) return;
 
+    // Header — image count + "Clear all" button. Only useful when there
+    // are images to clear; hidden when zero (the dropzone above conveys
+    // the empty state).
+    const refCount = form.refs.filter(Boolean).length;
+    if (refCount === 0) return;   // all slots null → treat as empty
+    const header = el('div', {
+      style: {
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: '8px', padding: '0 2px',
+      },
+    },
+      el('span', { class: 'field-help', style: { fontWeight: 600, color: 'var(--text)' } },
+        `${refCount} ảnh đã upload`),
+      el('button', {
+        class: 'btn btn-sm btn-ghost',
+        style: { color: 'var(--accent-red, #ef4444)' },
+        title: 'Xóa tất cả ảnh tham chiếu — prompts vẫn giữ nguyên',
+        onclick: async () => {
+          const { confirm } = await import('../ui.js');
+          if (!await confirm(
+            `Xóa tất cả ${refCount} ảnh đã upload?\n\nPrompts sẽ giữ nguyên — chỉ ảnh tham chiếu bị xóa.`,
+            'Xác nhận xóa ảnh',
+          )) return;
+          form.refs = [];
+          refreshRefPairing();
+          refreshList();
+          toast(`Đã xóa ${refCount} ảnh`, 'info');
+        },
+      }, icon('trash', 12), 'Xóa tất cả'),
+    );
+    wrap.appendChild(header);
+
     const grid = el('div', { style: {
       display: 'grid',
       gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))',
