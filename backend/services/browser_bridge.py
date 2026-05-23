@@ -39,9 +39,16 @@ log = logging.getLogger("redone.bridge")
 # Tuned higher than typical API call latency to tolerate brief ext lag.
 TASK_TTL_S = 120.0
 
-# Heartbeat freshness threshold. If the extension hasn't polled within
+# Heartbeat freshness threshold. If the extension hasn't pinged within
 # this window we consider it disconnected (used by snapshot_state).
-EXT_LIVE_THRESHOLD_S = 10.0
+#
+# 60s is intentional: while the ext is busy running a SINGLE proxy_fetch
+# task (large file upload can take 5-15s) or grecaptcha.execute (2-3s),
+# it can't simultaneously poll /sync/next-task. With a 10s threshold we'd
+# mark the ext "offline" mid-task, which then caused
+# BridgeExtensionOfflineError on the NEXT call even though the ext is
+# alive and well — just busy. 60s gives plenty of slack.
+EXT_LIVE_THRESHOLD_S = 60.0
 
 
 class BridgeTimeoutError(Exception):
@@ -98,6 +105,14 @@ class BrowserBridge:
         self._ext_last_poll = time.time()
         self._ext_last_status = status or "unknown"
         self._ext_last_url = url or ""
+
+    def bump_liveness(self) -> None:
+        """Refresh the 'extension is alive' timestamp WITHOUT touching
+        tab status. Called by /sync/status — that endpoint pings while
+        the ext might be busy in a proxy_fetch task and can't poll
+        /sync/next-task for several seconds. Keeps is_extension_live()
+        True throughout long-running tasks."""
+        self._ext_last_poll = time.time()
 
     def is_extension_live(self) -> bool:
         return (time.time() - self._ext_last_poll) < EXT_LIVE_THRESHOLD_S

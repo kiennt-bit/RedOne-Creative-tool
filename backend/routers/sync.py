@@ -94,7 +94,17 @@ def unwrap(raw: Any) -> dict:
 async def status():
     """Heartbeat — extension hits this every ~15s to keep its connection
     indicator green. Also useful for backend → extension liveness checks
-    via the ext popup's metrics display."""
+    via the ext popup's metrics display.
+
+    IMPORTANT: also bumps `_ext_last_poll` so the bridge's
+    `is_extension_live()` check stays True even when the ext is busy
+    running a long proxy_fetch (during which it doesn't hit
+    /sync/next-task). Without this, large file uploads would falsely
+    trip "Extension offline" on concurrent tasks.
+    """
+    from ..services.browser_bridge import bridge
+    # Don't overwrite tab_status here — we don't know it. Just mark live.
+    bridge.bump_liveness()
     return {"ok": True, "ts": time.time(), "service": "redone-bridge"}
 
 
