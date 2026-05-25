@@ -518,13 +518,71 @@ async def get_task(task_id: int):
     return {"task": t, "items": db.get_task_items(task_id)}
 
 
+# Max edge length for reference images sent to Google Flow. Google's
+# generation pipeline downsamples anything larger internally — keeping
+# bigger files only slows our upload (base64 inflates by ~33% on top of
+# the wire transfer). 2048px preserves enough detail for character /
+# style references; smaller is also fine.
+REF_IMAGE_MAX_EDGE = 2048
+
+
 @router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
-    """Upload reference/character image to temp folder."""
+    """Upload reference/character image to temp folder.
+
+    Auto-resizes any image whose long edge exceeds REF_IMAGE_MAX_EDGE
+    (2048px). 4K phone photos are commonly 4032×3024 — a 6-8 MB JPEG
+    becomes a 800 KB JPEG with no visible quality loss for reference
+    purposes. EXIF metadata is also stripped (often adds 100+ KB of
+    GPS/camera info that's pointless for Google).
+
+    Returns the SAVED path (post-resize) so downstream code stays
+    unchanged.
+    """
     img_dir = OUTPUT_DIR / "uploaded_images"
     img_dir.mkdir(parents=True, exist_ok=True)
-    ext = Path(file.filename or "img.png").suffix or ".png"
+    ext = (Path(file.filename or "img.png").suffix or ".png").lower()
+    # Force common-case extensions to keep PIL happy
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        ext = ".png"
     out = img_dir / f"{uuid.uuid4().hex}{ext}"
     with out.open("wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    # Resize if needed. Wrapped in try/except so an unusual format that
+    # PIL can't open still falls through with the raw file (better to
+    # have a slow upload than to reject the user's file).
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(out) as img:
+            # Honour EXIF orientation flag BEFORE we strip metadata
+            img = ImageOps.exif_transpose(img)
+            w, h = img.size
+            long_edge = max(w, h)
+            if long_edge > REF_IMAGE_MAX_EDGE:
+                scale = REF_IMAGE_MAX_EDGE / long_edge
+                new_w = int(round(w * scale))
+                new_h = int(round(h * scale))
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                log.info(
+                    f"upload-image: resized {w}x{h} → {new_w}x{new_h} "
+                    f"({file.filename})"
+                )
+                # Save back. Use JPEG quality 90 for jpegs, lossless for
+                # png/webp. Convert RGBA → RGB only when saving JPEG.
+                save_kwargs = {}
+                fmt = (img.format or "").upper()
+                lower_ext = ext.lower()
+                if lower_ext in (".jpg", ".jpeg"):
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    save_kwargs = {"quality": 90, "optimize": True}
+                elif lower_ext == ".png":
+                    save_kwargs = {"optimize": True}
+                elif lower_ext == ".webp":
+                    save_kwargs = {"quality": 90, "method": 4}
+                img.save(out, **save_kwargs)
+    except Exception as e:
+        log.warning(f"upload-image: resize skipped ({e}) — saving raw")
+
     return {"path": str(out), "name": file.filename}
