@@ -91,7 +91,7 @@ export function renderImage(root) {
         el('div', { class: 'dropzone', id: 'img-dropzone' },
           el('div', { class: 'dropzone-icon' }, icon('image', 22)),
           el('div', null, 'Kéo thả nhiều ảnh hoặc click'),
-          el('div', { class: 'field-help' }, 'Tùy chọn — model sẽ tham chiếu phong cách / nhân vật'),
+          el('div', { class: 'field-help' }, 'Tùy chọn — model sẽ tham chiếu phong cách / nhân vật. Tối đa 10 ảnh.'),
           el('input', { type: 'file', accept: 'image/*', multiple: 'true', id: 'img-ref-file', style: { display: 'none' } }),
         ),
         // Header strip: count + clear-all button. Visible only when ref
@@ -427,8 +427,29 @@ export function renderImage(root) {
   form.refImagePreviews.forEach(appendRefThumb);
   refreshRefHeader();
 
+  // Google Labs ImageFX caps at ~10 reference images per request.
+  // Beyond that the API rejects with cryptic errors; better to stop
+  // the user up front with a clear toast.
+  const REF_IMAGE_MAX = 10;
+
   async function handleRefFiles() {
-    for (const file of refFi.files) {
+    const incoming = Array.from(refFi.files);
+    const room = Math.max(0, REF_IMAGE_MAX - form.refImagePreviews.length);
+
+    if (room === 0) {
+      toast(`Đã đủ ${REF_IMAGE_MAX} ảnh tham chiếu — xóa bớt trước khi thêm`, 'warning', 6000);
+      refFi.value = '';
+      return;
+    }
+
+    let accepted = incoming;
+    let dropped = 0;
+    if (incoming.length > room) {
+      accepted = incoming.slice(0, room);
+      dropped = incoming.length - room;
+    }
+
+    for (const file of accepted) {
       try {
         const r = await api.content.uploadImage(file);
         const url = URL.createObjectURL(file);
@@ -439,6 +460,14 @@ export function renderImage(root) {
       } catch (e) {
         toast(`Upload lỗi: ${e.message}`, 'error');
       }
+    }
+
+    if (dropped > 0) {
+      toast(
+        `Chỉ nhận tối đa ${REF_IMAGE_MAX} ảnh — đã bỏ ${dropped} ảnh thừa`,
+        'warning',
+        6000,
+      );
     }
     refFi.value = '';
   }
