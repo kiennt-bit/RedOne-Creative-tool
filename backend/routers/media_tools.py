@@ -43,28 +43,32 @@ async def bg_remove(
         out_dir.mkdir(parents=True, exist_ok=True)
         result_png = out_dir / f"{uuid.uuid4().hex}.png"
 
-        if method == "rembg":
-            try:
-                from rembg import remove
-                from PIL import Image
-                img_bytes = src.read_bytes()
-                out_bytes = remove(img_bytes)
-                with result_png.open("wb") as f:
-                    f.write(out_bytes)
-            except ImportError:
-                raise HTTPException(500, "rembg not installed. Run: pip install rembg")
-        else:
-            # Gemini-based: instruct Gemini to describe the foreground, then
-            # use simple alpha-by-color or just request a transparent PNG via
-            # response. As a fallback we use rembg if available.
-            try:
-                from rembg import remove
-                img_bytes = src.read_bytes()
-                out_bytes = remove(img_bytes)
-                with result_png.open("wb") as f:
-                    f.write(out_bytes)
-            except Exception as e:
-                raise HTTPException(500, f"BG remove failed: {e}. Install rembg with `pip install rembg`.")
+        # Both "rembg" and "gemini" methods currently use rembg under the
+        # hood (Gemini doesn't have a foreground-segmentation API yet —
+        # we use rembg as the actual implementation regardless).
+        try:
+            from rembg import remove
+            img_bytes = src.read_bytes()
+            out_bytes = remove(img_bytes)
+            with result_png.open("wb") as f:
+                f.write(out_bytes)
+        except ImportError:
+            raise HTTPException(
+                500,
+                "rembg chưa cài. Chạy trong terminal: pip install rembg onnxruntime",
+            )
+        except SystemExit:
+            # rembg's bg.py calls sys.exit(1) at IMPORT TIME when its
+            # onnxruntime backend is missing — that's a SystemExit
+            # exception, not ImportError. Catch it explicitly so user
+            # gets a clear remediation instead of an opaque 500.
+            raise HTTPException(
+                500,
+                "rembg đã cài nhưng thiếu onnxruntime backend. "
+                "Chạy trong terminal: pip install onnxruntime",
+            )
+        except Exception as e:
+            raise HTTPException(500, f"BG remove failed: {e}")
 
         if fill_color:
             filled = result_png.with_name(result_png.stem + "_filled.png")
