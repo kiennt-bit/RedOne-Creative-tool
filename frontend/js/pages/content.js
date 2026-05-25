@@ -969,9 +969,17 @@ export function renderContent(root) {
     unsubscribe = tasksStore.on(taskId, (s) => renderTaskGallery(s));
   }
 
-  // Restore latest content task on mount
-  const latest = tasksStore.latestByKind('content');
-  if (latest) attachToTask(latest.id);
+  // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
+  // window.__app._pendingTaskId is set by navigate({taskId}) — consume +
+  // clear so subsequent re-mounts go back to "latest" behavior.
+  const pending = window.__app && window.__app._pendingTaskId;
+  if (pending != null && tasksStore.get(pending)) {
+    attachToTask(pending);
+    window.__app._pendingTaskId = null;
+  } else {
+    const latest = tasksStore.latestByKind('content');
+    if (latest) attachToTask(latest.id);
+  }
 
   const obs = new MutationObserver(() => {
     if (!document.body.contains(root)) {

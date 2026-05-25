@@ -688,9 +688,15 @@ export function renderImage(root) {
     unsubscribe = tasksStore.on(taskId, (state) => renderTaskGallery(state));
   }
 
-  // On mount: restore the latest image task if any
-  const latest = tasksStore.latestByKind('image');
-  if (latest) attachToTask(latest.id);
+  // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
+  const pending = window.__app && window.__app._pendingTaskId;
+  if (pending != null && tasksStore.get(pending)) {
+    attachToTask(pending);
+    window.__app._pendingTaskId = null;
+  } else {
+    const latest = tasksStore.latestByKind('image');
+    if (latest) attachToTask(latest.id);
+  }
 
   // Cleanup when navigated away
   const obs = new MutationObserver(() => {

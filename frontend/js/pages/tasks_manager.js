@@ -172,8 +172,8 @@ export function renderTasksManager(root) {
           onclick: () => openTaskFolder(t.id),
         }, icon('folder', 14)),
         navTarget
-          ? el('button', { class: 'btn btn-sm btn-ghost', title: 'Xem trên trang',
-              onclick: () => window.__app.navigate(navTarget) },
+          ? el('button', { class: 'btn btn-sm btn-ghost', title: 'Xem task này trên trang gốc',
+              onclick: () => window.__app.navigate(navTarget, { taskId: t.id }) },
               icon('eye', 14))
           : null,
         ['ERROR', 'CANCELLED'].includes(t.status)

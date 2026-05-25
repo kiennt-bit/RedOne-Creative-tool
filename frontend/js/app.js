@@ -62,9 +62,16 @@ export const store = {
   totalCredits: 0,
 };
 
-export function navigate(pageId) {
+export function navigate(pageId, opts = {}) {
   const page = PAGES[pageId];
   if (!page) return;
+  // Optional deep-link to a specific task — pages that show task gallery
+  // (content, image, long-video) consume this on mount, then clear it.
+  // Used by Tasks Manager's "eye" button so clicking an older task takes
+  // the user to the page WITH that task loaded, not the latest one.
+  if (opts.taskId != null) {
+    window.__app._pendingTaskId = opts.taskId;
+  }
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === pageId));
   $('#page-title').textContent = page.title;
   $('#page-subtitle').textContent = page.subtitle;

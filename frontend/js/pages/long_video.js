@@ -403,9 +403,15 @@ export function renderLongVideo(root) {
     unsubscribe = tasksStore.on(taskId, (s) => renderProgress(s));
   }
 
-  // Restore latest task
-  const latest = tasksStore.latestByKind('long_video');
-  if (latest) attachToTask(latest.id);
+  // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
+  const pending = window.__app && window.__app._pendingTaskId;
+  if (pending != null && tasksStore.get(pending)) {
+    attachToTask(pending);
+    window.__app._pendingTaskId = null;
+  } else {
+    const latest = tasksStore.latestByKind('long_video');
+    if (latest) attachToTask(latest.id);
+  }
 
   const obs = new MutationObserver(() => {
     if (!document.body.contains(root)) {
