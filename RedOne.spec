@@ -30,8 +30,19 @@ binaries = []   # native DLLs/.so added by collect_all() — see loop below
 # out-of-box on a fresh machine without needing `pip install opencv-python`.
 # Adds ~50MB to the EXE. LaMa quality (torch + simple-lama-inpainting) is
 # still external — install via the in-app upgrade wizard.
+#
+# 'google' family — google-genai SDK + auth dependencies. Required for
+# Vertex AI Commercial mode (image gen Nano Banana + video gen Veo).
+# Without these the EXE silently fails on first gen — google.genai import
+# fails inside vertex_client._build_client.
 for pkg in ('playwright', 'curl_cffi', 'httpx', 'uvicorn', 'fastapi', 'starlette',
-            'websockets', 'pydantic_core', 'cloakbrowser', 'cv2', 'imageio_ffmpeg'):
+            'websockets', 'pydantic_core', 'cloakbrowser', 'cv2', 'imageio_ffmpeg',
+            # Vertex AI commercial mode
+            'google.genai', 'google.auth', 'google.oauth2', 'google.api_core',
+            'google.cloud.storage', 'googleapiclient',
+            # Tenacity is used by google-genai for retry logic; usually
+            # picked up via collect_all('google.genai') but explicit is safer.
+            'tenacity'):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -51,6 +62,12 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('backend')
 hiddenimports += collect_submodules('playwright')
+# google-genai SDK + auth — needed for Vertex AI Commercial mode
+for _pkg in ('google.genai', 'google.auth', 'google.oauth2', 'google.api_core'):
+    try:
+        hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        pass
 # cv2 has a complex C-extension layout; collect_submodules helps PyInstaller
 # pick up the data files (haarcascade XMLs etc.) it can't auto-discover.
 try:
