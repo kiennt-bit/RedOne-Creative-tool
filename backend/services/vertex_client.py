@@ -71,6 +71,7 @@ IMAGE_MODEL_MAP: dict[str, str] = {
 }
 
 VIDEO_MODEL_MAP: dict[str, str] = {
+    # Simple aliases used by direct callers / new code
     "lite":    "veo-3.1-lite-generate-001",
     "fast":    "veo-3.1-fast-generate-001",
     "quality": "veo-3.1-generate-001",
@@ -82,6 +83,58 @@ UNAVAILABLE_IN_VERTEX = {
     "lite_lp":    "Veo 3.1 Lite [LP] (free queue) chỉ tồn tại trên Labs Flow consumer. Trong Vertex AI mode, hãy chọn 'Lite' (paid).",
     "omni_flash": "Omni Flash là model nội bộ của Labs Flow, không expose qua Vertex AI. Trong Vertex AI mode, hãy chọn 'Fast' hoặc 'Lite'.",
 }
+
+
+def _resolve_video_model(model_key: str) -> str:
+    """Map any Labs Flow-style video model_key to its Vertex AI model ID.
+
+    The routers (content.py, long_video.py) compute model_key via
+    `video_model_for(quality, mode, duration)` which produces keys like:
+        veo_3_1_t2v_lite          (T2V Lite)
+        veo_3_1_t2v_fast_ultra    (T2V Fast)
+        veo_3_1_t2v               (T2V Quality, no suffix = quality)
+        veo_3_1_t2v_lite_low_priority  (Lite [LP] — Labs free queue)
+        veo_3_1_i2v_lite          (I2V Lite)
+        veo_3_1_i2v_s_fast_ultra  (I2V Fast)
+        veo_3_1_i2v_s             (I2V Quality)
+        veo_3_1_i2v_lite_low_priority  (I2V Lite [LP])
+        abra_t2v_8s               (Omni Flash 8s duration)
+
+    For Vertex AI, the t2v/i2v distinction is irrelevant — the same Veo
+    model handles both, we just include/exclude the `image` field in
+    GenerateVideosSource. Only the QUALITY tier matters.
+
+    Returns Vertex AI model ID. Raises ValueError if the key represents
+    a Labs Flow-only model with no commercial equivalent.
+    """
+    low = (model_key or "").lower()
+
+    # Hard-fail on Labs Flow-only tiers
+    if "low_priority" in low or "_lp" in low:
+        raise ValueError(UNAVAILABLE_IN_VERTEX["lite_lp"])
+    if "abra_" in low or "omni" in low:
+        raise ValueError(UNAVAILABLE_IN_VERTEX["omni_flash"])
+
+    # Direct alias (simple keys: "lite" / "fast" / "quality")
+    if model_key in VIDEO_MODEL_MAP:
+        return VIDEO_MODEL_MAP[model_key]
+
+    # Labs Flow patterns: pick quality tier by substring
+    if "fast" in low:
+        return "veo-3.1-fast-generate-001"
+    if "lite" in low:
+        return "veo-3.1-lite-generate-001"
+    # Default: anything matching veo_3_1_t2v / veo_3_1_i2v_s / veo-3.1-* /
+    # "quality" → Veo 3.1 standard (Quality tier).
+    if "veo" in low and ("3_1" in low or "3.1" in low):
+        return "veo-3.1-generate-001"
+
+    raise ValueError(
+        f"Vertex AI: model '{model_key}' không hỗ trợ. "
+        f"Models available: lite / fast / quality. "
+        f"Để dùng Omni Flash hoặc Lite [LP], chuyển sang Auth mode "
+        f"= Chrome Extension Bridge."
+    )
 
 
 # Aspect ratio maps — Labs Flow uses different terms ("16:9 Landscape")
@@ -529,17 +582,9 @@ class VertexFlowClient:
         """
         await self.ensure_token()
 
-        # Block unsupported Labs Flow-only models with a clear message
-        if model_key in UNAVAILABLE_IN_VERTEX:
-            raise ValueError(UNAVAILABLE_IN_VERTEX[model_key])
-
-        model_id = VIDEO_MODEL_MAP.get(model_key)
-        if not model_id:
-            raise ValueError(
-                f"Vertex AI: video model '{model_key}' không hỗ trợ. "
-                f"Models available: {list(VIDEO_MODEL_MAP.keys())} "
-                f"(lite/fast/quality)."
-            )
+        # Resolve Labs Flow-style key (vd "veo_3_1_i2v_s") → Vertex model ID.
+        # Raises ValueError with friendly message for Lite [LP] / Omni Flash.
+        model_id = _resolve_video_model(model_key)
         self._last_model_key = model_id
 
         from google.genai import types as gtypes
