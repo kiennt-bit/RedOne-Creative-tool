@@ -3,7 +3,12 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 pydantic>=2.5.0
 playwright>=1.40.0
-google-genai>=0.3.0
+# google-genai handles BOTH:
+#  - Gemini text (used by services/gemini.py)
+#  - Vertex AI commercial API (vertex_client.py) — image gen Nano Banana 2/Pro
+#    and video gen Veo 3.1 variants. Requires version with vertexai=True + Veo
+#    long-running operation support.
+google-genai>=0.5.0
 Pillow>=10.0.0
 yt-dlp>=2024.1.0
 imageio-ffmpeg>=0.4.9

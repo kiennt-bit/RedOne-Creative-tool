@@ -25,7 +25,14 @@ class SettingsUpdate(BaseModel):
     # New: route all Google calls through the Chrome extension bridge
     # instead of Playwright. Default "extension" — proven to dramatically
     # reduce 403 cascades (token comes from user's real Chrome).
-    auth_mode: str | None = None          # "extension" | "playwright"
+    auth_mode: str | None = None          # "extension" | "playwright" | "vertex_api"
+    # Vertex AI commercial mode config — used only when auth_mode = "vertex_api".
+    # Image gen uses the API key (Gemini); video gen needs the service
+    # account JSON path (ADC). See services/vertex_client.py.
+    vertex_api_key: str | None = None
+    vertex_service_account_path: str | None = None
+    vertex_project_id: str | None = None
+    vertex_region: str | None = None      # "us-central1" default
     # Random pause between batches. Each batch finishes → tool sleeps a
     # uniform random number of seconds in [min, max] before launching the
     # next batch. Helps reduce Google's rate-based bot detection — the
@@ -44,6 +51,16 @@ async def get_settings():
             s["gemini_api_key_masked"] = v[:4] + "•••" + v[-4:]
         else:
             s["gemini_api_key_masked"] = "•••"
+    # Same masking for Vertex AI API key — don't leak the secret in
+    # plain text over the wire.
+    if "vertex_api_key" in s:
+        v = s["vertex_api_key"]
+        if isinstance(v, str) and len(v) > 8:
+            s["vertex_api_key_masked"] = v[:6] + "•••" + v[-4:]
+            del s["vertex_api_key"]   # frontend uses masked version
+        elif v:
+            s["vertex_api_key_masked"] = "•••"
+            del s["vertex_api_key"]
     return {
         "settings": s,
         "app": {

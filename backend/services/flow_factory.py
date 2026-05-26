@@ -16,13 +16,16 @@ from typing import Optional
 log = logging.getLogger("redone.flow_factory")
 
 
+VALID_AUTH_MODES = ("extension", "playwright", "vertex_api")
+
+
 def _read_auth_mode() -> str:
-    """Return 'extension' (default) or 'playwright'. Fresh read on every
-    call so user can switch in Settings without a restart."""
+    """Return one of VALID_AUTH_MODES (default 'extension'). Fresh read on
+    every call so user can switch in Settings without a restart."""
     try:
         from ..database import db
         val = (db.get_setting("auth_mode", "extension") or "extension").lower()
-        if val in ("extension", "playwright"):
+        if val in VALID_AUTH_MODES:
             return val
     except Exception:
         pass
@@ -31,12 +34,13 @@ def _read_auth_mode() -> str:
 
 async def get_page_for_account(account: dict):
     """Open a Playwright page for the account if and only if we're in
-    legacy Playwright mode. In extension mode there's no page — returns
-    None and the caller skips browser spawn entirely.
+    legacy Playwright mode. In extension / vertex_api mode there's no
+    page — returns None and the caller skips browser spawn entirely.
 
     Saves routers from having to know the auth mode themselves.
     """
-    if _read_auth_mode() == "extension":
+    mode = _read_auth_mode()
+    if mode in ("extension", "vertex_api"):
         return None
     from .browser_manager import BrowserManager
     bm = BrowserManager()
@@ -51,24 +55,41 @@ def make_flow_client(
     cookie_path: str = "",
     account_email: str = "",
 ):
-    """Construct the appropriate FlowClient subclass for the current
+    """Construct the appropriate FlowClient implementation for the current
     auth_mode setting.
 
-    Both classes have the same public API — routers never need to
-    branch on which one they got.
+    All variants implement the same public API so routers never branch
+    on which one they got.
 
     Args:
         page: Playwright Page (only used by legacy FlowClient — ignored
-              in bridge mode but accepted for signature compatibility).
-        cookie_path: Legacy cookie JSON path (also ignored by bridge).
+              in bridge / vertex modes but accepted for signature compat).
+        cookie_path: Legacy cookie JSON path (ignored outside playwright mode).
         account_email: Identifies which account this client is for —
               used in logs + per-account locks.
+
+    Modes
+    -----
+    "extension" (default): BridgeFlowClient — talks to Chrome extension,
+        uses user's real Chrome session (free Labs Flow quota, no 403).
+    "playwright": Legacy FlowClient — spawns Cloak/Chrome browser, uses
+        per-account cookie JSON files (free Labs Flow quota).
+    "vertex_api": VertexFlowClient — commercial Google Cloud Vertex AI
+        (pay-per-call). Requires API key + service account JSON config
+        in Settings.
     """
     mode = _read_auth_mode()
+    if mode == "vertex_api":
+        from .vertex_client import VertexFlowClient
+        return VertexFlowClient(
+            page=None,
+            cookie_path=cookie_path,
+            account_email=account_email,
+        )
     if mode == "extension":
         from .flow_client_bridge import BridgeFlowClient
         return BridgeFlowClient(
-            page=None,  # bridge mode doesn't use a page
+            page=None,
             cookie_path=cookie_path,
             account_email=account_email,
         )
