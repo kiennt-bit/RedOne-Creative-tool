@@ -21,7 +21,7 @@ from .routers import (
     accounts, content, image as image_router, analyzer, long_video,
     media_tools, settings as settings_router, files as files_router,
     tasks as tasks_router, system as system_router,
-    sync as sync_router,
+    sync as sync_router, auth as auth_router,
 )
 from .queue_manager import queue as task_queue
 
@@ -114,6 +114,57 @@ async def no_cache_for_static(request: Request, call_next):
         response.headers["Expires"] = "0"
     return response
 
+
+# ── Auth gate ─────────────────────────────────────────────────────────
+# Blocks /api/* requests + the SPA root from unauthenticated callers.
+# Allowed without auth:
+#   /auth/*       OAuth flow handlers
+#   /login.html   the login page itself
+#   /static/*     CSS/JS/images the login page needs to render
+#   /sync/*       extension <-> bridge protocol (no user identity)
+#   /favicon.ico
+# Everything else 401s (for /api/*) or redirects to /login.html (for HTML).
+# When OAuth is unconfigured (no private_config.py), the gate is BYPASSED
+# so an admin can still reach the tool to read setup instructions.
+
+_AUTH_ALLOW_PREFIXES = (
+    "/auth/", "/static/", "/sync/", "/login.html",
+    "/favicon.ico", "/css/", "/js/",
+)
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    """Require a valid @{ALLOWED_DOMAIN} OAuth session for everything
+    except auth endpoints + static assets. See module docstring."""
+    from .services.oauth_auth import load_session, is_configured
+
+    # Always allow auth flow + static assets + the bridge protocol
+    path = request.url.path
+    for prefix in _AUTH_ALLOW_PREFIXES:
+        if path == prefix or path.startswith(prefix):
+            return await call_next(request)
+
+    # If admin hasn't set up OAuth yet (no private_config.py with creds),
+    # let everything through so they can still read setup docs in the UI.
+    # Once configured, the gate engages.
+    if not is_configured():
+        return await call_next(request)
+
+    if load_session() is not None:
+        return await call_next(request)
+
+    # Unauthenticated. API calls get a clean 401; HTML navigation gets
+    # a redirect to the login page.
+    if path.startswith("/api/") or path.startswith("/ws"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"error": "unauthorized", "message": "Cần đăng nhập trước khi dùng tool"},
+            status_code=401,
+        )
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/login.html", status_code=302)
+
 app.include_router(accounts.router)
 app.include_router(content.router)
 app.include_router(image_router.router)
@@ -125,6 +176,7 @@ app.include_router(files_router.router)
 app.include_router(tasks_router.router)
 app.include_router(system_router.router)
 app.include_router(sync_router.router)
+app.include_router(auth_router.router)
 
 
 @app.get("/api/health")

@@ -1,0 +1,57 @@
+"""COMPANY-INTERNAL credentials — TEMPLATE.
+
+╔══════════════════════════════════════════════════════════════════════╗
+║  SETUP INSTRUCTIONS (do once, per build machine):                   ║
+║                                                                      ║
+║  1. Copy this file:                                                 ║
+║     cp backend/private_config.py.template backend/private_config.py ║
+║                                                                      ║
+║  2. Fill in the values below (replace ALL_CAPS placeholders).       ║
+║                                                                      ║
+║  3. NEVER commit `private_config.py` — it's gitignored.             ║
+║     If you accidentally `git add` it, immediately:                  ║
+║       git rm --cached backend/private_config.py                     ║
+║     and rotate ALL secrets in this file (revoke + create new).      ║
+║                                                                      ║
+║  4. When PyInstaller builds the EXE, this file gets baked into the  ║
+║     bundle. Distributed EXE has the secrets but they're protected   ║
+║     by the OAuth login gate — only @{ALLOWED_DOMAIN} users can      ║
+║     unlock the tool.                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+If `private_config.py` is missing or import fails, the tool falls back
+to reading these values from the SQLite settings (Settings page in UI).
+That's fine for personal use but not for company distribution.
+"""
+
+# ── Google OAuth (for the login gate) ─────────────────────────────────
+# Get from: https://console.cloud.google.com/apis/credentials
+# → + Create credentials → OAuth client ID → Web application
+# Redirect URIs MUST include:
+#   http://127.0.0.1:8000/auth/callback
+#   http://localhost:8000/auth/callback
+OAUTH_CLIENT_ID = "REPLACE_ME-XXXXXXXXX.apps.googleusercontent.com"
+OAUTH_CLIENT_SECRET = "GOCSPX-REPLACE_ME"
+
+# Only emails ending in @<this domain> are allowed to log in. The tool
+# rejects everyone else even if OAuth itself succeeds. Defense-in-depth:
+# the consent screen's "Internal" audience already filters at OAuth
+# level, but we re-check here so the rule survives if someone flips
+# audience to "External" later.
+ALLOWED_EMAIL_DOMAIN = "redone.vn"
+
+
+# ── Vertex AI commercial API (image gen + video gen) ─────────────────
+# Get API key:        Credentials page → Create credentials → API key
+#                     Restrict to: Vertex AI API + Generative Language API
+# Get service account JSON: IAM → Service Accounts → KEYS → Add → JSON.
+#                     Role needed: Agent Platform User + Storage Object User.
+VERTEX_API_KEY = "AIzaSy-REPLACE_ME"
+VERTEX_SERVICE_ACCOUNT_PATH = r"C:\Users\Admin\Documents\redone-vertex-key.json"
+VERTEX_PROJECT_ID = "your-project-id-here"
+VERTEX_REGION = "us-central1"   # us-central1 has all Veo + Imagen variants
+
+
+# ── Session config ───────────────────────────────────────────────────
+# How long a logged-in session stays valid before re-auth is required.
+SESSION_MAX_AGE_DAYS = 30

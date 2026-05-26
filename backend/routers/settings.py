@@ -61,6 +61,20 @@ async def get_settings():
         elif v:
             s["vertex_api_key_masked"] = "•••"
             del s["vertex_api_key"]
+
+    # Tell the frontend whether private_config.py is providing the
+    # Vertex AI credentials. When True, Settings UI shows the fields as
+    # read-only "Loaded from private_config" so end users don't
+    # accidentally type over the admin-baked values.
+    private_config_active = False
+    try:
+        from .. import private_config as _pc  # type: ignore
+        pc_key = getattr(_pc, "VERTEX_API_KEY", "") or ""
+        if pc_key and not pc_key.startswith("AIzaSy-REPLACE"):
+            private_config_active = True
+    except Exception:
+        pass
+    s["vertex_private_config_active"] = private_config_active
     return {
         "settings": s,
         "app": {

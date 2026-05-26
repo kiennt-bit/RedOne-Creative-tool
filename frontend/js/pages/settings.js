@@ -230,6 +230,42 @@ export function renderSettings(root) {
       root.querySelector('#st-vertex-project').value = s.vertex_project_id || '';
       root.querySelector('#st-vertex-region').value = s.vertex_region || 'us-central1';
 
+      // If private_config.py is providing the Vertex creds, lock the UI
+      // fields and surface a hint so users don't think their edits are
+      // being ignored.
+      if (s.vertex_private_config_active) {
+        for (const id of ['st-vertex-apikey', 'st-vertex-sapath',
+                          'st-vertex-project', 'st-vertex-region']) {
+          const elx = root.querySelector('#' + id);
+          if (elx) {
+            elx.disabled = true;
+            elx.style.opacity = '0.6';
+          }
+        }
+        const apiInput = root.querySelector('#st-vertex-apikey');
+        if (apiInput) apiInput.placeholder = '✓ Loaded from private_config.py';
+        // Add a banner in the Vertex section
+        const vWrap2 = root.querySelector('#st-vertex-wrap');
+        if (vWrap2 && !vWrap2.querySelector('.private-config-banner')) {
+          const banner = el('div', {
+            class: 'private-config-banner',
+            style: {
+              padding: '10px 14px', marginBottom: '12px',
+              background: 'rgba(34, 197, 94, 0.1)',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              borderRadius: '8px',
+              fontSize: '12.5px',
+              color: '#86efac',
+            },
+          },
+            '✓ Vertex AI credentials đã được admin cấu hình sẵn trong ',
+            el('code', null, 'private_config.py'),
+            '. Các field dưới đây chỉ để tham khảo (không sửa được).',
+          );
+          vWrap2.insertBefore(banner, vWrap2.firstChild);
+        }
+      }
+
       // Live-toggle the Vertex section + Playwright section when user
       // changes the dropdown (no need to save first).
       root.querySelector('#st-authmode').addEventListener('change', (e) => {

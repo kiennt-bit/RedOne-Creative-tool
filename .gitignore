@@ -29,3 +29,17 @@ debug_credits.png
 debug_poll.json
 debug_*.json
 debug_*.png
+
+# Private config — company-internal secrets (OAuth client secret,
+# Vertex AI API key, service account paths, allowed email domain).
+# This file is NEVER committed. Use backend/private_config.py.template
+# as the starting point on each new machine.
+backend/private_config.py
+
+# Service account JSON keys downloaded from Google Cloud — never commit.
+# Catches files like `resonant-forge-497503-e0-abc123.json` or any
+# `*-credentials.json` if a user drops them in the repo by mistake.
+*-credentials.json
+*-key.json
+service-account-*.json
+gcp-*.json

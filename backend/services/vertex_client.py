@@ -116,17 +116,67 @@ class VertexFlowClient:
     # ── Settings ────────────────────────────────────────────────────
 
     def _load_settings(self) -> None:
-        """Read Vertex AI config from DB. Called on first need + when
-        we detect cached settings are stale."""
+        """Read Vertex AI config — private_config.py FIRST, DB as fallback.
+
+        Priority order:
+          1. backend/private_config.py  (baked into EXE at build, never
+             committed to git, used by company-internal distribution).
+          2. SQLite settings             (user-editable via Settings page,
+             for one-off / personal usage).
+
+        This way a single EXE distributed company-wide ships with the
+        admin's keys but individual users can still override via UI if
+        they want to test with their own GCP project.
+        """
+        # 1. Try private_config first
+        pc_api_key = ""
+        pc_sa_path = ""
+        pc_project = ""
+        pc_region = ""
+        try:
+            from .. import private_config as _pc  # type: ignore
+            pc_api_key = getattr(_pc, "VERTEX_API_KEY", "") or ""
+            pc_sa_path = getattr(_pc, "VERTEX_SERVICE_ACCOUNT_PATH", "") or ""
+            pc_project = getattr(_pc, "VERTEX_PROJECT_ID", "") or ""
+            pc_region  = getattr(_pc, "VERTEX_REGION", "") or ""
+            # Skip the "REPLACE_ME" placeholders from the template — treat
+            # them as "not set" so DB fallback kicks in.
+            if pc_api_key.startswith("AIzaSy-REPLACE"):
+                pc_api_key = ""
+            if pc_project in ("your-project-id-here", ""):
+                pc_project = ""
+        except Exception:
+            pass  # private_config missing — fall through to DB
+
+        # 2. DB fallback for any field private_config didn't provide
         try:
             from ..database import db
-            self._api_key = db.get_setting("vertex_api_key", "") or ""
-            self._sa_path = db.get_setting("vertex_service_account_path", "") or ""
-            self._project_id = db.get_setting("vertex_project_id", "") or ""
-            self._region = db.get_setting("vertex_region", "us-central1") or "us-central1"
+            db_api_key = db.get_setting("vertex_api_key", "") or ""
+            db_sa_path = db.get_setting("vertex_service_account_path", "") or ""
+            db_project = db.get_setting("vertex_project_id", "") or ""
+            db_region  = db.get_setting("vertex_region", "us-central1") or "us-central1"
         except Exception as e:
-            log.warning(f"vertex: failed to load settings: {e}")
+            log.warning(f"vertex: failed to load DB settings: {e}")
+            db_api_key = db_sa_path = db_project = ""
+            db_region = "us-central1"
+
+        # Merge — private_config wins per-field; DB fills in the rest.
+        self._api_key = pc_api_key or db_api_key
+        self._sa_path = pc_sa_path or db_sa_path
+        self._project_id = pc_project or db_project
+        self._region = pc_region or db_region or "us-central1"
         self._settings_loaded = True
+
+        # Tell logs which source provided each value — helps debug
+        # "why is the tool using the wrong project ID" mysteries.
+        srcs = []
+        if pc_api_key: srcs.append("api_key=pc")
+        elif db_api_key: srcs.append("api_key=db")
+        if pc_sa_path: srcs.append("sa=pc")
+        elif db_sa_path: srcs.append("sa=db")
+        if pc_project: srcs.append("project=pc")
+        elif db_project: srcs.append("project=db")
+        log.debug(f"vertex._load_settings: {' '.join(srcs) or 'no sources configured'}")
 
     def _require_image_auth(self) -> None:
         if not self._settings_loaded:

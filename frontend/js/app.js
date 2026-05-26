@@ -138,6 +138,56 @@ function setupTheme() {
 
 // Shutdown button (topbar). Confirms before killing the backend so an
 // accidental click doesn't trash an in-flight task.
+function setupAuthUI() {
+  // Inject a tiny "logged in as X — logout" chip into the topbar actions
+  // row so users can see who they are + sign out. Skipped silently if
+  // there's no user info (offline boot, OAuth not configured, etc).
+  const user = window.__app && window.__app.user;
+  if (!user || !user.email) return;
+  const actions = $('.topbar-actions') || $('.topbar-right');
+  if (!actions) return;
+  if ($('#auth-chip')) return;   // already injected
+
+  const chip = document.createElement('div');
+  chip.id = 'auth-chip';
+  chip.style.cssText =
+    'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 4px;' +
+    'background:rgba(255,255,255,0.04);border:1px solid var(--border);' +
+    'border-radius:18px;font-size:11.5px;color:var(--text-muted);' +
+    'cursor:pointer;transition:background 0.15s;margin-right:6px;';
+  chip.title = `Đăng nhập: ${user.email}\nClick để đăng xuất`;
+  chip.onmouseover = () => chip.style.background = 'rgba(255,255,255,0.08)';
+  chip.onmouseout = () => chip.style.background = 'rgba(255,255,255,0.04)';
+
+  if (user.picture) {
+    const img = document.createElement('img');
+    img.src = user.picture;
+    img.style.cssText = 'width:22px;height:22px;border-radius:50%;';
+    chip.appendChild(img);
+  }
+  const label = document.createElement('span');
+  // Show just the local part of the email to save space, full email in tooltip
+  label.textContent = (user.email || '').split('@')[0];
+  chip.appendChild(label);
+
+  chip.addEventListener('click', async () => {
+    const { confirm } = await import('./ui.js');
+    if (!await confirm(
+      `Đăng xuất khỏi RedOne Creative?\nTài khoản: ${user.email}`,
+      'Xác nhận đăng xuất',
+    )) return;
+    try {
+      await fetch('/auth/logout', { method: 'POST' });
+    } catch (e) { /* ignore */ }
+    window.location.replace('/login.html');
+  });
+
+  // Insert before the theme toggle / shutdown buttons so it appears
+  // on the left side of the action cluster.
+  actions.insertBefore(chip, actions.firstChild);
+}
+
+
 function setupShutdown() {
   const btn = $('#shutdown-btn');
   if (!btn) return;
@@ -442,8 +492,32 @@ function closeUpdateModal() {
 }
 
 async function init() {
+  // Auth gate — before anything else. If not logged in, bounce to
+  // /login.html instead of rendering the empty app shell. The backend
+  // also enforces this server-side, but doing it client-side too means
+  // the UI never flashes "loading" then "redirect".
+  try {
+    const r = await fetch('/auth/me');
+    const data = await r.json();
+    if (data && data.oauth_configured !== false && !data.logged_in) {
+      window.location.replace('/login.html');
+      return;
+    }
+    if (data && data.email) {
+      // Stash the logged-in user on the global app object so other
+      // pages (e.g. Settings) can read it without re-fetching.
+      window.__app = window.__app || {};
+      window.__app.user = data;
+    }
+  } catch (e) {
+    // Backend offline — let init continue; downstream API calls will
+    // surface the connection error themselves.
+    console.warn('Auth probe failed:', e);
+  }
+
   setupTheme();
   setupShutdown();
+  setupAuthUI();
   setupSidebar();
   setupWS();
 
