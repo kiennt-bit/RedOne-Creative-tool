@@ -144,14 +144,17 @@ function renderWizard(initialStatus, onComplete) {
         : 'Tự tải + cài (~30MB, không cần UAC, ~30 giây)',
     ));
 
-    const needsPip = !(status.has_torch && status.has_simple_lama && status.has_cv2_ext);
+    const needsPip = !(
+      status.has_torch && status.has_simple_lama && status.has_cv2_ext
+      && status.has_google_genai && status.has_onnxruntime
+    );
     stepListWrap.appendChild(stepRow(
       'pip',
-      'PyTorch + simple-lama-inpainting + opencv-python',
+      'PyTorch + simple-lama + opencv + google-genai + onnxruntime',
       status_for('pip', needsPip, !needsPip),
       status.has_cuda
         ? 'GPU NVIDIA detected → cài CUDA build (~2GB, 5-10 phút)'
-        : 'Không có NVIDIA GPU → cài CPU build (~700MB, 3-5 phút)',
+        : 'Không có NVIDIA GPU → cài CPU build (~750MB, 3-5 phút)',
     ));
 
     stepListWrap.appendChild(stepRow(
