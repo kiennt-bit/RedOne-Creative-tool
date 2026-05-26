@@ -66,12 +66,27 @@ async def get_settings():
     # Vertex AI credentials. When True, Settings UI shows the fields as
     # read-only "Loaded from private_config" so end users don't
     # accidentally type over the admin-baked values.
+    #
+    # Detection: service account path + project_id are the actual
+    # required fields (API key path was deprecated). If both are set
+    # to real values (not template placeholders), private_config wins.
     private_config_active = False
     try:
         from .. import private_config as _pc  # type: ignore
-        pc_key = getattr(_pc, "VERTEX_API_KEY", "") or ""
-        if pc_key and not pc_key.startswith("AIzaSy-REPLACE"):
+        pc_sa_path = getattr(_pc, "VERTEX_SERVICE_ACCOUNT_PATH", "") or ""
+        pc_project = getattr(_pc, "VERTEX_PROJECT_ID", "") or ""
+        pc_region  = getattr(_pc, "VERTEX_REGION", "us-central1") or "us-central1"
+        if (
+            pc_sa_path and pc_project
+            and pc_project not in ("your-project-id-here", "")
+        ):
             private_config_active = True
+            # Surface the values to the UI so the locked fields actually
+            # SHOW what's loaded instead of looking empty. These aren't
+            # secrets — path + project ID + region are safe to display.
+            s["vertex_service_account_path"] = pc_sa_path
+            s["vertex_project_id"] = pc_project
+            s["vertex_region"] = pc_region
     except Exception:
         pass
     s["vertex_private_config_active"] = private_config_active
