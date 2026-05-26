@@ -219,23 +219,20 @@ class VertexFlowClient:
 
     # ── SDK client builders ─────────────────────────────────────────
 
-    def _get_client(self):
-        """One google-genai client used for BOTH image + video gen.
+    def _build_client(self, location: str):
+        """Build a google-genai Client for the given location.
 
-        Auth: explicit service account credentials loaded from the JSON
-        file. We pass `credentials=` directly to genai.Client + force
-        `vertexai=True` so the SDK doesn't fall back to AI Studio mode
-        (which would demand an api_key).
+        Different model families live on different Vertex AI endpoints:
 
-        Earlier versions relied on the GOOGLE_APPLICATION_CREDENTIALS
-        env var, but google-genai sometimes didn't pick it up reliably
-        when Client was created from a worker thread — giving the
-        cryptic "No API key was provided" error even though service
-        account was set. Loading credentials explicitly avoids that
-        whole class of bug.
+          - "global"        — Gemini Image preview models (Nano Banana 2/Pro)
+                              are only published to the global endpoint.
+          - "us-central1"   — Veo video models + most stable Imagen variants
+                              live on regional endpoints.
+
+        We build two clients lazily — one per location — because google-genai
+        bakes the location into the underlying HTTP endpoint at Client init,
+        so a single client can't speak to both.
         """
-        if self._video_client is not None:
-            return self._video_client
         self._require_auth()
         try:
             from google import genai
@@ -259,25 +256,33 @@ class VertexFlowClient:
                 f"Kiểm tra file có hợp lệ + role 'Agent Platform User'."
             )
 
-        # Still set the env var as a belt-and-suspenders — some SDK code
-        # paths read it independent of the Client we hand them.
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self._sa_path
 
-        client = genai.Client(
+        return genai.Client(
             vertexai=True,
             project=self._project_id,
-            location=self._region,
+            location=location,
             credentials=credentials,
         )
-        # Cache on both legacy attributes so old _get_image_client /
-        # _get_video_client callers (if any) hit the same instance.
-        self._video_client = client
-        self._image_client = client
-        return client
 
-    # Old names — both delegate to the unified _get_client.
-    _get_image_client = _get_client
-    _get_video_client = _get_client
+    def _get_image_client(self):
+        """Client tied to the global endpoint — where Gemini image preview
+        models (Nano Banana 2 + Pro) are hosted."""
+        if self._image_client is None:
+            self._image_client = self._build_client("global")
+        return self._image_client
+
+    def _get_video_client(self):
+        """Client tied to the configured regional endpoint — where Veo
+        video models are hosted (us-central1 by default)."""
+        if self._video_client is None:
+            self._video_client = self._build_client(self._region)
+        return self._video_client
+
+    def _get_client(self):
+        """Legacy alias — returns the image client. Callers that want the
+        video client should use _get_video_client explicitly."""
+        return self._get_image_client()
 
     # ── Auth / token ────────────────────────────────────────────────
 
