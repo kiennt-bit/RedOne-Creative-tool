@@ -105,7 +105,25 @@ async def generate_text(
             err_str = str(e)
             fallback_log.append({"model": model, "error": err_str[:200]})
             last_err = e
-            if any(k in err_str.lower() for k in ["quota", "rate", "429", "permission", "key", "billing", "exhausted"]):
+            low = err_str.lower()
+            # Fall back to next model in chain on:
+            #   - Quota / rate-limit errors (existing): quota, rate, 429,
+            #     permission, key, billing, exhausted
+            #   - Server-side transient errors (new): 503/500/502,
+            #     unavailable, overload, internal, deadline
+            #   - Model-specific errors (new): not_found, not found,
+            #     invalid_argument (model name typo / deprecated model
+            #     like gemini-3-flash-preview being removed)
+            transient_keys = (
+                "quota", "rate", "429", "permission", "key", "billing", "exhausted",
+                "503", "500", "502", "unavailable", "overload", "internal",
+                "deadline", "timeout",
+                "not_found", "not found", "404", "invalid_argument",
+            )
+            if any(k in low for k in transient_keys):
+                log.warning(
+                    f"Gemini {model} failed ({err_str[:100]}), trying next model..."
+                )
                 continue
             raise
     raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
