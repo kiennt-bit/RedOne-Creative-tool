@@ -104,16 +104,7 @@ export function renderSettings(root) {
           }, 'Xem giá'),
         ),
       ),
-      el('label', { class: 'field-label' }, 'API Key (cho image gen — Nano Banana)'),
-      el('input', {
-        type: 'password', class: 'input', id: 'st-vertex-apikey',
-        placeholder: 'AIzaSy...',
-      }),
-      el('div', { class: 'field-help', style: { marginBottom: '12px' } },
-        'Lấy ở Google Cloud Console → APIs & Services → Credentials → + Create credentials → API key. '
-        + 'Restrict key: chỉ enable Vertex AI / Generative Language API.'),
-
-      el('label', { class: 'field-label' }, 'Service Account JSON Path (cho video gen — Veo)'),
+      el('label', { class: 'field-label' }, 'Service Account JSON Path (cho cả image + video gen)'),
       el('input', {
         type: 'text', class: 'input', id: 'st-vertex-sapath',
         placeholder: 'C:\\Users\\Admin\\Documents\\redone-vertex-key.json',
@@ -223,9 +214,10 @@ export function renderSettings(root) {
       const vWrap = root.querySelector('#st-vertex-wrap');
       if (vWrap) vWrap.style.display = authMode === 'vertex_api' ? '' : 'none';
       // Vertex AI fields — masked key uses placeholder so user knows it's set
-      if (s.vertex_api_key_masked) {
-        root.querySelector('#st-vertex-apikey').placeholder = s.vertex_api_key_masked;
-      }
+      // vertex_api_key is deprecated (Google's API key + service account
+      // binding policy made it impractical). UI no longer renders the
+      // field — service account JSON path handles all auth.
+      void s.vertex_api_key_masked;
       root.querySelector('#st-vertex-sapath').value = s.vertex_service_account_path || '';
       root.querySelector('#st-vertex-project').value = s.vertex_project_id || '';
       root.querySelector('#st-vertex-region').value = s.vertex_region || 'us-central1';
@@ -234,7 +226,7 @@ export function renderSettings(root) {
       // fields and surface a hint so users don't think their edits are
       // being ignored.
       if (s.vertex_private_config_active) {
-        for (const id of ['st-vertex-apikey', 'st-vertex-sapath',
+        for (const id of ['st-vertex-sapath',
                           'st-vertex-project', 'st-vertex-region']) {
           const elx = root.querySelector('#' + id);
           if (elx) {
@@ -242,8 +234,7 @@ export function renderSettings(root) {
             elx.style.opacity = '0.6';
           }
         }
-        const apiInput = root.querySelector('#st-vertex-apikey');
-        if (apiInput) apiInput.placeholder = '✓ Loaded from private_config.py';
+        // No more API key field — service account path covers all auth
         // Add a banner in the Vertex section
         const vWrap2 = root.querySelector('#st-vertex-wrap');
         if (vWrap2 && !vWrap2.querySelector('.private-config-banner')) {
@@ -375,9 +366,8 @@ export function renderSettings(root) {
       if (Number.isNaN(cdMax) || cdMax < 0) cdMax = 0;
       if (cdMax < cdMin) { const t = cdMin; cdMin = cdMax; cdMax = t; }
 
-      // Vertex AI fields — only include API key if user typed a new value
-      // (empty input means "keep existing key", not "clear it").
-      const vertexApiKeyInput = root.querySelector('#st-vertex-apikey').value.trim();
+      // Vertex AI: service account JSON path covers auth for both
+      // image + video gen. No API key field anymore.
       const payload = {
         default_aspect: root.querySelector('#st-aspect').value,
         default_quality: root.querySelector('#st-quality').value,
@@ -390,8 +380,6 @@ export function renderSettings(root) {
         vertex_project_id: root.querySelector('#st-vertex-project').value.trim(),
         vertex_region: root.querySelector('#st-vertex-region').value,
       };
-      if (vertexApiKeyInput) payload.vertex_api_key = vertexApiKeyInput;
-
       await api.settings.update(payload);
       // Sync into in-memory store so newly-opened pages pick up the changes.
       // Pages already initialized keep their form values (intentional — user's

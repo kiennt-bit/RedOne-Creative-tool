@@ -42,11 +42,18 @@ ALLOWED_EMAIL_DOMAIN = "redone.vn"
 
 
 # ── Vertex AI commercial API (image gen + video gen) ─────────────────
-# Get API key:        Credentials page → Create credentials → API key
-#                     Restrict to: Vertex AI API + Generative Language API
-# Get service account JSON: IAM → Service Accounts → KEYS → Add → JSON.
-#                     Role needed: Agent Platform User + Storage Object User.
-VERTEX_API_KEY = "AIzaSy-REPLACE_ME"
+# Both Nano Banana (image) and Veo (video) authenticate via a single
+# Service Account JSON file — google-genai SDK reads it automatically
+# from GOOGLE_APPLICATION_CREDENTIALS (which vertex_client.py sets from
+# VERTEX_SERVICE_ACCOUNT_PATH below).
+#
+# Get the JSON: GCP Console → IAM → Service Accounts → KEYS → Add key → JSON
+#               Role needed: Agent Platform User + Storage Object User.
+#
+# NOTE: VERTEX_API_KEY is deprecated. Google's 2025 policy requires API
+# keys for Vertex to be "bound" to a service account, and that UI flow
+# is buggy. Service account auth alone covers both image + video calls.
+VERTEX_API_KEY = ""   # ← leave empty, no longer used
 VERTEX_SERVICE_ACCOUNT_PATH = r"C:\Users\Admin\Documents\redone-vertex-key.json"
 VERTEX_PROJECT_ID = "your-project-id-here"
 VERTEX_REGION = "us-central1"   # us-central1 has all Veo + Imagen variants

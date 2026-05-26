@@ -16,20 +16,28 @@ REST API. Models exposed:
       "lite_lp"     — Free low-priority queue, no Vertex equivalent
       "omni_flash"  — Labs internal model, not exposed via Vertex
 
-Two auth modes
-==============
-The `google-genai` SDK behaves differently depending on which API you call:
+Unified auth (service account)
+===============================
+We use **one** auth method for everything: Service Account JSON via
+Application Default Credentials. The `google-genai` SDK Client is built
+with `project=` and `location=` (the SDK auto-picks up the service
+account from `GOOGLE_APPLICATION_CREDENTIALS` env var).
 
-    - Image gen (Gemini family):  Client(vertexai=True, api_key="AIza...")
-                                  Simple API key authentication.
+    client = genai.Client(project="...", location="us-central1")
+    # Works for BOTH:
+    #   client.models.generate_content_stream(...)  ← image gen
+    #   client.models.generate_videos(...)          ← video gen
 
-    - Video gen (Veo):            Client(project="...", location="us-central1")
-                                  Requires Application Default Credentials —
-                                  set GOOGLE_APPLICATION_CREDENTIALS env var
-                                  to the service account JSON file path.
+Why not the API key approach?
+  - Google's mid-2025 policy requires Vertex API keys to be "bound" to
+    a service account, and the UI for that binding is currently buggy
+    (Select API restrictions dropdown shows "No items to display" even
+    when the service account is correctly selected).
+  - Service account auth works without any of that ceremony and gives
+    the same access.
 
-VertexFlowClient builds whichever client is needed for each call, reading
-the settings (api_key + sa_path + project_id + region) from DB at use time.
+So `VERTEX_API_KEY` in private_config.py is now optional/deprecated —
+the SDK only needs SERVICE_ACCOUNT_PATH + PROJECT_ID + REGION.
 
 Public API matches FlowClient
 ==============================
@@ -178,30 +186,24 @@ class VertexFlowClient:
         elif db_project: srcs.append("project=db")
         log.debug(f"vertex._load_settings: {' '.join(srcs) or 'no sources configured'}")
 
-    def _require_image_auth(self) -> None:
-        if not self._settings_loaded:
-            self._load_settings()
-        if not self._api_key:
-            raise VertexAuthError(
-                "Vertex AI: chưa cấu hình API key. Settings → Auth mode → "
-                "Vertex AI → nhập API key (lấy từ Google Cloud Console → "
-                "APIs & Services → Credentials → Create API key)."
-            )
-
-    def _require_video_auth(self) -> None:
+    def _require_auth(self) -> None:
+        """Validate service account config is present + file exists +
+        project_id set. Used by BOTH image and video gen since they
+        share the same auth path now."""
         if not self._settings_loaded:
             self._load_settings()
         if not self._sa_path:
             raise VertexAuthError(
-                "Vertex AI video gen: chưa cấu hình Service Account JSON. "
+                "Vertex AI: chưa cấu hình Service Account JSON. "
                 "Settings → Auth mode → Vertex AI → nhập đường dẫn file JSON "
                 "service account (download từ Google Cloud Console → IAM → "
-                "Service Accounts → KEYS → Add key → JSON)."
+                "Service Accounts → KEYS → Add key → JSON). Hoặc admin "
+                "điền sẵn trong backend/private_config.py."
             )
         if not Path(self._sa_path).exists():
             raise VertexAuthError(
                 f"Vertex AI: file service account không tồn tại tại {self._sa_path!r}. "
-                f"Kiểm tra lại đường dẫn trong Settings."
+                f"Kiểm tra lại đường dẫn trong Settings hoặc private_config.py."
             )
         if not self._project_id:
             raise VertexAuthError(
@@ -210,57 +212,51 @@ class VertexFlowClient:
                 "resonant-forge-497503-e0)."
             )
 
+    # Kept for backwards compatibility — both delegate to the unified
+    # _require_auth. (Old code paths may still call these names.)
+    _require_image_auth = _require_auth
+    _require_video_auth = _require_auth
+
     # ── SDK client builders ─────────────────────────────────────────
 
-    def _get_image_client(self):
-        """google-genai client with API-key auth — for Gemini image gen."""
-        if self._image_client is not None:
-            return self._image_client
-        self._require_image_auth()
-        try:
-            from google import genai
-        except ImportError:
-            raise VertexAuthError(
-                "Thiếu google-genai SDK. Chạy: pip install --upgrade google-genai"
-            )
-        self._image_client = genai.Client(vertexai=True, api_key=self._api_key)
-        return self._image_client
+    def _get_client(self):
+        """One google-genai client used for BOTH image + video gen.
 
-    def _get_video_client(self):
-        """google-genai client with ADC auth — for Veo video gen.
-        Sets GOOGLE_APPLICATION_CREDENTIALS env var so SDK auto-picks up
-        the service account file."""
+        Auth: service account JSON via Application Default Credentials.
+        SDK auto-picks up `GOOGLE_APPLICATION_CREDENTIALS` env var, so
+        we set it inline before constructing the Client.
+        """
         if self._video_client is not None:
             return self._video_client
-        self._require_video_auth()
+        self._require_auth()
         try:
             from google import genai
         except ImportError:
             raise VertexAuthError(
                 "Thiếu google-genai SDK. Chạy: pip install --upgrade google-genai"
             )
-        # SDK reads GOOGLE_APPLICATION_CREDENTIALS — set it for this process.
-        # This is OK even if global env was different; google-auth loads on
-        # demand per client.
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self._sa_path
-        self._video_client = genai.Client(
+        client = genai.Client(
             project=self._project_id, location=self._region,
         )
-        return self._video_client
+        # Cache on both legacy attributes so old _get_image_client /
+        # _get_video_client callers (if any) hit the same instance.
+        self._video_client = client
+        self._image_client = client
+        return client
+
+    # Old names — both delegate to the unified _get_client.
+    _get_image_client = _get_client
+    _get_video_client = _get_client
 
     # ── Auth / token ────────────────────────────────────────────────
 
     async def ensure_token(self) -> None:
         """No-op for Vertex AI — auth happens via SDK Client construction.
         Surfaces config errors early so routers see them at task start."""
-        if not self._settings_loaded:
-            self._load_settings()
-        if not self._api_key and not self._sa_path:
-            raise VertexAuthError(
-                "Vertex AI: chưa cấu hình. Vào Settings → Auth mode → "
-                "Vertex AI → nhập API key + Service Account JSON path + "
-                "Project ID."
-            )
+        # _require_auth checks service account + project_id and raises
+        # VertexAuthError with a clear Vietnamese message if missing.
+        self._require_auth()
 
     async def renew_token(self) -> None:
         """No-op — Vertex AI SDK handles token refresh internally."""
