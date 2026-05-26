@@ -171,6 +171,7 @@ class VertexFlowClient:
         self._settings_loaded = False
         self._api_key: str = ""
         self._sa_path: str = ""
+        self._sa_info: Optional[dict] = None  # Inline service account dict (for bundling)
         self._project_id: str = ""
         self._region: str = "us-central1"
 
@@ -192,20 +193,31 @@ class VertexFlowClient:
         # 1. Try private_config first
         pc_api_key = ""
         pc_sa_path = ""
+        pc_sa_info: Optional[dict] = None
         pc_project = ""
         pc_region = ""
         try:
             from .. import private_config as _pc  # type: ignore
             pc_api_key = getattr(_pc, "VERTEX_API_KEY", "") or ""
             pc_sa_path = getattr(_pc, "VERTEX_SERVICE_ACCOUNT_PATH", "") or ""
+            # Inline service account JSON — preferred for company distribution.
+            # No external file dependency, EXE-portable. If both INFO and
+            # PATH are set, INFO wins (dict beats file).
+            pc_sa_info = getattr(_pc, "VERTEX_SERVICE_ACCOUNT_INFO", None)
+            if pc_sa_info and not isinstance(pc_sa_info, dict):
+                pc_sa_info = None  # Wrong type — ignore
             pc_project = getattr(_pc, "VERTEX_PROJECT_ID", "") or ""
             pc_region  = getattr(_pc, "VERTEX_REGION", "") or ""
-            # Skip the "REPLACE_ME" placeholders from the template — treat
-            # them as "not set" so DB fallback kicks in.
+            # Skip placeholders from the template — treat as "not set"
+            # so DB fallback kicks in.
             if pc_api_key.startswith("AIzaSy-REPLACE"):
                 pc_api_key = ""
             if pc_project in ("your-project-id-here", ""):
                 pc_project = ""
+            # Auto-fill project_id from the service account info dict
+            # (which carries it as "project_id" field) if not explicitly set.
+            if not pc_project and pc_sa_info:
+                pc_project = pc_sa_info.get("project_id", "") or ""
         except Exception:
             pass  # private_config missing — fall through to DB
 
@@ -224,6 +236,7 @@ class VertexFlowClient:
         # Merge — private_config wins per-field; DB fills in the rest.
         self._api_key = pc_api_key or db_api_key
         self._sa_path = pc_sa_path or db_sa_path
+        self._sa_info = pc_sa_info  # DB doesn't store dicts; INFO is private_config-only
         self._project_id = pc_project or db_project
         self._region = pc_region or db_region or "us-central1"
         self._settings_loaded = True
@@ -231,20 +244,29 @@ class VertexFlowClient:
         # Tell logs which source provided each value — helps debug
         # "why is the tool using the wrong project ID" mysteries.
         srcs = []
-        if pc_api_key: srcs.append("api_key=pc")
-        elif db_api_key: srcs.append("api_key=db")
-        if pc_sa_path: srcs.append("sa=pc")
+        if pc_sa_info: srcs.append("sa=pc_info(dict)")
+        elif pc_sa_path: srcs.append("sa=pc_path(file)")
         elif db_sa_path: srcs.append("sa=db")
         if pc_project: srcs.append("project=pc")
         elif db_project: srcs.append("project=db")
         log.debug(f"vertex._load_settings: {' '.join(srcs) or 'no sources configured'}")
 
     def _require_auth(self) -> None:
-        """Validate service account config is present + file exists +
+        """Validate service account config is present + valid +
         project_id set. Used by BOTH image and video gen since they
-        share the same auth path now."""
+        share the same auth path now.
+
+        Accepts EITHER:
+          - VERTEX_SERVICE_ACCOUNT_INFO (inline dict — preferred for
+            company distribution since the JSON is baked into the EXE)
+          - VERTEX_SERVICE_ACCOUNT_PATH (path to JSON file on disk)
+        """
         if not self._settings_loaded:
             self._load_settings()
+        # If we have an inline service account dict, that's enough —
+        # skip the file existence check.
+        if self._sa_info and self._project_id:
+            return
         if not self._sa_path:
             raise VertexAuthError(
                 "Vertex AI: chưa cấu hình Service Account JSON. "
@@ -297,19 +319,29 @@ class VertexFlowClient:
         # Load service account credentials EXPLICITLY rather than relying
         # on env-var lookup. Add the cloud-platform scope so the same
         # credentials cover Vertex AI predict + Cloud Storage download.
+        #
+        # Preferred: inline dict (VERTEX_SERVICE_ACCOUNT_INFO) — works
+        # in distributed EXEs with no external file dependency. Falls
+        # back to file path (VERTEX_SERVICE_ACCOUNT_PATH) for dev.
         try:
             from google.oauth2 import service_account
-            credentials = service_account.Credentials.from_service_account_file(
-                self._sa_path,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
+            scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+            if self._sa_info:
+                credentials = service_account.Credentials.from_service_account_info(
+                    self._sa_info, scopes=scopes,
+                )
+            else:
+                credentials = service_account.Credentials.from_service_account_file(
+                    self._sa_path, scopes=scopes,
+                )
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self._sa_path
         except Exception as e:
+            src = "inline dict" if self._sa_info else f"file {self._sa_path!r}"
             raise VertexAuthError(
-                f"Không load được service account JSON tại {self._sa_path!r}: {e}. "
-                f"Kiểm tra file có hợp lệ + role 'Agent Platform User'."
+                f"Không load được service account ({src}): {e}. "
+                f"Kiểm tra credentials có hợp lệ + service account có role "
+                f"'Agent Platform User' (xem IAM page)."
             )
-
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self._sa_path
 
         return genai.Client(
             vertexai=True,

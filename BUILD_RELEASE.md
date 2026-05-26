@@ -43,6 +43,44 @@ Build mất ~2-5 phút, folder cuối cùng ~400-600 MB.
 
 ### Mỗi lần release (vd: v1.0.1)
 
+#### Bước 1 — Tạo private_config.py (1 lần đầu trên máy build)
+
+Nếu chưa có file `backend/private_config.py`:
+
+```cmd
+copy backend\private_config.py.template backend\private_config.py
+notepad backend\private_config.py
+```
+
+Điền:
+- `OAUTH_CLIENT_ID` + `OAUTH_CLIENT_SECRET` (từ GCP Console)
+- `ALLOWED_EMAIL_DOMAIN` = `"redone.vn"` (hoặc domain công ty)
+- `VERTEX_PROJECT_ID` (GCP project ID)
+
+Save.
+
+#### Bước 2 — Embed service account JSON vào private_config
+
+Nếu muốn distribute Vertex AI mode (paid commercial API) cho user:
+
+```cmd
+python tools\embed_service_account.py path\to\service-account.json --write
+```
+
+Script tự đọc JSON file → convert thành Python dict → ghi đè
+`VERTEX_SERVICE_ACCOUNT_INFO` trong `backend/private_config.py`.
+
+→ Sau bước này, EXE built ra sẽ có credentials baked vào — user
+download zip + chạy là dùng được, không cần file JSON riêng.
+
+⚠️ **GIỮ private_config.py BÍ MẬT**. Gitignored sẵn. Nếu lỡ commit:
+```cmd
+git rm --cached backend\private_config.py
+```
+Rồi rotate cả 2 secrets (OAuth + service account JSON) trên GCP Console.
+
+#### Bước 3 — Bump version + build
+
 1. **Bump version**:
    - Sửa `backend/config.py` → `APP_VERSION = "1.0.1"`
    - Commit + push lên `main`
