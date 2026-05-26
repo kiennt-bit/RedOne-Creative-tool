@@ -80,7 +80,13 @@ async def upload_cookie(account_id: int, file: UploadFile = File(...)):
 
 @router.post("/{account_id}/check")
 async def check_account(account_id: int):
-    """Check session validity + credits via Playwright.
+    """Check session validity + credits.
+
+    Dispatches by auth_mode:
+      - extension: ask the Chrome extension (via bridge) to fetch session
+        + credits. The "account" in DB is just a label here — the real
+        session lives in user's Chrome and the extension reads it.
+      - playwright: legacy path, requires cookie_path file present.
 
     Distinguishes 3 outcomes for credit:
       - successfully read a number (incl. genuine 0) → credit_fetch_ok=True
@@ -94,49 +100,69 @@ async def check_account(account_id: int):
     acc = db.get_account(account_id)
     if not acc:
         raise HTTPException(404, "Account not found")
-    if not acc.get("cookie_path") or not Path(acc["cookie_path"]).exists():
-        return {"ok": False, "reason": "no_cookies", "message": "Account chưa có cookies"}
+
+    from ..services.flow_factory import _read_auth_mode, make_flow_client, get_page_for_account
+    from ..services import flow_client as fc_mod
+    auth_mode = _read_auth_mode()
+
+    # Extension mode: cookies live in user's real Chrome, NOT in our
+    # data/cookies/ folder. Skip the cookie_path existence check —
+    # session validity is determined by the bridge probe instead.
+    if auth_mode != "extension":
+        if not acc.get("cookie_path") or not Path(acc["cookie_path"]).exists():
+            return {"ok": False, "reason": "no_cookies", "message": "Account chưa có cookies"}
 
     try:
-        from ..services import browser_manager as bm_mod, flow_client as fc_mod
-        bm = bm_mod.BrowserManager()
-        page = await bm.get_page(
-            account_id=account_id,
-            email=acc["email"],
-            cookie_path=acc["cookie_path"],
-            url="https://labs.google/fx/tools/video-fx",
-        )
-        # Wait for page to settle
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        # If redirected to signin → session dead
-        alive = "accounts.google.com" not in (page.url or "")
+        page = await get_page_for_account(acc)   # None in extension mode
+        if page is not None:
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+        # In playwright mode we can detect session-dead from the page URL.
+        # In extension mode, we rely on ensure_token() raising
+        # SessionDeadError if /fx/api/auth/session returns 404/0.
+        alive = True
+        if page is not None:
+            alive = "accounts.google.com" not in (page.url or "")
         credit = None
         credit_fetch_error: str | None = None
         if alive:
-            client = fc_mod.FlowClient(
-                page, cookie_path=acc["cookie_path"], account_email=acc["email"],
+            client = make_flow_client(
+                page=page,
+                cookie_path=acc.get("cookie_path") or "",
+                account_email=acc["email"],
             )
+            # ensure_token probes session: bridge mode hits
+            # /fx/api/auth/session via extension; playwright mode reads
+            # via Playwright page. SessionDeadError → user not logged in
+            # (in extension mode this means Chrome doesn't have a
+            # labs.google session; in playwright mode means cookies are
+            # expired).
             try:
-                info = await client.check_credits()
-                # check_credits returns either {"remainingCredits": int} on
-                # success or {"error": "..."} on failure (or None).
-                if isinstance(info, dict) and "remainingCredits" in info:
-                    credit = info["remainingCredits"]
-                elif isinstance(info, dict) and "error" in info:
-                    credit_fetch_error = info["error"]
-                    log.warning(
-                        f"[{acc['email']}] check_credits returned error: "
-                        f"{credit_fetch_error}"
-                    )
-                else:
-                    credit_fetch_error = "Không đọc được credit (Google đã đổi UI?)"
-                    log.warning(f"[{acc['email']}] check_credits returned no data")
-            except Exception as e:
-                credit_fetch_error = str(e)
-                log.warning(f"check_credits failed: {e}")
+                await client.ensure_token()
+            except fc_mod.SessionDeadError as sde:
+                alive = False
+                credit_fetch_error = sde.reason
+            else:
+                try:
+                    info = await client.check_credits()
+                    # check_credits returns either {"remainingCredits": int}
+                    # on success or {"error": "..."} on failure (or None).
+                    if isinstance(info, dict) and "remainingCredits" in info:
+                        credit = info["remainingCredits"]
+                    elif isinstance(info, dict) and "error" in info:
+                        credit_fetch_error = info["error"]
+                        log.warning(
+                            f"[{acc['email']}] check_credits returned error: "
+                            f"{credit_fetch_error}"
+                        )
+                    else:
+                        credit_fetch_error = "Không đọc được credit (Google đã đổi UI?)"
+                        log.warning(f"[{acc['email']}] check_credits returned no data")
+                except Exception as e:
+                    credit_fetch_error = str(e)
+                    log.warning(f"check_credits failed: {e}")
 
         update_fields = {}
         # Only write to DB when we got a real number — including genuine 0.
