@@ -222,9 +222,17 @@ class VertexFlowClient:
     def _get_client(self):
         """One google-genai client used for BOTH image + video gen.
 
-        Auth: service account JSON via Application Default Credentials.
-        SDK auto-picks up `GOOGLE_APPLICATION_CREDENTIALS` env var, so
-        we set it inline before constructing the Client.
+        Auth: explicit service account credentials loaded from the JSON
+        file. We pass `credentials=` directly to genai.Client + force
+        `vertexai=True` so the SDK doesn't fall back to AI Studio mode
+        (which would demand an api_key).
+
+        Earlier versions relied on the GOOGLE_APPLICATION_CREDENTIALS
+        env var, but google-genai sometimes didn't pick it up reliably
+        when Client was created from a worker thread — giving the
+        cryptic "No API key was provided" error even though service
+        account was set. Loading credentials explicitly avoids that
+        whole class of bug.
         """
         if self._video_client is not None:
             return self._video_client
@@ -235,9 +243,31 @@ class VertexFlowClient:
             raise VertexAuthError(
                 "Thiếu google-genai SDK. Chạy: pip install --upgrade google-genai"
             )
+
+        # Load service account credentials EXPLICITLY rather than relying
+        # on env-var lookup. Add the cloud-platform scope so the same
+        # credentials cover Vertex AI predict + Cloud Storage download.
+        try:
+            from google.oauth2 import service_account
+            credentials = service_account.Credentials.from_service_account_file(
+                self._sa_path,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        except Exception as e:
+            raise VertexAuthError(
+                f"Không load được service account JSON tại {self._sa_path!r}: {e}. "
+                f"Kiểm tra file có hợp lệ + role 'Agent Platform User'."
+            )
+
+        # Still set the env var as a belt-and-suspenders — some SDK code
+        # paths read it independent of the Client we hand them.
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self._sa_path
+
         client = genai.Client(
-            project=self._project_id, location=self._region,
+            vertexai=True,
+            project=self._project_id,
+            location=self._region,
+            credentials=credentials,
         )
         # Cache on both legacy attributes so old _get_image_client /
         # _get_video_client callers (if any) hit the same instance.
