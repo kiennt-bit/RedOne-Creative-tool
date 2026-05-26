@@ -391,32 +391,78 @@ class VertexFlowClient:
             f"vertex.generate_image: model={model_id}, ar={ar}, "
             f"refs={len(reference_images or [])}"
         )
-        # SDK call is blocking → run in thread
-        def _do_call() -> bytes:
+        # SDK call is blocking → run in thread.
+        # We also collect diagnostic info: text parts (model's reasoning
+        # or refusal message), finish_reason (especially SAFETY /
+        # PROHIBITED_CONTENT), and safety_ratings. When the response
+        # contains no image, these tell us WHY.
+        def _do_call() -> tuple[bytes, str, str, list]:
             image_bytes = b""
+            text_parts = []
+            finish_reason = ""
+            safety_ratings = []
             for chunk in client.models.generate_content_stream(
                 model=model_id, contents=contents, config=config,
             ):
-                # Each chunk's candidate parts may contain inline_data (image)
-                # or text. We only want the image bytes.
                 if not chunk.candidates:
                     continue
-                for part in chunk.candidates[0].content.parts or []:
+                cand = chunk.candidates[0]
+                # Capture finish reason if present (only set on the
+                # final chunk of the stream)
+                fr = getattr(cand, "finish_reason", None)
+                if fr:
+                    finish_reason = str(fr)
+                sr = getattr(cand, "safety_ratings", None)
+                if sr:
+                    safety_ratings = sr
+                content = getattr(cand, "content", None)
+                if content is None:
+                    continue
+                for part in content.parts or []:
                     inline = getattr(part, "inline_data", None)
                     if inline and inline.data:
                         image_bytes += inline.data
-            return image_bytes
+                    text = getattr(part, "text", None)
+                    if text:
+                        text_parts.append(text)
+            return image_bytes, "".join(text_parts), finish_reason, safety_ratings
 
         try:
-            image_bytes = await asyncio.to_thread(_do_call)
+            image_bytes, response_text, finish_reason, safety_ratings = await asyncio.to_thread(_do_call)
         except Exception as e:
             log.exception(f"vertex.generate_image failed for model={model_id}")
             raise RuntimeError(f"Vertex AI image gen lỗi: {e}")
 
         if not image_bytes:
+            # Build a maximally useful error message — what did the model
+            # actually do? Common cases:
+            # - SAFETY / PROHIBITED_CONTENT → content policy blocked it
+            # - Model returned text refusing the request
+            # - Empty response (rare, usually means service hiccup)
+            log.warning(
+                f"vertex.generate_image: empty image response. "
+                f"finish_reason={finish_reason!r}, "
+                f"text={(response_text or '')[:300]!r}, "
+                f"safety_ratings={safety_ratings}"
+            )
+
+            if "SAFETY" in finish_reason or "PROHIBITED" in finish_reason:
+                raise RuntimeError(
+                    f"Vertex AI safety filter chặn ({finish_reason}). "
+                    f"Prompt hoặc ảnh tham chiếu vi phạm content policy "
+                    f"(sexual / violence / etc). Thử prompt trung tính hơn, "
+                    f"hoặc dùng Labs Flow (Extension mode) — Labs có policy "
+                    f"thoáng hơn cho cùng prompt."
+                )
+            if response_text:
+                # Model returned text instead of image — usually a polite refusal
+                raise RuntimeError(
+                    f"Vertex AI từ chối gen ảnh: \"{response_text[:200]}\""
+                )
             raise RuntimeError(
-                "Vertex AI trả về response không có image bytes. "
-                "Có thể safety filter chặn — thử prompt khác."
+                "Vertex AI trả về response trống (không image, không text). "
+                "Service có thể tạm hỏng — thử lại 30s nữa. Nếu vẫn fail, "
+                f"finish_reason={finish_reason or 'không có'}."
             )
 
         # Save to the standard output dir so frontend's /files URL works.
