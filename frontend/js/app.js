@@ -111,6 +111,39 @@ async function loadSettings() {
   } catch (e) { console.warn(e); }
 }
 
+/**
+ * Auto-scan all accounts on tool login: refresh Flow credit + session status
+ * so the user doesn't have to click "Check" on each account manually.
+ *
+ * Fire-and-forget — never blocks the UI. The backend broadcasts
+ * `account_updated` per account, which the accounts page + topbar consume
+ * live; we also re-run refreshAccounts() at the end to roll up the totals.
+ *
+ * Guards:
+ *  - Skip in playwright mode: check-all there spawns a browser per account,
+ *    a heavy/surprising side-effect to trigger automatically on every open.
+ *  - Skip when there are no accounts (e.g. Vertex / fresh machines) — nothing
+ *    to scan, and Vertex bills per-call with no credit counter anyway.
+ *
+ * Runs after a short delay so that, in extension mode, the Chrome extension
+ * has a moment to connect before we ask it to fetch credits.
+ */
+function autoScanAccounts() {
+  try {
+    const mode = (store.settings && store.settings.auth_mode) || '';
+    if (mode === 'playwright') return;
+    const accounts = store.accounts || [];
+    if (!accounts.length) return;
+    setTimeout(() => {
+      api.accounts.checkAll()
+        .then(() => refreshAccounts())
+        .catch((e) => console.warn('Auto-scan accounts failed:', e && e.message));
+    }, 3500);
+  } catch (e) {
+    console.warn('autoScanAccounts error:', e);
+  }
+}
+
 function setupSidebar() {
   $$('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => navigate(btn.dataset.page));
@@ -535,6 +568,10 @@ async function init() {
   }
 
   await Promise.all([refreshAccounts(), loadSettings()]);
+
+  // Auto-scan accounts (Flow credit + session) once per tool open. Runs after
+  // settings + accounts are loaded so it can honour the auth_mode guard.
+  autoScanAccounts();
 
   const initialPage = (location.hash || '#content').slice(1);
   navigate(PAGES[initialPage] ? initialPage : 'content');

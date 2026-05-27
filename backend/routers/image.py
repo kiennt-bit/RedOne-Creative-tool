@@ -35,7 +35,15 @@ _active_tasks: dict[int, asyncio.Task] = {}
 def _pick_account() -> Optional[dict]:
     accounts = [a for a in db.get_accounts() if a["enabled"]]
     accounts.sort(key=lambda a: -(a.get("credit") or 0))
-    return accounts[0] if accounts else None
+    if accounts:
+        return accounts[0]
+    # Vertex AI uses the baked service account — no Google login needed. On a
+    # fresh machine with no accounts, return a synthetic one so gen proceeds.
+    # Other modes (extension/playwright) still require a real account.
+    from ..services.flow_factory import is_vertex_mode, synthetic_vertex_account
+    if is_vertex_mode():
+        return synthetic_vertex_account()
+    return None
 
 
 async def _handle_session_dead_img(task_id, acc, sde):
@@ -54,6 +62,133 @@ async def _handle_session_dead_img(task_id, acc, sde):
         "task_id": task_id,
         "error": f"Session account {acc['email']} đã hết hạn — hãy login lại trong tab Tài Khoản",
     })
+
+
+# ── DB-authoritative progress helpers (image variant) ───────────────
+# Mirror content.py's helpers but broadcast with kind="image" so the image
+# gallery's WS reducer can tell events apart. Counts come from the DB so the
+# main batch loop and the per-item/retry-all endpoints can run concurrently
+# without racing on a shared in-memory counter.
+
+def _count_items_img(task_id: int) -> dict:
+    items = db.get_task_items(task_id)
+    done = sum(1 for it in items if it.get("status") == ItemStatus.COMPLETED.value)
+    err = sum(1 for it in items if it.get("status") == ItemStatus.ERROR.value)
+    gen = sum(1 for it in items if it.get("status") == ItemStatus.GENERATING.value)
+    pend = sum(1 for it in items if it.get("status") == ItemStatus.PENDING.value)
+    return {"done": done, "error": err, "generating": gen, "pending": pend, "total": len(items)}
+
+
+async def _broadcast_progress_img(task_id: int) -> dict:
+    c = _count_items_img(task_id)
+    db.update_task(task_id, done_count=c["done"], error_count=c["error"])
+    await hub.broadcast("task_progress", {
+        "task_id": task_id, "done": c["done"], "error": c["error"],
+        "total": c["total"], "kind": "image",
+    })
+    return c
+
+
+async def _maybe_finalize(task_id: int) -> None:
+    """Mark COMPLETED + broadcast only when nothing is pending/generating.
+    See content.py._maybe_finalize for the race-safety rationale."""
+    c = _count_items_img(task_id)
+    if c["generating"] == 0 and c["pending"] == 0:
+        task = db.get_task(task_id)
+        if task and task.get("status") != TaskStatus.COMPLETED.value:
+            db.update_task(task_id, status=TaskStatus.COMPLETED.value,
+                           finished_at=str(time.time()))
+            await hub.broadcast("task_completed", {
+                "task_id": task_id, "done": c["done"], "error": c["error"],
+                "kind": "image",
+            })
+
+
+async def generate_image_item(client, task: dict, item: dict) -> bool:
+    """Generate + download ONE image item. Updates DB + broadcasts events.
+    Returns True on success, False on handled failure; re-raises
+    SessionDeadError. Reused by the batch loop and the retry endpoints —
+    that's what lets a retry run while the parent task is still generating.
+    """
+    import random as _rng
+    from ..services import flow_client as fc_mod
+    from ..services.error_messages import friendly_error
+
+    task_id = task["id"]
+    item_id = item["id"]
+    model = task["image_model"]
+    aspect = task["aspect_ratio"]
+
+    # Jitter to avoid hammering Google at the same ms
+    await asyncio.sleep(_rng.uniform(0.0, 1.2))
+    await hub.broadcast("item_status", {
+        "task_id": task_id, "item_id": item_id,
+        "status": ItemStatus.GENERATING.value,
+    })
+    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
+    try:
+        extra = json.loads(item.get("extra_json") or "{}")
+        ref_paths = extra.get("reference_images") or []
+        ref_media_ids = []
+        for p in ref_paths:
+            if Path(p).exists():
+                try:
+                    mid = await client.upload_image(p)
+                    if mid:
+                        ref_media_ids.append(mid)
+                except Exception as e:
+                    log.warning(f"Upload ref image failed: {e}")
+
+        result = await client.generate_image(
+            prompt=item["prompt"],
+            model_key=model,
+            aspect_ratio=aspect,
+            reference_images=ref_media_ids or None,
+        )
+
+        out_dir = get_save_dir("image", f"task_{task_id}", task.get("name"))
+        out_path = out_dir / f"item_{item_id}.png"
+        ok = await client.download_image(result["download_url"], str(out_path))
+        if not ok:
+            raise RuntimeError("Image download failed")
+
+        # Persist media_id so the upscale endpoint can find it later.
+        extra["media_id"] = result.get("media_id")
+        db.update_item(
+            item_id,
+            status=ItemStatus.COMPLETED.value,
+            output_path=str(out_path),
+            extra_json=json.dumps(extra),
+            error_message=None,
+        )
+        await hub.broadcast("item_completed", {
+            "task_id": task_id, "item_id": item_id,
+            "output_path": str(out_path),
+            "kind": "image",
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "media_id": result.get("media_id"),
+        })
+        return True
+    except fc_mod.SessionDeadError:
+        msg = ("Phiên đăng nhập của tài khoản đã hết hạn — đăng nhập lại ở "
+               "tab Tài Khoản rồi gen lại.")
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=msg)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id, "error": msg,
+        })
+        raise
+    except Exception as ex:
+        raw = str(ex)
+        friendly = friendly_error(raw)
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=friendly)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id,
+            "error": friendly, "error_detail": raw,
+        })
+        return False
+    finally:
+        await _broadcast_progress_img(task_id)
 
 
 async def _process_image_task(task_id: int):
@@ -86,8 +221,6 @@ async def _process_image_task(task_id: int):
             await _handle_session_dead_img(task_id, acc, sde)
             return
 
-        model = task["image_model"]
-        aspect = task["aspect_ratio"]
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
         # Random pause between batches — see content.py for rationale.
         # Shares the same settings keys so user only tunes once.
@@ -98,150 +231,9 @@ async def _process_image_task(task_id: int):
             f"(batch_size={parallelism}, cooldown={cd_min}-{cd_max}s)"
         )
 
-        # Pre-seed `done` with items already COMPLETED (retry path —
-        # /api/tasks/{id}/retry keeps completed items intact).
-        initial_done = sum(
-            1 for it in items if it.get("status") == ItemStatus.COMPLETED.value
-        )
-        counters = {"done": initial_done, "error": 0}
-        counter_lock = asyncio.Lock()
-
-        # Per-task 403 circuit breaker — Google sometimes flags an image
-        # session after a few generations; once flagged the remaining
-        # items in the task all fail. Stop launching new ones after 3
-        # consecutive reCAPTCHA errors so we don't burn credits.
-        from ..services.circuit_breaker import CircuitBreaker
-        breaker = CircuitBreaker(threshold=3)
-
-        import random as _rng
-
-        async def _process_one(item):
-            # Skip already-completed items — happens on retry where the
-            # /retry endpoint preserves COMPLETED state. Don't regenerate
-            # things we already have output for.
-            if item.get("status") == ItemStatus.COMPLETED.value:
-                return
-
-            # Concurrency is bounded by the outer batch loop. No semaphore.
-            if True:
-                if await breaker.is_open():
-                    cooldown_msg = (
-                        "Skipped — 403 reCAPTCHA cooldown. Có thể bấm 'Gen "
-                        "lại lỗi' ngay (nếu thử ngay vẫn fail thì đợi vài "
-                        "phút để Google reset risk score)."
-                    )
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value,
-                                   error_message=cooldown_msg)
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "error": cooldown_msg,
-                    })
-                    db.update_task(task_id, done_count=d, error_count=e)
-                    await hub.broadcast("task_progress", {
-                        "task_id": task_id, "done": d, "error": e, "total": len(items),
-                    })
-                    return
-
-                # Jitter to avoid hammering Google at the same ms
-                await asyncio.sleep(_rng.uniform(0.0, 1.2))
-                await hub.broadcast("item_status", {
-                    "task_id": task_id, "item_id": item["id"],
-                    "status": ItemStatus.GENERATING.value,
-                })
-                db.update_item(item["id"], status=ItemStatus.GENERATING.value)
-                try:
-                    extra = json.loads(item.get("extra_json") or "{}")
-                    ref_paths = extra.get("reference_images") or []
-                    ref_media_ids = []
-                    for p in ref_paths:
-                        if Path(p).exists():
-                            try:
-                                mid = await client.upload_image(p)
-                                if mid:
-                                    ref_media_ids.append(mid)
-                            except Exception as e:
-                                log.warning(f"Upload ref image failed: {e}")
-
-                    result = await client.generate_image(
-                        prompt=item["prompt"],
-                        model_key=model,
-                        aspect_ratio=aspect,
-                        reference_images=ref_media_ids or None,
-                    )
-
-                    out_dir = get_save_dir("image", f"task_{task_id}", task.get("name"))
-                    out_path = out_dir / f"item_{item['id']}.png"
-                    ok = await client.download_image(result["download_url"], str(out_path))
-                    if not ok:
-                        raise RuntimeError("Image download failed")
-
-                    # Persist media_id so the upscale endpoint can find it later
-                    # (Google Flow upsampleImage API needs the original mediaId).
-                    extra["media_id"] = result.get("media_id")
-                    db.update_item(
-                        item["id"],
-                        status=ItemStatus.COMPLETED.value,
-                        output_path=str(out_path),
-                        extra_json=json.dumps(extra),
-                    )
-                    await breaker.record_success()   # reset 403 streak
-                    async with counter_lock:
-                        counters["done"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_completed", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "output_path": str(out_path),
-                        "kind": "image",
-                        "width": result.get("width"),
-                        "height": result.get("height"),
-                        "media_id": result.get("media_id"),
-                    })
-                except fc_mod.SessionDeadError as sde:
-                    db.update_item(
-                        item["id"], status=ItemStatus.ERROR.value,
-                        error_message=f"Session hết hạn — login lại {acc['email']}",
-                    )
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "error": f"Session {acc['email']} hết hạn",
-                    })
-                    raise
-                except Exception as ex:
-                    err_str = str(ex)
-                    tripped_now = await breaker.record_failure(err_str)
-                    if tripped_now:
-                        log.warning(
-                            f"Image task {task_id}: 403 circuit tripped"
-                        )
-                        await hub.broadcast("task_circuit_tripped", {
-                            "task_id": task_id,
-                            "threshold": 3,
-                            "message": (
-                                "3 ảnh liên tiếp bị 403 — đã pause task. "
-                                "Bấm 'Gen lại N lỗi' để retry ngay."
-                            ),
-                        })
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"], "error": err_str,
-                    })
-
-                db.update_task(task_id, done_count=d, error_count=e)
-                await hub.broadcast("task_progress", {
-                    "task_id": task_id, "done": d, "error": e, "total": len(items),
-                })
-
-        # Batch-by-batch processing with per-batch cooldown. Same pattern
-        # as content.py — see that file for rationale.
+        # Each prompt is attempted INDEPENDENTLY — no 403 circuit breaker that
+        # cancels the rest after N consecutive failures. Failed items are
+        # retried via the per-item "Gen lại" button / "Gen lại tất cả lỗi".
         pending = [
             it for it in items
             if it.get("status") != ItemStatus.COMPLETED.value
@@ -253,31 +245,8 @@ async def _process_image_task(task_id: int):
 
         session_dead_err: Optional[fc_mod.SessionDeadError] = None
         for batch_idx, batch in enumerate(batches):
-            if await breaker.is_open():
-                cooldown_msg = (
-                    "Skipped — 403 reCAPTCHA cooldown. Bấm 'Gen lại lỗi' để retry."
-                )
-                # Flush this batch + all remaining batches as errored
-                for remaining in [batch] + list(batches[batch_idx + 1:]):
-                    for it in remaining:
-                        db.update_item(it["id"], status=ItemStatus.ERROR.value,
-                                       error_message=cooldown_msg)
-                        async with counter_lock:
-                            counters["error"] += 1
-                            d, e = counters["done"], counters["error"]
-                        await hub.broadcast("item_error", {
-                            "task_id": task_id, "item_id": it["id"],
-                            "error": cooldown_msg,
-                        })
-                        db.update_task(task_id, done_count=d, error_count=e)
-                        await hub.broadcast("task_progress", {
-                            "task_id": task_id, "done": d, "error": e,
-                            "total": len(items),
-                        })
-                break
-
             batch_results = await asyncio.gather(
-                *(_process_one(it) for it in batch),
+                *(generate_image_item(client, task, it) for it in batch),
                 return_exceptions=True,
             )
 
@@ -311,12 +280,7 @@ async def _process_image_task(task_id: int):
             await _handle_session_dead_img(task_id, acc, session_dead_err)
             return
 
-        done = counters["done"]
-        err = counters["error"]
-        db.update_task(task_id, status=TaskStatus.COMPLETED.value, finished_at=str(time.time()))
-        await hub.broadcast("task_completed", {
-            "task_id": task_id, "done": done, "error": err, "kind": "image",
-        })
+        await _maybe_finalize(task_id)
     except fc_mod.SessionDeadError as sde:
         await _handle_session_dead_img(task_id, acc, sde)
     except Exception as e:

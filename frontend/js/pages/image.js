@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
 
 // ── Per-form state that survives navigation (singleton, module-level) ──
 const form = {
@@ -595,8 +595,16 @@ export function renderImage(root) {
         img.addEventListener('click', () => window.open(it.output_url, '_blank'));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
-        thumb.appendChild(el('div', { style: { color: 'var(--red)', fontSize: '11px', padding: '8px', textAlign: 'center' } },
-          (it.error || 'Lỗi').slice(0, 80)));
+        // Full friendly message + tooltip with raw detail (see content.js).
+        thumb.appendChild(el('div', {
+          class: 'scene-error',
+          title: it.error_detail || it.error || 'Lỗi',
+          style: {
+            color: 'var(--red)', fontSize: '11px', padding: '8px',
+            textAlign: 'center', lineHeight: '1.35',
+            overflowY: 'auto', maxHeight: '100%',
+          },
+        }, it.error || 'Lỗi'));
       } else {
         thumb.appendChild(el('div', { class: 'spinner' }));
       }
@@ -646,6 +654,12 @@ export function renderImage(root) {
           }, 'Upscale lỗi'));
         }
         info.appendChild(actions);
+      }
+      // Per-item "Gen lại" button for failed images — retries just this
+      // prompt, even while the rest of the task is still generating.
+      if (it.status === 'error' && it.id != null) {
+        info.appendChild(el('div', { class: 'scene-actions' },
+          makeItemRetryButton(taskState.id, it.id)));
       }
       card.appendChild(info);
       // Attach checkbox only if file exists server-side

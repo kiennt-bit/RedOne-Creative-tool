@@ -184,6 +184,15 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_item(self, item_id: int) -> Optional[dict]:
+        """Direct lookup of a single task_item by its primary key. Used by the
+        per-item retry endpoint (avoids scanning every task)."""
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM task_items WHERE id=?", (item_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
     def update_item(self, item_id: int, **fields):
         keys = ",".join(f"{k}=?" for k in fields)
         with self._lock:

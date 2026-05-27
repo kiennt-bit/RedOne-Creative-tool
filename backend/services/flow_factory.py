@@ -19,17 +19,67 @@ log = logging.getLogger("redone.flow_factory")
 VALID_AUTH_MODES = ("extension", "playwright", "vertex_api")
 
 
-def _read_auth_mode() -> str:
-    """Return one of VALID_AUTH_MODES (default 'extension'). Fresh read on
-    every call so user can switch in Settings without a restart."""
+def _default_auth_mode() -> str:
+    """Auth mode to use when the user hasn't explicitly picked one yet.
+
+    A build that ships baked Vertex AI service-account credentials in
+    private_config.py is a commercial distribution → default to 'vertex_api'
+    so a fresh machine generates out-of-box (Vertex authenticates via the
+    baked service account, no per-user Google login needed). Builds WITHOUT
+    those creds default to the free Chrome-extension bridge as before.
+
+    Note: this is only consulted when the `auth_mode` setting is absent. The
+    moment a user saves a mode in Settings (e.g. on the dev machine), that
+    saved value wins and this function is never reached — so existing setups
+    are unaffected.
+    """
     try:
-        from ..database import db
-        val = (db.get_setting("auth_mode", "extension") or "extension").lower()
-        if val in VALID_AUTH_MODES:
-            return val
+        from .. import private_config as _pc  # type: ignore
+        info = getattr(_pc, "VERTEX_SERVICE_ACCOUNT_INFO", None)
+        if isinstance(info, dict) and info.get("private_key"):
+            return "vertex_api"
     except Exception:
         pass
     return "extension"
+
+
+def _read_auth_mode() -> str:
+    """Return one of VALID_AUTH_MODES. Fresh read on every call so the user
+    can switch in Settings without a restart. When the setting is unset,
+    falls back to _default_auth_mode()."""
+    try:
+        from ..database import db
+        raw = db.get_setting("auth_mode", None)
+        if raw:
+            val = str(raw).lower()
+            if val in VALID_AUTH_MODES:
+                return val
+    except Exception:
+        pass
+    return _default_auth_mode()
+
+
+def is_vertex_mode() -> bool:
+    """True when the active auth mode is Vertex AI (commercial)."""
+    return _read_auth_mode() == "vertex_api"
+
+
+def synthetic_vertex_account() -> dict:
+    """Placeholder 'account' for Vertex mode.
+
+    Vertex authenticates with the baked service account, not a per-user
+    Google login — but the generation pipeline expects an account row. On a
+    fresh machine with zero accounts added, hand back this synthetic one so
+    gen proceeds. id=0 means any db.update_account() call no-ops (no such
+    row), which is fine because Vertex never reports a dead session.
+    """
+    return {
+        "id": 0,
+        "email": "Vertex AI (service account)",
+        "enabled": 1,
+        "credit": None,
+        "cookie_path": "",
+    }
 
 
 async def get_page_for_account(account: dict):

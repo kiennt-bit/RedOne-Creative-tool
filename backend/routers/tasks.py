@@ -1,5 +1,6 @@
 """Task management endpoints — list all jobs across kinds + cancel/delete."""
 from __future__ import annotations
+import asyncio
 import logging
 import os
 import subprocess
@@ -11,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from ..database import db
 from ..queue_manager import queue
 from ..ws_hub import hub
-from ..config import OUTPUT_DIR, slugify_folder
+from ..config import OUTPUT_DIR, slugify_folder, TaskStatus, ItemStatus
 
 log = logging.getLogger("navtools.tasks")
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -113,6 +114,158 @@ async def retry_task(task_id: int):
     pos = await queue.enqueue(kind, task_id, runner)
     await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
     return {"ok": True, "queue_position": pos, "kind": kind}
+
+
+# ── Per-item / failed-only retry (works WHILE the task is still running) ──
+#
+# Unlike /retry (which re-enqueues the whole task through the sequential
+# queue and is blocked while RUNNING/PENDING), these regenerate individual
+# items in a detached background coroutine with their OWN flow client. The
+# main queue worker — if it's still processing this task — only touches the
+# items it snapshotted at start (the PENDING ones); items that already
+# reached ERROR are done as far as the loop is concerned, so retrying them
+# out-of-band never double-processes anything. DB-authoritative counters
+# (see content/image `_broadcast_progress`) keep the totals consistent
+# across both writers.
+
+async def _retry_items_runner(task: dict, item_ids: list[int]) -> None:
+    """Background: regenerate `item_ids` for `task` using a fresh client.
+
+    Items already COMPLETED are skipped. Picks the image vs video single-item
+    generator based on task.mode. Runs in batches of task.concurrent. On a
+    dead session it disables the account and stops. Always finalizes the task
+    (flip to COMPLETED if nothing is left pending/generating) and closes the
+    client.
+    """
+    from . import content as content_mod, image as image_mod
+    from ..services import flow_client as fc_mod
+    from ..services.flow_factory import make_flow_client, get_page_for_account
+
+    task_id = task["id"]
+    mode = (task.get("mode") or "").lower()
+    if mode == "image":
+        gen_fn = image_mod.generate_image_item
+        finalize = image_mod._maybe_finalize
+        pick = image_mod._pick_account
+    else:
+        gen_fn = content_mod.generate_content_item
+        finalize = content_mod._maybe_finalize
+        pick = content_mod._pick_account
+
+    acc = pick()
+    if not acc:
+        await hub.broadcast("task_error", {
+            "task_id": task_id, "error": "Không có account khả dụng để gen lại",
+        })
+        return
+
+    client = None
+    try:
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
+        try:
+            await client.ensure_token()
+        except fc_mod.SessionDeadError as sde:
+            db.update_account(acc["id"], enabled=0)
+            await hub.broadcast("account_session_dead", {
+                "account_id": acc["id"], "email": acc["email"], "reason": sde.reason,
+            })
+            await hub.broadcast("task_error", {
+                "task_id": task_id,
+                "error": f"Session {acc['email']} hết hạn — login lại ở tab Tài Khoản",
+            })
+            return
+
+        # Re-fetch each item fresh; skip any that are already done.
+        targets = []
+        for iid in item_ids:
+            it = db.get_item(iid)
+            if it and it.get("status") != ItemStatus.COMPLETED.value:
+                targets.append(it)
+        if not targets:
+            await finalize(task_id)
+            return
+
+        parallelism = max(1, min(task.get("concurrent") or 1, len(targets)))
+        batches = [targets[i:i + parallelism] for i in range(0, len(targets), parallelism)]
+        for batch in batches:
+            results = await asyncio.gather(
+                *(gen_fn(client, task, it) for it in batch),
+                return_exceptions=True,
+            )
+            # Stop early if the account died mid-retry.
+            if any(isinstance(r, fc_mod.SessionDeadError) for r in results):
+                db.update_account(acc["id"], enabled=0)
+                await hub.broadcast("account_session_dead", {
+                    "account_id": acc["id"], "email": acc["email"],
+                    "reason": "session dead during retry",
+                })
+                break
+        await finalize(task_id)
+    except Exception:
+        log.exception(f"retry runner crashed task={task_id}")
+        # Best effort: still try to finalize so the UI doesn't hang in RUNNING.
+        try:
+            await finalize(task_id)
+        except Exception:
+            pass
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+
+@router.post("/item/{item_id}/retry")
+async def retry_item(item_id: int):
+    """Regenerate a SINGLE failed/pending item — even while the parent task is
+    still generating other items. Returns immediately; progress streams over
+    WebSocket (item_status → item_completed/item_error)."""
+    item = db.get_item(item_id)
+    if not item:
+        raise HTTPException(404, "Không tìm thấy item")
+    if item.get("status") == ItemStatus.COMPLETED.value:
+        raise HTTPException(400, "Item đã hoàn thành — không cần gen lại")
+    task = db.get_task(item["task_id"])
+    if not task:
+        raise HTTPException(404, "Không tìm thấy task của item")
+
+    # Flip a finished task back to RUNNING so the UI shows in-progress again.
+    if task.get("status") in (
+        TaskStatus.COMPLETED.value, TaskStatus.ERROR.value, TaskStatus.CANCELLED.value,
+    ):
+        db.update_task(task["id"], status=TaskStatus.RUNNING.value, finished_at=None)
+        await hub.broadcast("task_started", {"task_id": task["id"], "retried": True})
+
+    asyncio.create_task(_retry_items_runner(task, [item_id]))
+    return {"ok": True, "item_id": item_id}
+
+
+@router.post("/{task_id}/retry-failed")
+async def retry_failed(task_id: int):
+    """Regenerate ALL currently-failed items of a task — works while the task
+    is still running. Returns immediately; progress streams over WebSocket."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    items = db.get_task_items(task_id)
+    failed_ids = [it["id"] for it in items if it.get("status") == ItemStatus.ERROR.value]
+    if not failed_ids:
+        return {"ok": True, "retried": 0}
+
+    if task.get("status") in (
+        TaskStatus.COMPLETED.value, TaskStatus.ERROR.value, TaskStatus.CANCELLED.value,
+    ):
+        db.update_task(task_id, status=TaskStatus.RUNNING.value, finished_at=None)
+    await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
+
+    asyncio.create_task(_retry_items_runner(task, failed_ids))
+    return {"ok": True, "retried": len(failed_ids)}
 
 
 @router.get("/_/queue")

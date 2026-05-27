@@ -327,8 +327,18 @@ class BridgeFlowClient(FlowClient):
     # ── Credits check ──────────────────────────────────────────────
 
     async def check_credits(self) -> Optional[dict]:
-        """Hit /v1/credits to see subscriptionCredits + topUpCredits.
-        Same endpoint as Playwright FlowClient, just routed via bridge."""
+        """Hit /v1/credits via bridge and return {"remainingCredits": N}.
+
+        IMPORTANT: must return the SAME shape as the Playwright FlowClient
+        (`{"remainingCredits": <int>}`), because check_account() looks for
+        that exact key. The raw Google response uses `subscriptionCredits` /
+        `topUpCredits` / `credits` instead — returning it unparsed (the old
+        bug) made check_account never find `remainingCredits`, so the credit
+        column never updated on the accounts page even though gen worked.
+
+        We prefer `subscriptionCredits` (the "Tín dụng Flow" number Google
+        shows in the avatar popup), falling back to total `credits`.
+        """
         await self.ensure_token()
         token = self._token or ""
         try:
@@ -339,13 +349,24 @@ class BridgeFlowClient(FlowClient):
                 response_mode="json",
                 timeout_ms=20000,
             )
-            if r.get("status") == 200 and isinstance(r.get("body"), dict):
-                return r["body"]
-            log.warning(f"check_credits: HTTP {r.get('status')} {r.get('error')}")
-            return None
+            status = r.get("status")
+            body = r.get("body")
+            if status == 200 and isinstance(body, dict):
+                val = body.get("subscriptionCredits")
+                if not isinstance(val, (int, float)):
+                    val = body.get("credits")
+                if isinstance(val, (int, float)):
+                    return {"remainingCredits": int(val)}
+                log.warning(
+                    f"(bridge) check_credits: no credit field in body "
+                    f"keys={list(body.keys())}"
+                )
+                return {"error": "Không tìm thấy số credit trong response Google"}
+            log.warning(f"(bridge) check_credits: HTTP {status} {r.get('error')}")
+            return {"error": f"HTTP {status}"} if status else None
         except Exception as e:
-            log.error(f"check_credits error: {e}")
-            return None
+            log.error(f"(bridge) check_credits error: {e}")
+            return {"error": str(e)}
 
     # ── Binary downloads ───────────────────────────────────────────
 

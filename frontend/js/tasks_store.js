@@ -183,6 +183,7 @@ export const tasksStore = {
       if (it.status === 'error' || it.status === 'pending') {
         it.status = 'pending';
         it.error = null;
+        it.error_detail = null;
         n += 1;
       }
     }
@@ -196,6 +197,29 @@ export const tasksStore = {
     t.circuit_message = null;
     notify(taskId);
     return n;
+  },
+
+  /**
+   * Optimistically flip ONE errored item back to 'generating' — called the
+   * instant the user clicks the per-item "Gen lại" button, before the backend
+   * WS events (item_status → item_completed/item_error) stream in. Keeps the
+   * task in 'running' so the overall status text + cancel button make sense.
+   *
+   * Returns true if the item was found + flipped.
+   */
+  retryItemUI(taskId, itemId) {
+    const t = tasks.get(taskId);
+    if (!t) return false;
+    const it = t.items.find(x => x.id === itemId);
+    if (!it) return false;
+    if (it.status === 'error') t.error = Math.max(0, t.error - 1);
+    it.status = 'generating';
+    it.error = null;
+    it.error_detail = null;
+    t.status = 'running';
+    t.error_message = null;
+    notify(taskId);
+    return true;
   },
 };
 
@@ -373,6 +397,9 @@ ws.on('item_error', (d) => {
   if (it.status !== 'error') t.error += 1;
   it.status = 'error';
   it.error = d.error || 'Lỗi không xác định';
+  // Raw error string (Google JSON / stack) for the tooltip — friendly
+  // message is in `it.error`, full detail rides along here.
+  it.error_detail = d.error_detail || null;
   notify(d.task_id);
 });
 

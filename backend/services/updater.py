@@ -115,7 +115,8 @@ async def check_for_update(force: bool = False) -> dict:
         # is missing — old releases. Asset naming convention for auto-update:
         #   RedOne-Creative-vX.X.X-win64.zip
         # The zip contains: RedOne Creative.exe + _internal/
-        for asset in data.get("assets", []):
+        all_assets = data.get("assets", []) or []
+        for asset in all_assets:
             name = (asset.get("name") or "").lower()
             if name.endswith(".zip"):
                 result["download_url"] = asset.get("browser_download_url")
@@ -124,7 +125,7 @@ async def check_for_update(force: bool = False) -> dict:
                 break
         if not result["download_url"]:
             # Fall back to first .exe asset (manual install only)
-            for asset in data.get("assets", []):
+            for asset in all_assets:
                 if (asset.get("name") or "").lower().endswith(".exe"):
                     result["download_url"] = asset.get("browser_download_url")
                     result["asset_name"] = asset.get("name")
@@ -132,6 +133,26 @@ async def check_for_update(force: bool = False) -> dict:
                     break
 
         result["update_available"] = _is_newer(result["latest"], APP_VERSION)
+        # Log + surface a warning if we found assets but none was a usable
+        # format. Common cause: dev uploaded .rar instead of .zip — the
+        # auto-updater can't extract .rar (no rarfile + unrar.exe bundled).
+        if (
+            result["update_available"]
+            and not result["download_url"]
+            and all_assets
+        ):
+            asset_names = [a.get("name", "?") for a in all_assets]
+            log.warning(
+                f"Update v{result['latest']} has assets but no usable "
+                f"format. Need .zip (or .exe fallback). Found: {asset_names}. "
+                f"Re-upload as .zip via PowerShell Compress-Archive."
+            )
+            result["error"] = (
+                f"Release v{result['latest']} có asset nhưng không phải .zip "
+                f"(tìm thấy: {', '.join(asset_names)}). "
+                f"Auto-update chỉ nhận .zip — vào GitHub Release edit + "
+                f"re-upload zip."
+            )
         log.info(
             f"Update check: current={APP_VERSION} latest={result['latest']} "
             f"available={result['update_available']} asset={result['asset_name']}"

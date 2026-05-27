@@ -42,7 +42,15 @@ _active_tasks: dict[int, asyncio.Task] = {}
 def _pick_account() -> Optional[dict]:
     accounts = [a for a in db.get_accounts() if a["enabled"]]
     accounts.sort(key=lambda a: -(a.get("credit") or 0))
-    return accounts[0] if accounts else None
+    if accounts:
+        return accounts[0]
+    # Vertex AI uses the baked service account — no Google login needed. On a
+    # fresh machine with no accounts, return a synthetic one so gen proceeds.
+    # Other modes (extension/playwright) still require a real account.
+    from ..services.flow_factory import is_vertex_mode, synthetic_vertex_account
+    if is_vertex_mode():
+        return synthetic_vertex_account()
+    return None
 
 
 async def _handle_session_dead(task_id, acc, sde):
@@ -75,13 +83,6 @@ TRANSIENT_PATTERNS = (
 )
 MAX_ITEM_RETRIES = 3
 
-# Once N items fail back-to-back with a Google reCAPTCHA verdict (403 /
-# unusual_activity), the rest of the task is essentially doomed because
-# Google's risk score for this session won't recover without ~10-15 minutes
-# of inactivity. Trip the circuit at that point so the remaining items
-# don't waste credit + clock time on calls that are guaranteed to fail.
-CIRCUIT_THRESHOLD = 3
-
 
 def _read_cooldown_range() -> tuple[float, float]:
     """Read (min, max) batch cooldown seconds from settings.
@@ -106,6 +107,170 @@ def _read_cooldown_range() -> tuple[float, float]:
     if cd_max < cd_min:
         cd_min, cd_max = cd_max, cd_min
     return cd_min, cd_max
+
+
+# ── DB-authoritative progress helpers ───────────────────────────────
+# Counts come straight from the task_items table rather than an in-memory
+# counter dict. This matters because items can now be regenerated OUT of the
+# main batch loop (per-item retry / retry-all endpoints) while the loop may
+# still be running other items. A shared in-memory counter would race; the DB
+# is the single source of truth so every writer converges to the same numbers.
+
+def _count_items(task_id: int) -> dict:
+    items = db.get_task_items(task_id)
+    done = sum(1 for it in items if it.get("status") == ItemStatus.COMPLETED.value)
+    err = sum(1 for it in items if it.get("status") == ItemStatus.ERROR.value)
+    gen = sum(1 for it in items if it.get("status") == ItemStatus.GENERATING.value)
+    pend = sum(1 for it in items if it.get("status") == ItemStatus.PENDING.value)
+    return {"done": done, "error": err, "generating": gen, "pending": pend, "total": len(items)}
+
+
+async def _broadcast_progress(task_id: int) -> dict:
+    """Recompute counts from DB, persist to the task row, broadcast progress."""
+    c = _count_items(task_id)
+    db.update_task(task_id, done_count=c["done"], error_count=c["error"])
+    await hub.broadcast("task_progress", {
+        "task_id": task_id, "done": c["done"], "error": c["error"], "total": c["total"],
+    })
+    return c
+
+
+async def _maybe_finalize(task_id: int) -> None:
+    """Mark the task COMPLETED + broadcast — but ONLY when no item is still
+    pending/generating. Safe to call from a retry path while the main batch
+    loop is still working: the guard means whoever finishes the last item
+    flips the task, and the COMPLETED-status check prevents a double event.
+    """
+    c = _count_items(task_id)
+    if c["generating"] == 0 and c["pending"] == 0:
+        task = db.get_task(task_id)
+        if task and task.get("status") != TaskStatus.COMPLETED.value:
+            db.update_task(task_id, status=TaskStatus.COMPLETED.value,
+                           finished_at=str(time.time()))
+            await hub.broadcast("task_completed", {
+                "task_id": task_id, "done": c["done"], "error": c["error"],
+            })
+
+
+async def generate_content_item(client, task: dict, item: dict) -> bool:
+    """Generate + wait + download ONE video item.
+
+    Updates the DB row, broadcasts item_status / item_completed / item_error
+    and task_progress. Returns True on success, False on a handled failure.
+    Re-raises SessionDeadError so the caller can disable the dead account.
+
+    This is the single reusable unit of work shared by the batch loop
+    (`_process_task`) AND the per-item / retry-failed endpoints — that's what
+    lets a retry run even while the parent task is still generating others.
+    Error messages are passed through `friendly_error()` so the gallery shows
+    something actionable; the raw string rides along as `error_detail`.
+    """
+    import random as _rng
+    from ..services import flow_client as fc_mod
+    from ..services.error_messages import friendly_error
+
+    task_id = task["id"]
+    item_id = item["id"]
+    quality = task["quality"]
+    aspect = task["aspect_ratio"]
+
+    # Small jitter so concurrent items don't hit Google at the exact same ms.
+    await asyncio.sleep(_rng.uniform(0.0, 1.5))
+    await hub.broadcast("item_status", {
+        "task_id": task_id, "item_id": item_id,
+        "status": ItemStatus.GENERATING.value,
+    })
+    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
+    try:
+        ref_image_path = None
+        if item.get("extra_json"):
+            extra = json.loads(item["extra_json"])
+            ref_image_path = extra.get("reference_image")
+        ref_media = None
+        if ref_image_path and Path(ref_image_path).exists():
+            ref_media = await client.upload_image(ref_image_path)
+
+        mode = "i2v" if ref_media else "t2v"
+        # Omni Flash doesn't support I2V yet — fall back to Veo 3.1 Lite [LP]
+        # (free queue) when a ref image is set.
+        eff_quality = quality
+        if quality == "omni_flash" and ref_media:
+            log.warning(
+                f"Item {item_id}: Omni Flash + ref image not supported; "
+                f"falling back to lite_lp for this item"
+            )
+            eff_quality = "lite_lp"
+        duration_s = int(task.get("duration") or 8)
+        model_key = video_model_for(eff_quality, mode, duration_s)
+
+        done_state = None
+        last_err = None
+        for attempt in range(MAX_ITEM_RETRIES):
+            workflow = await client.generate_video(
+                prompt=item["prompt"],
+                model_key=model_key,
+                aspect_ratio=aspect,
+                reference_image=ref_media,
+                duration=duration_s,
+            )
+            done_state = await client.wait_for_completion(workflow)
+            if done_state and done_state.get("state") != "FAILED":
+                break
+            last_err = (done_state or {}).get("error", "") or "Generation failed"
+            if attempt < MAX_ITEM_RETRIES - 1 and any(
+                p in last_err.lower() for p in TRANSIENT_PATTERNS
+            ):
+                log.warning(
+                    f"Item {item_id} attempt {attempt + 1}/{MAX_ITEM_RETRIES} "
+                    f"transient error: {last_err} — retrying"
+                )
+                await asyncio.sleep(_rng.uniform(3, 6))
+                continue
+            raise RuntimeError(last_err)
+
+        if not done_state or done_state.get("state") == "FAILED":
+            raise RuntimeError(last_err or "Generation failed")
+
+        media_id = (
+            done_state.get("name")
+            or done_state.get("media_id")
+            or done_state.get("video_id")
+        )
+        if not media_id:
+            raise RuntimeError("Video sinh xong nhưng response không có media_id")
+
+        ext_dir = get_save_dir("video", task_id, task.get("name"))
+        out_path = ext_dir / f"item_{item_id}.mp4"
+        ok = await client.download_to(media_id, str(out_path))
+        if not ok:
+            raise RuntimeError("Download failed")
+
+        db.update_item(item_id, status=ItemStatus.COMPLETED.value,
+                       output_path=str(out_path), error_message=None)
+        await hub.broadcast("item_completed", {
+            "task_id": task_id, "item_id": item_id,
+            "output_path": str(out_path),
+        })
+        return True
+    except fc_mod.SessionDeadError:
+        msg = ("Phiên đăng nhập của tài khoản đã hết hạn — đăng nhập lại ở "
+               "tab Tài Khoản rồi gen lại.")
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=msg)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id, "error": msg,
+        })
+        raise   # propagate so caller can disable the account
+    except Exception as ex:
+        raw = str(ex)
+        friendly = friendly_error(raw)
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=friendly)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id,
+            "error": friendly, "error_detail": raw,
+        })
+        return False
+    finally:
+        await _broadcast_progress(task_id)
 
 
 async def _process_task(task_id: int):
@@ -138,8 +303,6 @@ async def _process_task(task_id: int):
             await _handle_session_dead(task_id, acc, sde)
             return
 
-        quality = task["quality"]
-        aspect = task["aspect_ratio"]
         parallelism = max(1, min(task.get("concurrent") or 1, len(items)))
         # Random pause between batches — applied AFTER each batch of
         # `parallelism` items finishes, before launching the next.
@@ -153,205 +316,13 @@ async def _process_task(task_id: int):
             f"(batch_size={parallelism}, cooldown={cd_min}-{cd_max}s)"
         )
 
-        # Shared mutable counters guarded by a lock.
-        # Pre-seed `done` with items that are already COMPLETED — happens on
-        # retry where /api/tasks/{id}/retry keeps the completed items intact
-        # and only resets ERROR/PENDING ones. Without this pre-seed, the
-        # progress chip would jump from "0/8" back to "5/8" as we walk
-        # through the completed items in the loop.
-        initial_done = sum(
-            1 for it in items if it.get("status") == ItemStatus.COMPLETED.value
-        )
-        counters = {"done": initial_done, "error": 0}
-        counter_lock = asyncio.Lock()
-
-        # Per-task 403 circuit breaker — stops launching new items once
-        # Google has flagged the session 3 times in a row.
-        from ..services.circuit_breaker import CircuitBreaker
-        breaker = CircuitBreaker(threshold=CIRCUIT_THRESHOLD)
-
-        import random as _rng
-
-        async def _process_one(item, idx):
-            """Generate + wait + download a single item, respecting the semaphore.
-
-            Items already COMPLETED are skipped entirely (they keep their
-            output_path from the previous successful run). This is the
-            retry path — only ERROR/PENDING items get regenerated.
-            """
-            # Skip COMPLETED items — DON'T re-generate already-good videos.
-            # The retry endpoint left these untouched on purpose; if we
-            # called generate_video for them, we'd burn credit on items
-            # the user already has output for.
-            if item.get("status") == ItemStatus.COMPLETED.value:
-                return
-
-            # Concurrency is bounded by the outer batch loop (each batch is
-            # gathered with at most `parallelism` items). No semaphore needed.
-            if True:
-                # Fast-fail if the circuit has tripped — don't waste a
-                # generation slot on a call we know will 403.
-                if await breaker.is_open():
-                    cooldown_msg = (
-                        "Skipped — 403 reCAPTCHA cooldown. Có thể bấm 'Gen "
-                        "lại lỗi' ngay (nếu thử ngay vẫn fail thì đợi vài "
-                        "phút để Google reset risk score)."
-                    )
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value,
-                                   error_message=cooldown_msg)
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "error": cooldown_msg,
-                    })
-                    db.update_task(task_id, done_count=d, error_count=e)
-                    await hub.broadcast("task_progress", {
-                        "task_id": task_id, "done": d, "error": e, "total": len(items),
-                    })
-                    return
-
-                # Small jitter so concurrent items don't hit Google at the exact same ms
-                await asyncio.sleep(_rng.uniform(0.0, 1.5))
-                await hub.broadcast("item_status", {
-                    "task_id": task_id, "item_id": item["id"],
-                    "status": ItemStatus.GENERATING.value,
-                })
-                db.update_item(item["id"], status=ItemStatus.GENERATING.value)
-                try:
-                    ref_image_path = None
-                    if item.get("extra_json"):
-                        extra = json.loads(item["extra_json"])
-                        ref_image_path = extra.get("reference_image")
-                    ref_media = None
-                    if ref_image_path and Path(ref_image_path).exists():
-                        ref_media = await client.upload_image(ref_image_path)
-
-                    mode = "i2v" if ref_media else "t2v"
-                    # For Omni Flash, duration is encoded in the model_key
-                    # itself (abra_t2v_10s). For Veo 3.1, static keys.
-                    # Safety: Omni Flash doesn't support I2V yet — fallback
-                    # to Veo 3.1 Lite [LP] (free queue) when ref image is set.
-                    eff_quality = quality
-                    if quality == "omni_flash" and ref_media:
-                        log.warning(
-                            f"Item {item['id']}: Omni Flash + ref image not supported by Google; "
-                            f"falling back to lite_lp for this item"
-                        )
-                        eff_quality = "lite_lp"
-                    duration_s = int(task.get("duration") or 8)
-                    model_key = video_model_for(eff_quality, mode, duration_s)
-
-                    done_state = None
-                    last_err = None
-                    for attempt in range(MAX_ITEM_RETRIES):
-                        workflow = await client.generate_video(
-                            prompt=item["prompt"],
-                            model_key=model_key,
-                            aspect_ratio=aspect,
-                            reference_image=ref_media,
-                            duration=duration_s,
-                        )
-                        done_state = await client.wait_for_completion(workflow)
-                        if done_state and done_state.get("state") != "FAILED":
-                            break
-                        last_err = (done_state or {}).get("error", "") or "Generation failed"
-                        if attempt < MAX_ITEM_RETRIES - 1 and any(
-                            p in last_err.lower() for p in TRANSIENT_PATTERNS
-                        ):
-                            log.warning(
-                                f"Item {item['id']} attempt {attempt + 1}/{MAX_ITEM_RETRIES} "
-                                f"transient error: {last_err} — retrying"
-                            )
-                            await asyncio.sleep(_rng.uniform(3, 6))
-                            continue
-                        raise RuntimeError(last_err)
-
-                    if not done_state or done_state.get("state") == "FAILED":
-                        raise RuntimeError(last_err or "Generation failed")
-
-                    media_id = (
-                        done_state.get("name")
-                        or done_state.get("media_id")
-                        or done_state.get("video_id")
-                    )
-                    if not media_id:
-                        raise RuntimeError("Video sinh xong nhưng response không có media_id")
-
-                    ext_dir = get_save_dir("video", task_id, task.get("name"))
-                    out_path = ext_dir / f"item_{item['id']}.mp4"
-                    ok = await client.download_to(media_id, str(out_path))
-                    if not ok:
-                        raise RuntimeError("Download failed")
-
-                    db.update_item(item["id"], status=ItemStatus.COMPLETED.value, output_path=str(out_path))
-                    await breaker.record_success()   # reset the 403 streak
-                    async with counter_lock:
-                        counters["done"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_completed", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "output_path": str(out_path),
-                    })
-                except fc_mod.SessionDeadError as sde:
-                    # Friendly error message instead of raw stack
-                    db.update_item(
-                        item["id"], status=ItemStatus.ERROR.value,
-                        error_message=f"Session hết hạn — login lại {acc['email']}",
-                    )
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"],
-                        "error": f"Session {acc['email']} hết hạn",
-                    })
-                    # Propagate so the outer try() can disable the account
-                    raise
-                except Exception as ex:
-                    err_str = str(ex)
-                    # Update the circuit. record_failure() returns True
-                    # exactly once — on the transition from closed→open —
-                    # so we broadcast the "tripped" event only once.
-                    tripped_now = await breaker.record_failure(err_str)
-                    if tripped_now:
-                        log.warning(
-                            f"Task {task_id}: 403 circuit tripped after "
-                            f"{CIRCUIT_THRESHOLD} consecutive reCAPTCHA failures"
-                        )
-                        await hub.broadcast("task_circuit_tripped", {
-                            "task_id": task_id,
-                            "threshold": CIRCUIT_THRESHOLD,
-                            "message": (
-                                f"{CIRCUIT_THRESHOLD} items liên tiếp bị 403 — "
-                                f"đã pause task. Bấm 'Gen lại N lỗi' để retry "
-                                f"ngay (nếu vẫn fail thì đợi vài phút)."
-                            ),
-                        })
-                    db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=err_str)
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": item["id"], "error": err_str,
-                    })
-                # Progress update
-                db.update_task(task_id, done_count=d, error_count=e)
-                await hub.broadcast("task_progress", {
-                    "task_id": task_id, "done": d, "error": e, "total": len(items),
-                })
-
-        # Batch-by-batch processing. Each batch of `parallelism` items runs
-        # concurrently via gather; after a batch finishes we sleep
-        # `cooldown_seconds` before launching the next. The user-configured
-        # cooldown is the key knob for tuning vs Google's rate detection.
-        #
-        # Already-COMPLETED items (from a retry path) are skipped here too —
-        # they were excluded from the work, so we don't waste a batch slot
-        # on a no-op `_process_one`.
+        # Process only items that aren't already COMPLETED. Each prompt is now
+        # attempted INDEPENDENTLY — there is no longer a 403 "circuit breaker"
+        # that cancels the rest of the batch after N consecutive failures.
+        # Failures are recorded per-item; the user retries them via the
+        # per-item "Gen lại" button or "Gen lại tất cả lỗi".
         pending = [
-            (idx, it) for idx, it in enumerate(items)
+            it for it in items
             if it.get("status") != ItemStatus.COMPLETED.value
         ]
         batches = [
@@ -361,48 +332,8 @@ async def _process_task(task_id: int):
 
         session_dead_err: Optional[fc_mod.SessionDeadError] = None
         for batch_idx, batch in enumerate(batches):
-            # If the circuit tripped during the previous batch, don't even
-            # launch the next one — mark them all as skipped and break.
-            if await breaker.is_open():
-                cooldown_msg = (
-                    "Skipped — 403 reCAPTCHA cooldown. Bấm 'Gen lại lỗi' để retry."
-                )
-                for _, it in batch:
-                    db.update_item(it["id"], status=ItemStatus.ERROR.value,
-                                   error_message=cooldown_msg)
-                    async with counter_lock:
-                        counters["error"] += 1
-                        d, e = counters["done"], counters["error"]
-                    await hub.broadcast("item_error", {
-                        "task_id": task_id, "item_id": it["id"],
-                        "error": cooldown_msg,
-                    })
-                    db.update_task(task_id, done_count=d, error_count=e)
-                    await hub.broadcast("task_progress", {
-                        "task_id": task_id, "done": d, "error": e, "total": len(items),
-                    })
-                # Also flush remaining batches as skipped so progress
-                # completes (otherwise the chip stalls at N/Total).
-                for remaining in batches[batch_idx + 1:]:
-                    for _, it in remaining:
-                        db.update_item(it["id"], status=ItemStatus.ERROR.value,
-                                       error_message=cooldown_msg)
-                        async with counter_lock:
-                            counters["error"] += 1
-                            d, e = counters["done"], counters["error"]
-                        await hub.broadcast("item_error", {
-                            "task_id": task_id, "item_id": it["id"],
-                            "error": cooldown_msg,
-                        })
-                        db.update_task(task_id, done_count=d, error_count=e)
-                        await hub.broadcast("task_progress", {
-                            "task_id": task_id, "done": d, "error": e,
-                            "total": len(items),
-                        })
-                break
-
             batch_results = await asyncio.gather(
-                *(_process_one(it, idx) for idx, it in batch),
+                *(generate_content_item(client, task, it) for it in batch),
                 return_exceptions=True,
             )
 
@@ -440,10 +371,7 @@ async def _process_task(task_id: int):
             await _handle_session_dead(task_id, acc, session_dead_err)
             return
 
-        done = counters["done"]
-        err = counters["error"]
-        db.update_task(task_id, status=TaskStatus.COMPLETED.value, finished_at=str(time.time()))
-        await hub.broadcast("task_completed", {"task_id": task_id, "done": done, "error": err})
+        await _maybe_finalize(task_id)
     except fc_mod.SessionDeadError as sde:
         await _handle_session_dead(task_id, acc, sde)
     except Exception as e:

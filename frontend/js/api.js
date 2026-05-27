@@ -124,6 +124,10 @@ export const api = {
     get: (id) => request('GET', `/api/tasks/${id}`),
     cancel: (id) => request('POST', `/api/tasks/${id}/cancel`),
     retry: (id) => request('POST', `/api/tasks/${id}/retry`),
+    // Regenerate ALL failed items — works even while the task is still running.
+    retryFailed: (id) => request('POST', `/api/tasks/${id}/retry-failed`),
+    // Regenerate a SINGLE item by its id — works mid-task too.
+    retryItem: (itemId) => request('POST', `/api/tasks/item/${itemId}/retry`),
     queue: () => request('GET', '/api/tasks/_/queue'),
     openFolder: (id) => request('POST', `/api/tasks/${id}/open-folder`),
   },

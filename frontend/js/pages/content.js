@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
 
 // Form state survives navigation
 const form = {
@@ -853,8 +853,17 @@ export function renderContent(root) {
       if (it.status === 'done' && it.output_url) {
         thumb.appendChild(el('video', { src: it.output_url, controls: true, style: { width: '100%', height: '100%' } }));
       } else if (it.status === 'error') {
-        thumb.appendChild(el('div', { style: { color: 'var(--red)', fontSize: '11px', padding: '8px', textAlign: 'center' } },
-          (it.error || 'Lỗi').slice(0, 80)));
+        // Show the FULL friendly message (no truncation) so the user knows
+        // exactly what happened. Tooltip carries the raw detail for debugging.
+        thumb.appendChild(el('div', {
+          class: 'scene-error',
+          title: it.error_detail || it.error || 'Lỗi',
+          style: {
+            color: 'var(--red)', fontSize: '11px', padding: '8px',
+            textAlign: 'center', lineHeight: '1.35',
+            overflowY: 'auto', maxHeight: '100%',
+          },
+        }, it.error || 'Lỗi'));
       } else {
         thumb.appendChild(el('div', { class: 'spinner' }));
       }
@@ -903,12 +912,19 @@ export function renderContent(root) {
         }
       }
 
+      // Error cards get their own per-item "Gen lại" button so the user can
+      // retry just this prompt — even while the rest of the task is running.
+      const errorActions = (it.status === 'error' && it.id != null)
+        ? el('div', { class: 'scene-actions' }, makeItemRetryButton(taskState.id, it.id))
+        : null;
+
       card.appendChild(el('div', { class: 'scene-info' },
         el('div', { class: 'scene-meta' },
           el('span', { class: `chip ${chipClass}` }, chipText),
         ),
         el('div', { class: 'scene-prompt' }, it.prompt),
         sceneActions,
+        errorActions,
       ));
       if (it.status === 'done' && it.output_path) {
         attachCardCheckbox(card, it.output_path, toolbar);

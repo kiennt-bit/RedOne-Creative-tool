@@ -3,6 +3,7 @@
 // gallery grid; cards mark themselves with .selected when checkbox is ticked.
 import { el, toast } from './ui.js';
 import { api } from './api.js';
+import { tasksStore } from './tasks_store.js';
 
 /**
  * Build a toolbar element with: select-all, clear, download, clear-from-view.
@@ -258,18 +259,17 @@ export function makeRetryFailedButton({ getTaskState, onResetUI }) {
     onclick: async () => {
       const s = getTaskState();
       if (!s || !s.taskId || !s.errorCount) return;
-      if (s.status === 'running' || s.status === 'pending') {
-        return toast('Task đang chạy — không thể retry. Đợi xong hoặc Hủy trước.', 'warning');
-      }
       const orig = btn.innerHTML;
       btn.disabled = true;
       btn.textContent = 'Đang gửi…';
       try {
-        await api.tasks.retry(s.taskId);
+        // retry-failed runs in a detached coroutine on the backend, so it
+        // works even while the task is still generating other items.
+        await api.tasks.retryFailed(s.taskId);
         // Reset local UI immediately. Subsequent WS events will drive the
         // per-item progress (pending → generating → done/error).
         if (onResetUI) onResetUI(s.taskId);
-        toast(`Đã gen lại ${s.errorCount} item lỗi`, 'success');
+        toast(`Đang gen lại ${s.errorCount} item lỗi…`, 'success');
       } catch (e) {
         toast(`Retry lỗi: ${e.message}`, 'error');
       } finally {
@@ -296,20 +296,60 @@ export function makeRetryFailedButton({ getTaskState, onResetUI }) {
       btn.classList.add('hidden');
       return;
     }
-    // Visible whenever there's at least 1 error so the user knows the
-    // option exists — but disabled while the task is still running.
-    // Backend also rejects retry on PENDING/RUNNING with 400; the
-    // disabled state mirrors that without surprising users with toasts.
+    // Visible + enabled whenever there's ≥1 error — including WHILE the task
+    // is still running. The backend regenerates failed items in a detached
+    // coroutine, so there's no need to wait for the task to finish.
     btn.classList.remove('hidden');
-    const isLocked = taskState.status === 'running' || taskState.status === 'pending';
-    btn.disabled = isLocked;
-    btn.title = isLocked
-      ? 'Đợi task xong hoặc bấm Hủy trước khi gen lại'
-      : 'Gen lại các item bị lỗi (giữ nguyên item đã hoàn thành)';
-    labelSpan.textContent = isLocked
-      ? `Đợi xong (${taskState.error} lỗi)`
-      : `Gen lại ${taskState.error} lỗi`;
+    btn.disabled = false;
+    btn.title = 'Gen lại các item bị lỗi (giữ nguyên item đã hoàn thành)';
+    labelSpan.textContent = `Gen lại ${taskState.error} lỗi`;
   };
 
+  return btn;
+}
+
+/**
+ * Build a small per-card "Gen lại" button for an errored item. Optimistically
+ * flips the item to 'generating' in the store, then calls the backend. WS
+ * events then drive it to done/error. Works even while the parent task is
+ * still generating other items.
+ *
+ * @param {number} taskId
+ * @param {number} itemId   - DB item id (null until the first WS event claims
+ *                            a slot; button is only rendered for error items,
+ *                            which always have an id by then)
+ * @returns {HTMLElement}
+ */
+export function makeItemRetryButton(taskId, itemId) {
+  const btn = el('button', {
+    class: 'btn btn-sm btn-warm',
+    title: 'Gen lại riêng prompt này',
+    onclick: async () => {
+      if (itemId == null) return;
+      const orig = btn.innerHTML;
+      btn.disabled = true;
+      try {
+        // API first (returns immediately — backend runs gen in background).
+        // Only then flip the UI, so a failed call leaves the card as 'error'
+        // instead of stuck on a spinner.
+        await api.tasks.retryItem(itemId);
+        tasksStore.retryItemUI(taskId, itemId);
+      } catch (e) {
+        toast(`Gen lại lỗi: ${e.message}`, 'error');
+        btn.disabled = false;
+        btn.innerHTML = orig;
+      }
+    },
+  },
+    (() => {
+      const wrap = document.createElement('span');
+      wrap.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px">'
+        + '<path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3" stroke="currentColor" stroke-width="2" fill="none"/>'
+        + '<path d="M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="2" fill="none"/>'
+        + '</svg>';
+      return wrap.firstChild;
+    })(),
+    el('span', { style: { marginLeft: '4px' } }, 'Gen lại'),
+  );
   return btn;
 }

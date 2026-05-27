@@ -452,7 +452,16 @@ class VertexFlowClient:
             temperature=1.0,
             top_p=0.95,
             max_output_tokens=32768,
-            response_modalities=["TEXT", "IMAGE"],
+            # IMAGE-only (NOT ["TEXT","IMAGE"]). The Gemini-3 image models are
+            # full multimodal chat models: with TEXT enabled they sometimes
+            # decide a short/ambiguous prompt is *conversational* and reply
+            # with text ("I am acknowledging your greeting", "Bonjour!") and
+            # NO image — which surfaced to users as "Vertex từ chối gen ảnh".
+            # Forcing IMAGE-only makes the model always render an image
+            # regardless of how the prompt reads, and also drops the model's
+            # verbose "thinking" text (cheaper, faster). Verified working for
+            # both gemini-3-pro-image-preview and gemini-3.1-flash-image-preview.
+            response_modalities=["IMAGE"],
             safety_settings=[
                 gtypes.SafetySetting(category=c, threshold="OFF")
                 for c in (
@@ -540,14 +549,23 @@ class VertexFlowClient:
                     f"thoáng hơn cho cùng prompt."
                 )
             if response_text:
-                # Model returned text instead of image — usually a polite refusal
+                # Model returned text instead of image — usually because the
+                # prompt read as conversational. (Rare now that we force
+                # IMAGE-only, but kept as a defensive branch.)
                 raise RuntimeError(
-                    f"Vertex AI từ chối gen ảnh: \"{response_text[:200]}\""
+                    "Prompt này bị model hiểu là hội thoại nên không tạo ảnh. "
+                    "Hãy mô tả ảnh cụ thể hơn (vd: 'một quả táo đỏ trên bàn gỗ, "
+                    f"ánh sáng studio'). Model trả lời: \"{response_text[:150]}\""
                 )
+            # Empty + finish_reason=STOP with IMAGE-only almost always means
+            # the prompt wasn't a usable image description (too short / generic
+            # / greeting-like). Guide the user to write a real prompt.
             raise RuntimeError(
-                "Vertex AI trả về response trống (không image, không text). "
-                "Service có thể tạm hỏng — thử lại 30s nữa. Nếu vẫn fail, "
-                f"finish_reason={finish_reason or 'không có'}."
+                "Không tạo được ảnh từ prompt này — model trả về rỗng "
+                f"(finish_reason={finish_reason or 'không rõ'}). Thường do "
+                "prompt quá ngắn, chung chung hoặc giống lời chào. Hãy mô tả "
+                "ảnh cụ thể (chủ thể, bối cảnh, phong cách), vd: 'một con mèo "
+                "tam thể ngồi trên ghế sofa, phong cách ảnh chụp thật'."
             )
 
         # Save to the standard output dir so frontend's /files URL works.
@@ -735,7 +753,43 @@ class VertexFlowClient:
         # as the "media_id" so download_to can find it.
         videos = getattr(response, "generated_videos", None) or []
         if not videos:
-            return {"state": "FAILED", "error": "Veo response không có video nào"}
+            # Veo finished but produced zero videos — almost always the RAI
+            # (Responsible AI) safety filter dropped the output. The response
+            # carries the reason in rai_media_filtered_count/_reasons; surface
+            # it instead of the useless "không có video nào".
+            reasons = (
+                getattr(response, "rai_media_filtered_reasons", None)
+                or getattr(operation, "rai_media_filtered_reasons", None)
+                or []
+            )
+            filtered = (
+                getattr(response, "rai_media_filtered_count", None)
+                or getattr(operation, "rai_media_filtered_count", None)
+                or 0
+            )
+            if reasons or filtered:
+                reason_txt = "; ".join(str(r) for r in reasons) if reasons else "không rõ lý do"
+                log.warning(
+                    f"vertex.wait_for_completion: Veo RAI-filtered "
+                    f"(count={filtered}): {reason_txt}"
+                )
+                return {
+                    "state": "FAILED",
+                    "error": (
+                        f"Veo chặn nội dung do bộ lọc an toàn (RAI): {reason_txt}. "
+                        f"Thường do prompt/ảnh có người thật/khuôn mặt, bạo lực, "
+                        f"nội dung nhạy cảm hoặc thương hiệu. Hãy chỉnh prompt "
+                        f"trung tính hơn rồi gen lại."
+                    ),
+                }
+            return {
+                "state": "FAILED",
+                "error": (
+                    "Veo hoàn tất nhưng không trả về video nào (thường do bị lọc "
+                    "an toàn, hoặc service lỗi tạm thời). Thử đổi prompt hoặc gen "
+                    "lại sau ít phút."
+                ),
+            }
 
         video = videos[0].video
         from ..config import OUTPUT_DIR
