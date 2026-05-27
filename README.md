@@ -1,10 +1,11 @@
 # RedOne Creative
 
-Local desktop AI tool — tạo ảnh / video bằng Google Veo 3.1 + Nano Banana / Imagen 4 thông qua credit miễn phí của Google Labs Flow.
+Local desktop AI tool (nội bộ RedOne) — tạo ảnh / video bằng **Google Veo 3.1 + Nano Banana**.
+Đăng nhập bằng email **@redone.vn**, mặc định chạy **Vertex AI** (credentials nhúng sẵn — dùng ngay, không cần setup); tùy chọn **Chrome Extension Bridge** để xài quota miễn phí Google Labs Flow.
 
 ## 📚 Tài liệu
 
-- **🚀 [Hướng dẫn sử dụng đầy đủ](docs/HUONG_DAN_SU_DUNG.md)** — cho người dùng cuối: cài đặt → thêm account → tạo ảnh/video → quản lý task
+- **🚀 [Hướng dẫn sử dụng đầy đủ](docs/HUONG_DAN_SU_DUNG.md)** — cho người dùng cuối: cài đặt → đăng nhập @redone.vn → tạo ảnh/video → gen lại lỗi → quản lý task
 - **🔨 [Build & Release guide](BUILD_RELEASE.md)** — cho dev: PyInstaller, GitHub Release workflow
 - **📥 [Tải bản EXE mới nhất](https://github.com/kiennt-bit/RedOne-Creative-tool/releases)** — Windows 10/11
 
