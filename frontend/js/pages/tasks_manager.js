@@ -72,11 +72,18 @@ export function renderTasksManager(root) {
   }
 
   function render() {
+    // Guard: this page's WS subscription can outlive its DOM. navigate()
+    // swaps the contents of the persistent #page-container, so a debounced
+    // reload() scheduled before leaving can fire after our elements are gone.
+    // If our marker element is missing, the page is no longer mounted — bail
+    // instead of throwing "Cannot set properties of null" on #tm-count.
+    const countEl = root.querySelector('#tm-count');
+    if (!countEl) return;
     const activeOnly = root.querySelector('#tm-active-only')?.checked;
     const tasks = activeOnly
       ? allTasks.filter(t => ['PENDING', 'RUNNING', 'PAUSED'].includes(t.status))
       : allTasks;
-    root.querySelector('#tm-count').textContent = `${tasks.length} task`;
+    countEl.textContent = `${tasks.length} task`;
     renderStats(allTasks);
     renderTable(tasks);
   }
@@ -249,8 +256,14 @@ export function renderTasksManager(root) {
   }
 
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    // #page-container is persistent (navigate() only swaps its children), so
+    // document.body.contains(root) stays true forever and never triggers
+    // cleanup. Detect unmount by our own marker disappearing — otherwise the
+    // WS subscriptions leak and keep firing reload() on every task event from
+    // OTHER pages (wasteful + the source of the #tm-count null crash).
+    if (!root.querySelector('#tm-count')) {
       offs.forEach(o => o());
+      clearTimeout(window._tmReloadTimer);
       obs.disconnect();
     }
   });
