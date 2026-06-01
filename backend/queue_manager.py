@@ -168,3 +168,9 @@ class TaskQueue:
 
 
 queue = TaskQueue()
+
+# Shakker runs on its OWN independent queue + worker so a Shakker batch and
+# a Flow (image/video/long-video) task execute CONCURRENTLY. Flow tasks stay
+# sequential among themselves on `queue`; Shakker tasks stay sequential among
+# themselves on `shakker_queue`; the two lanes run in parallel.
+shakker_queue = TaskQueue()

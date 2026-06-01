@@ -1,99 +1,127 @@
 """Translate raw API / network errors into clear, user-facing Vietnamese.
 
 The generator surfaces a lot of low-level error strings to the gallery
-(Google JSON blobs, Playwright stack fragments, Vertex gRPC statuses, …).
-End users can't act on `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`.
+(Google Flow JSON blobs, reCAPTCHA / 429 throttle bodies, Shakker/Liblib
+responses, …). End users can't act on
+`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`.
 
-`friendly_error()` maps the most common failure signatures to a short,
-actionable message in Vietnamese. The original string is preserved by the
-caller (broadcast as `error_detail`, kept in app.log) so debugging info is
-never lost — this only changes what's shown on the card.
+`friendly_error()` (Google Flow) and `friendly_shakker_error()` (Shakker)
+map the most common failure signatures to a short, plain-Vietnamese message
+that says WHAT happened, whether it's TEMPORARY or PERMANENT, and the exact
+NEXT STEP. The original raw string is preserved by the caller (broadcast as
+`error_detail`, kept in app.log) so debugging info is never lost — this only
+changes what's shown on the card.
 
-Ordering matters: patterns are checked most-specific → most-generic, and the
-FIRST match wins. Quota (429) is checked before the generic "permission"
-bucket because a quota error often also mentions the project, etc.
+Ordering matters: buckets are checked most-specific → most-generic and the
+FIRST match wins. In particular the transient reCAPTCHA/throttle bucket is
+checked BEFORE the daily-quota bucket (both contain "429"), and the
+prominent-people filter BEFORE the generic safety bucket, so the user gets
+the precise cause + remedy instead of a vague one.
+
+Note: the tool runs Flow through the Chrome-extension bridge only (Vertex
+AI + Playwright/Cloak modes were removed), so Flow remedies point at the
+Tài Khoản tab / Chrome labs.google session — never at Vertex.
 """
 from __future__ import annotations
 
 
 def friendly_error(raw: str) -> str:
-    """Return a clear Vietnamese message for a raw error string.
+    """Return a clear Vietnamese message for a raw Google Flow error string.
 
     Falls back to the trimmed raw string when nothing matches, so unusual
     errors are still shown rather than swallowed.
     """
     if not raw:
-        return "Lỗi không xác định"
+        return "Lỗi không xác định."
     s = str(raw)
     low = s.lower()
 
     def has(*subs: str) -> bool:
         return any(sub in low for sub in subs)
 
-    # ── Quota / rate exhausted (free Labs Flow daily cap, Vertex quota) ──
-    if has("resource_exhausted", "per_model_daily_quota", "quota", "429",
-           "resource has been exhausted"):
+    # ── reCAPTCHA / bot-detection / transient rate throttle (TEMPORARY) ──
+    # CHECK BEFORE the daily-quota bucket. Google's transient throttle is a
+    # 429 RESOURCE_EXHAUSTED whose reason is
+    # PUBLIC_ERROR_UNUSUAL_ACTIVITY_TOO_MUCH_TRAFFIC + "reCAPTCHA evaluation
+    # failed" — so it ALSO contains "429"/"resource_exhausted". It must NOT be
+    # labeled "hết quota hôm nay": it's temporary and the tool auto-retries.
+    if has("recaptcha", "captcha", "unusual_activity", "unusual activity",
+           "unusual traffic", "too_much_traffic", "too much traffic"):
         return (
-            "Hết lượt tạo của tài khoản/model này hôm nay (Google giới hạn "
-            "quota theo ngày). Cách xử lý: đổi sang tài khoản Google khác ở "
-            "tab Tài Khoản, hoặc chuyển Auth mode sang Vertex AI (Cài đặt) "
-            "để không bị giới hạn, hoặc đợi sang ngày mai quota tự reset."
+            "Google tạm chặn vì gửi quá nhiều/quá nhanh (nghi là bot — "
+            "reCAPTCHA). Đây là lỗi TẠM THỜI, tool sẽ tự thử lại sau ít giây. "
+            "Nếu bị liên tục: giảm số luồng song song, tăng 'Đợi giữa các đợt "
+            "gen' trong Cài đặt, nghỉ vài phút, hoặc đổi tài khoản Google ở "
+            "tab Tài Khoản."
         )
 
-    # ── reCAPTCHA / bot detection (403 on free Labs Flow) ──
-    # Checked before the generic permission bucket; "unusual_activity" and
-    # "recaptcha" are unambiguous bot-detection signals.
-    if has("recaptcha", "unusual_activity", "unusual traffic", "captcha"):
+    # ── Daily quota exhausted (free Labs Flow per-model daily cap) ──
+    # Reached only when the 429 is NOT the transient throttle above — i.e. a
+    # genuine per-model daily limit. Resets the next day.
+    if has("per_model_daily_quota", "daily", "resource_exhausted", "quota",
+           "429", "resource has been exhausted"):
         return (
-            "Google tạm chặn vì nghi ngờ tự động (reCAPTCHA). Thử lại sau "
-            "vài phút, đổi tài khoản, hoặc bật chế độ Chrome Extension Bridge "
-            "trong Cài đặt để giảm bị chặn."
+            "Tài khoản này đã hết lượt tạo miễn phí trong hôm nay (Google "
+            "giới hạn quota theo ngày). Đổi sang tài khoản Google khác ở tab "
+            "Tài Khoản, hoặc chờ sang ngày mai quota tự reset."
         )
 
-    # ── Safety / content policy block ──
+    # ── Prominent-people / public-figure filter (PERMANENT for this prompt) ──
+    # Google refuses to generate recognizable real public figures. Retrying
+    # the same prompt/ref image will always fail.
+    if has("prominent_people", "prominent people", "prominent person",
+           "people_filter", "public figure", "celebrity", "celebrities"):
+        return (
+            "Google chặn vì prompt hoặc ảnh tham chiếu có người nổi tiếng "
+            "(người thật của công chúng — nghệ sĩ, ca sĩ, chính trị gia…). "
+            "Google không cho tạo ảnh/video mô phỏng người nổi tiếng. Bỏ "
+            "tên/ảnh người nổi tiếng hoặc dùng nhân vật hư cấu rồi gen lại — "
+            "gen lại y nguyên sẽ vẫn lỗi."
+        )
+
+    # ── Safety / content-policy block (PERMANENT for this prompt) ──
     if has("safety", "blocked", "prohibited", "violat", "responsible ai",
            "content policy", "finish_reason", "image_safety", "person/face",
            "sensitive"):
         return (
-            "Nội dung bị Google chặn do vi phạm chính sách (nhạy cảm / bản "
-            "quyền / người thật…). Hãy chỉnh lại prompt rồi gen lại."
+            "Nội dung bị Google chặn vì vi phạm chính sách (nhạy cảm, bạo "
+            "lực, bản quyền, người thật…). Sửa lại prompt cho an toàn hơn rồi "
+            "gen lại — gen lại y nguyên sẽ vẫn lỗi."
         )
 
-    # ── Session / login expired ──
+    # ── Session / login expired (bridge: Chrome's labs.google session died) ──
     if has("session", "hết hạn", "expired", "session dead", "unauthorized",
            "401", "đăng nhập", "login lại"):
         return (
-            "Phiên đăng nhập của tài khoản đã hết hạn. Vào tab Tài Khoản để "
-            "đăng nhập lại, rồi gen lại."
+            "Phiên đăng nhập Google của tài khoản này đã hết hạn. Mở Chrome "
+            "và đăng nhập lại labs.google bằng tài khoản đó (extension sẽ tự "
+            "đồng bộ), hoặc đổi sang tài khoản khác ở tab Tài Khoản, rồi gen lại."
         )
 
-    # ── Vertex AI credential / permission (IAM) issues ──
-    if has("permission_denied", "permission denied", "iam", "403",
+    # ── Permission / access denied (403, non-reCAPTCHA) ──
+    # reCAPTCHA-flavored 403s are already handled above; this catches a plain
+    # permission/403 denial — usually a broken session or a restricted account.
+    if has("permission_denied", "permission denied", "403",
            "does not have permission", "caller does not have"):
         return (
-            "Tài khoản dịch vụ Vertex AI thiếu quyền (IAM) hoặc bị từ chối "
-            "(403). Kiểm tra service account / project trong Cài đặt."
-        )
-    if has("no api key", "credentials", "could not automatically determine",
-           "default credentials", "service account"):
-        return (
-            "Vertex AI chưa cấu hình credentials đúng. Kiểm tra service "
-            "account trong Cài đặt (Auth mode = Vertex AI)."
+            "Google từ chối quyền truy cập (403). Thường do phiên đăng nhập "
+            "lỗi hoặc tài khoản bị hạn chế — đăng nhập lại, hoặc đổi sang tài "
+            "khoản Google khác ở tab Tài Khoản."
         )
 
     # ── Model not found / unsupported ──
     if has("not_found", "not found", "404", "không hỗ trợ", "unsupported",
            "is not supported", "no such model", "model not"):
         return (
-            "Model không khả dụng hoặc không hỗ trợ cho chế độ này. Đổi model "
-            "trong tab tạo, hoặc kiểm tra lại cấu hình ở Cài đặt."
+            "Model bạn chọn không khả dụng hoặc Google không còn hỗ trợ. Chọn "
+            "model khác trong tab tạo rồi gen lại."
         )
 
     # ── Timeout ──
     if has("timeout", "timed out", "deadline", "deadline_exceeded", "etimedout"):
         return (
-            "Quá thời gian chờ Google phản hồi. Mạng có thể chậm — bấm Gen "
-            "lại để thử lại."
+            "Quá thời gian chờ Google phản hồi (mạng chậm hoặc Google đang "
+            "quá tải). Bấm 'Gen lại' để thử lại."
         )
 
     # ── Network / connectivity ──
@@ -101,28 +129,129 @@ def friendly_error(raw: str) -> str:
            "getaddrinfo", "econn", "name resolution", "ssl", "max retries",
            "temporary failure", "unreachable"):
         return (
-            "Lỗi kết nối mạng tới Google. Kiểm tra Internet/VPN rồi bấm Gen "
-            "lại."
+            "Không kết nối được tới Google. Kiểm tra Internet/VPN rồi bấm "
+            "'Gen lại'."
         )
 
     # ── Download / save failure ──
     if has("download failed", "download", "tải", "save", "ghi file",
-           "no media_id", "media_id", "permission denied"):
+           "no media_id", "media_id"):
         return (
-            "Tạo xong nhưng tải/lưu file kết quả thất bại. Bấm Gen lại để "
-            "thử lại."
+            "Đã tạo xong nhưng tải/lưu file kết quả thất bại (mạng gián đoạn "
+            "hoặc lỗi ghi ổ đĩa). Bấm 'Gen lại' để thử lại."
         )
 
     # ── Transient Google server errors ──
     if has("internal error", "internal_error", "500", "503", "502",
            "unavailable", "try again", "backend error", "service is currently"):
         return (
-            "Google đang lỗi tạm thời ở phía server. Đợi vài giây rồi bấm "
-            "Gen lại."
+            "Google đang lỗi tạm thời ở phía máy chủ. Chờ vài giây rồi bấm "
+            "'Gen lại'."
         )
 
     # Fallback: show the raw error (trimmed) so nothing is hidden.
     trimmed = s.strip()
     if len(trimmed) > 300:
         trimmed = trimmed[:300] + "…"
-    return trimmed
+    return trimmed or "Lỗi không xác định."
+
+
+def friendly_shakker_error(raw: str) -> str:
+    """Shakker-specific error mapping.
+
+    Kept separate from `friendly_error()` because Shakker (Liblib AI) has
+    its own vocabulary — "power" instead of credits, possible Chinese
+    error strings from the backend — and its remedies differ (re-login at
+    shakker.ai, top up power, switch shakker account). Used by
+    routers/shakker.py and services/shakker_client.py.
+    """
+    if not raw:
+        return "Lỗi không xác định."
+    s = str(raw)
+    low = s.lower()
+
+    def has(*subs: str) -> bool:
+        return any(sub in low for sub in subs)
+
+    # ── Insufficient power / credits ──
+    # Shakker calls credits "power" (Chinese backend: 积分 / 算力 / 余额不足).
+    if has("insufficient", "not enough", "power not", "余额不足", "积分不足",
+           "算力不足", "power 不足", "no power", "hết power", "không đủ power",
+           "lack of power", "insufficient power"):
+        return (
+            "Tài khoản Shakker đã hết power (tín dụng để tạo ảnh). Nạp thêm "
+            "power tại shakker.ai, hoặc đổi sang tài khoản Shakker khác trong "
+            "Cài đặt."
+        )
+
+    # ── Token / session expired ──
+    if has("phiên shakker", "token", "hết hạn", "expired", "401", "403",
+           "unauthorized", "未登录", "登录", "登陆", "请登录", "not logged"):
+        return (
+            "Phiên đăng nhập Shakker đã hết hạn. Mở tab shakker.ai trong "
+            "Chrome và đăng nhập lại — extension sẽ tự đồng bộ token mới — "
+            "rồi gen lại."
+        )
+
+    # ── Safety / NSFW / illegal content (PERMANENT for this prompt) ──
+    if has("nsfw", "illegal", "sensitive", "敏感", "违规", "违法", "safety",
+           "blocked", "content policy", "色情", "审核"):
+        return (
+            "Ảnh bị Shakker chặn vì nội dung nhạy cảm / vi phạm chính sách. "
+            "Sửa lại prompt rồi gen lại — gen lại y nguyên sẽ vẫn lỗi."
+        )
+
+    # ── Rate limit / too frequent (TEMPORARY) ──
+    # NOTE: must NOT use the bare substring "rate" — the word "generate"
+    # contains it, so any "...generate..." error would false-match here.
+    if has("rate limit", "ratelimit", "rate-limit", "too many", "too frequent",
+           "频繁", "429", "请求过于", "limit exceeded"):
+        return (
+            "Shakker đang giới hạn tốc độ (gửi yêu cầu quá nhanh). Đây là lỗi "
+            "tạm thời — chờ vài giây rồi bấm 'Gen lại'."
+        )
+
+    # ── Model / LoRA unavailable ──
+    if has("not found", "404", "model not", "lora", "已下架", "不存在",
+           "removed", "unavailable model"):
+        return (
+            "Model hoặc LoRA đã chọn không còn khả dụng (có thể tác giả đã gỡ "
+            "khỏi Shakker). Chọn model/LoRA khác rồi gen lại."
+        )
+
+    # ── Timeout ──
+    if has("timeout", "timed out", "hết thời gian", "deadline", "超时"):
+        return (
+            "Quá thời gian chờ Shakker phản hồi (server có thể đang đông). "
+            "Bấm 'Gen lại' để thử lại."
+        )
+
+    # ── Network ──
+    if has("failed to fetch", "connection", "connect", "network", "econn",
+           "getaddrinfo", "ssl", "unreachable", "name resolution",
+           "không phải json", "lỗi mạng"):
+        return (
+            "Không kết nối được tới Shakker. Kiểm tra Internet/VPN rồi bấm "
+            "'Gen lại'."
+        )
+
+    # ── Server error ──
+    if has("máy chủ", "500", "502", "503", "internal", "服务器", "unavailable",
+           "server error"):
+        return (
+            "Shakker đang lỗi tạm thời ở phía máy chủ. Chờ vài giây rồi bấm "
+            "'Gen lại'."
+        )
+
+    # ── Download failed ──
+    if has("tải ảnh", "download", "tải", "save"):
+        return (
+            "Đã tạo xong nhưng tải ảnh kết quả thất bại. Bấm 'Gen lại' để "
+            "thử lại."
+        )
+
+    # Fallback — trimmed raw.
+    trimmed = s.strip()
+    if len(trimmed) > 300:
+        trimmed = trimmed[:300] + "…"
+    return trimmed or "Lỗi không xác định."

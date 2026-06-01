@@ -171,6 +171,67 @@ async def task_result(request: Request):
     return {"ok": True}
 
 
+@router.post("/shakker-account")
+async def shakker_account_sync(request: Request):
+    """Extension forwards shakker.ai auth state here.
+
+    Payload is the envelope-wrapped `{user_uuid, token, email?, user_id?,
+    account_id?, webid?}` object. Upserts into `shakker_accounts` table
+    keyed by `user_uuid`.
+
+    Bypasses the OAuth auth gate (lives under `/sync/`) for the same
+    reason the Flow bridge endpoints do — extensions can't carry the
+    @redone.vn OAuth session, and the local-only bind already constrains
+    callers to processes on this machine.
+    """
+    from datetime import datetime
+    from ..database import db
+
+    raw = await request.json()
+    try:
+        payload = unwrap(raw)
+    except Exception as e:
+        raise HTTPException(400, f"bad envelope: {e}")
+
+    user_uuid = (payload.get("user_uuid") or "").strip()
+    token = (payload.get("token") or "").strip()
+    if not user_uuid or not token:
+        raise HTTPException(400, "user_uuid and token required")
+
+    fields = {
+        "token": token,
+        "status": "OK",
+        "status_msg": None,
+        "last_check_at": datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    if payload.get("email"):
+        fields["email"] = str(payload["email"]).strip().lower()
+    if isinstance(payload.get("user_id"), int):
+        fields["user_id"] = payload["user_id"]
+    if isinstance(payload.get("account_id"), int):
+        fields["account_id"] = payload["account_id"]
+    if payload.get("webid"):
+        fields["webid"] = str(payload["webid"])
+
+    acc_id = db.upsert_shakker_account(user_uuid, **fields)
+    log.info(
+        f"/sync/shakker-account upserted id={acc_id} uuid={user_uuid[:8]}…"
+        f" email={fields.get('email', '-')}"
+    )
+
+    # Notify the UI so any open Shakker account list refreshes instantly.
+    try:
+        from ..ws_hub import hub
+        await hub.broadcast(
+            "shakker_account_synced",
+            {"id": acc_id, "user_uuid": user_uuid},
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "id": acc_id}
+
+
 @router.get("/state")
 async def bridge_state():
     """Diagnostic — what does the bridge currently know? Used by the

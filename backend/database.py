@@ -76,10 +76,31 @@ class Database:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS shakker_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_uuid TEXT UNIQUE NOT NULL,   -- shakker user UUID, the stable identity
+            email TEXT,                        -- display only — may change
+            user_id INTEGER,                   -- shakker numeric user ID
+            account_id INTEGER,                -- shakker memberId (subscription record)
+            token TEXT,                        -- 44-char hex API token sent in `token:` header
+            webid TEXT,                        -- shakker `webid` cookie, reused as `cid` in gen payloads
+            tier TEXT DEFAULT 'FREE',          -- accountLevelDesc, e.g. "Pro"
+            total_power INTEGER DEFAULT 0,     -- monthly quota
+            used_power INTEGER DEFAULT 0,
+            usable_power INTEGER DEFAULT 0,    -- shown in UI as credit balance
+            concurrent INTEGER DEFAULT 1,      -- per-account concurrent limit (server-enforced)
+            expiry TEXT,                       -- subscription endTime ISO date
+            enabled INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'PENDING',     -- PENDING | OK | TOKEN_EXPIRED | ERROR
+            status_msg TEXT,
+            last_check_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
         """)
         self.conn.commit()
         # Idempotent column additions for existing DBs (older schema)
         self._add_column_if_missing("tasks", "duration", "INTEGER DEFAULT 8")
+        self._add_column_if_missing("shakker_accounts", "webid", "TEXT")
 
     def _add_column_if_missing(self, table: str, column: str, decl: str):
         try:
@@ -129,6 +150,79 @@ class Database:
     def delete_account(self, account_id: int):
         with self._lock:
             self.conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+            self.conn.commit()
+
+    # ---------------------- Shakker Accounts ----------------------
+    def get_shakker_accounts(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM shakker_accounts ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_shakker_account(self, account_id: int) -> Optional[dict]:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM shakker_accounts WHERE id=?", (account_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def get_shakker_account_by_uuid(self, user_uuid: str) -> Optional[dict]:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM shakker_accounts WHERE user_uuid=?", (user_uuid,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def upsert_shakker_account(self, user_uuid: str, **fields) -> int:
+        """Insert or update a shakker account keyed by user_uuid.
+
+        Called by the extension sync endpoint when the user logs into
+        shakker.ai — the extension reports {user_uuid, email, user_id,
+        account_id, token, ...} and we either create a new row or refresh
+        the existing one (e.g. token rotated, credit changed).
+
+        Returns the row id.
+        """
+        with self._lock:
+            existing = self.conn.execute(
+                "SELECT id FROM shakker_accounts WHERE user_uuid=?", (user_uuid,)
+            ).fetchone()
+            if existing:
+                if fields:
+                    keys = ",".join(f"{k}=?" for k in fields)
+                    self.conn.execute(
+                        f"UPDATE shakker_accounts SET {keys} WHERE id=?",
+                        (*fields.values(), existing["id"]),
+                    )
+                    self.conn.commit()
+                return existing["id"]
+            fields = {"user_uuid": user_uuid, **fields}
+            keys = ",".join(fields.keys())
+            marks = ",".join("?" * len(fields))
+            cur = self.conn.execute(
+                f"INSERT INTO shakker_accounts({keys}) VALUES({marks})",
+                tuple(fields.values()),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def update_shakker_account(self, account_id: int, **fields):
+        if not fields:
+            return
+        keys = ",".join(f"{k}=?" for k in fields)
+        with self._lock:
+            self.conn.execute(
+                f"UPDATE shakker_accounts SET {keys} WHERE id=?",
+                (*fields.values(), account_id),
+            )
+            self.conn.commit()
+
+    def delete_shakker_account(self, account_id: int):
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM shakker_accounts WHERE id=?", (account_id,)
+            )
             self.conn.commit()
 
     # ---------------------- Tasks ----------------------

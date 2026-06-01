@@ -74,6 +74,29 @@ export const api = {
       { body: { item_ids: itemIds, resolution } }),
   },
 
+  shakker: {
+    account: () => request('GET', '/api/shakker/account'),
+    models: (params) => request('GET', '/api/shakker/models', { params }),
+    loras: (params) => request('GET', '/api/shakker/loras', { params }),
+    generate: (payload) => request('POST', '/api/shakker/generate', { body: payload }),
+    cancel: (taskId) => request('POST', `/api/shakker/cancel/${taskId}`),
+    retryItem: (itemId) => request('POST', `/api/shakker/item/${itemId}/retry`),
+    retryFailed: (taskId) => request('POST', `/api/shakker/${taskId}/retry-failed`),
+    uploadRef: (file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return request('POST', '/api/shakker/upload-ref', { form: fd });
+    },
+  },
+
+  shakkerAccounts: {
+    list: () => request('GET', '/api/shakker-accounts'),
+    del: (id) => request('DELETE', `/api/shakker-accounts/${id}`),
+    toggle: (id) => request('POST', `/api/shakker-accounts/${id}/toggle`),
+    check: (id) => request('POST', `/api/shakker-accounts/${id}/check`),
+    checkAll: () => request('POST', '/api/shakker-accounts/check-all'),
+  },
+
   analyzer: {
     script: (payload) => request('POST', '/api/analyzer/script', { body: payload }),
     regenScene: (payload) => request('POST', '/api/analyzer/regenerate-scene', { body: payload }),

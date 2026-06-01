@@ -70,6 +70,19 @@
     line-height: 1.5;
   }
   .footer a { color: #60a5fa; text-decoration: none; }
+  .section-title {
+    margin: 14px 0 4px 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: #64748b;
+  }
+  .email {
+    font-size: 11px;
+    color: #cbd5e1;
+    font-weight: 500;
+  }
 </style>
 </head>
 <body>
@@ -78,6 +91,8 @@
   <span class="label">Backend</span>
   <span id="status-bridge" class="value warn"><span class="dot"></span>Đang kiểm tra…</span>
 </div>
+
+<div class="section-title">Google Labs (Flow / Veo)</div>
 <div class="row">
   <span class="label">Labs.google tab</span>
   <span id="status-tab" class="value warn"><span class="dot"></span>—</span>
@@ -94,13 +109,32 @@
   <span class="label">Lần thành công cuối</span>
   <span id="last-success" class="value">—</span>
 </div>
+
+<div class="section-title">Shakker.ai (Ảnh)</div>
+<div class="row">
+  <span class="label">Shakker tab</span>
+  <span id="status-shakker-tab" class="value warn"><span class="dot"></span>—</span>
+</div>
+<div class="row">
+  <span class="label">Tài khoản</span>
+  <span id="shakker-email" class="email">Chưa đồng bộ</span>
+</div>
+<div class="row">
+  <span class="label">Lần sync cuối</span>
+  <span id="shakker-last-sync" class="value">—</span>
+</div>
+
 <div class="actions">
   <button id="open-labs">Mở Labs.google</button>
+  <button id="open-shakker">Mở Shakker.ai</button>
+</div>
+<div class="actions">
   <button id="reset-metrics">Reset đếm</button>
 </div>
 <div class="footer">
   Cần Backend RedOne chạy ở <code>127.0.0.1:8000</code><br>
-  + 1 tab <a href="https://labs.google/fx/tools/flow" target="_blank">labs.google/fx</a> đã login.
+  + 1 tab <a href="https://labs.google/fx/tools/flow" target="_blank">labs.google/fx</a> để dùng Flow (video Veo).<br>
+  + 1 tab <a href="https://www.shakker.ai/aigenerator" target="_blank">shakker.ai</a> để dùng Shakker (ảnh).
 </div>
 <script src="popup.js"></script>
 </body>

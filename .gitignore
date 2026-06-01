@@ -43,3 +43,9 @@ backend/private_config.py
 *-key.json
 service-account-*.json
 gcp-*.json
+
+# Reverse-engineering / debug captures for Shakker — these .har files and
+# extracted request dumps contain LIVE auth tokens, cookies, user IDs and
+# image storage tokens. NEVER commit (security). Kept locally only.
+docs/shakker_capture/
+*.har

@@ -34,11 +34,22 @@ let _connected = false;
 let _tokenCount = 0;
 let _lastSuccessAt = null;
 
+// Shakker bridge state — set when content_shakker.js sends SHAKKER_SYNC.
+// Restored from chrome.storage at SW wake so the popup shows correct
+// "last seen" info even right after a service worker restart.
+let _shakkerEmail = null;
+let _shakkerLastSync = null;
+
 // Restore counters
-chrome.storage.local.get(["tokenCount", "lastSuccessAt"], (data) => {
-    _tokenCount = data.tokenCount || 0;
-    _lastSuccessAt = data.lastSuccessAt || null;
-});
+chrome.storage.local.get(
+    ["tokenCount", "lastSuccessAt", "shakkerEmail", "shakkerLastSync"],
+    (data) => {
+        _tokenCount = data.tokenCount || 0;
+        _lastSuccessAt = data.lastSuccessAt || null;
+        _shakkerEmail = data.shakkerEmail || null;
+        _shakkerLastSync = data.shakkerLastSync || null;
+    }
+);
 
 // Keep the service worker alive via alarms (MV3 service workers auto-suspend
 // otherwise). Three different alarm intervals to cover edge cases.
@@ -131,6 +142,23 @@ async function _bridgePost(path, payload) {
 
 
 // ── Tab discovery ────────────────────────────────────────────────────
+
+/**
+ * Find the first shakker.ai tab open in this Chrome instance.
+ * Returns the tab object or null. Used by the popup to render a
+ * "shakker tab open ✓" indicator and decide whether to show the
+ * "Mở Shakker.ai" button.
+ */
+async function _findShakkerTab() {
+    try {
+        const tabs = await chrome.tabs.query({});
+        const matches = tabs.filter(t => t.url && t.url.includes("shakker.ai"));
+        return matches[0] || null;
+    } catch (_) {
+        return null;
+    }
+}
+
 
 /**
  * Find the first labs.google tab that's signed in (not on accounts.google.com).
@@ -440,6 +468,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
             const tab = await _findLabsTab();
             const signedIn = await _isSignedIn();
+            const shakkerTab = await _findShakkerTab();
             sendResponse({
                 connected: _connected,
                 tokenCount: _tokenCount,
@@ -447,6 +476,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                 hasTab: !!tab,
                 signedIn,
                 tabUrl: tab ? tab.url : null,
+                // Shakker bridge status — separate channel, independent of Flow.
+                shakker: {
+                    hasTab: !!shakkerTab,
+                    tabUrl: shakkerTab ? shakkerTab.url : null,
+                    email: _shakkerEmail,
+                    lastSync: _shakkerLastSync,
+                },
             });
         })();
         return true;
@@ -456,6 +492,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         _lastSuccessAt = null;
         chrome.storage.local.set({ tokenCount: 0, lastSuccessAt: null });
         sendResponse({ ok: true });
+        return true;
+    }
+    if (msg && msg.type === "SHAKKER_SYNC") {
+        // Forwarded from content_shakker.js whenever the user has shakker.ai
+        // open. Payload is the slim {user_uuid, token, email, user_id,
+        // account_id, webid} object — we forward straight to the bridge.
+        //
+        // Posted to /sync/shakker-account (NOT /api/shakker-accounts/sync)
+        // so the request bypasses the OAuth auth gate — same trust model
+        // as the Flow bridge protocol (local-only origin, no auth).
+        (async () => {
+            try {
+                const r = await _bridgePost("/sync/shakker-account", msg.state || {});
+                if (r && r.ok) {
+                    _shakkerEmail = (msg.state && msg.state.email) || _shakkerEmail;
+                    _shakkerLastSync = Date.now();
+                    chrome.storage.local.set({
+                        shakkerEmail: _shakkerEmail,
+                        shakkerLastSync: _shakkerLastSync,
+                    });
+                }
+                sendResponse({ ok: !!(r && r.ok), result: r });
+            } catch (e) {
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
         return true;
     }
     return false;

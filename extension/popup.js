@@ -1,5 +1,5 @@
-// Popup UI — shows live status of bridge connection, labs tab, login,
-// and harvested token count. Refreshes every 1s while popup is open.
+// Popup UI — shows live status of bridge connection + both providers
+// (Google Labs / Shakker.ai). Refreshes every 1s while popup is open.
 
 function setStatus(elId, cls, label) {
     const el = document.getElementById(elId);
@@ -23,19 +23,44 @@ async function refresh() {
             setStatus("status-bridge", "err", "Service worker chết");
             return;
         }
+        // Backend bridge
         setStatus("status-bridge", r.connected ? "ok" : "err",
             r.connected ? "Đã kết nối" : "Mất kết nối — backend chưa chạy?");
+
+        // ── Google Labs ─────────────────────────────────────
         setStatus("status-tab", r.hasTab ? "ok" : "warn",
             r.hasTab ? "Đã mở" : "Chưa mở labs.google");
         setStatus("status-login", r.signedIn ? "ok" : "warn",
             r.signedIn ? "Đã đăng nhập" : "Chưa đăng nhập Google");
         document.getElementById("token-count").textContent = r.tokenCount || 0;
         document.getElementById("last-success").textContent = formatAgo(r.lastSuccessAt);
+
+        // ── Shakker.ai ──────────────────────────────────────
+        const sk = r.shakker || {};
+        setStatus("status-shakker-tab", sk.hasTab ? "ok" : "warn",
+            sk.hasTab ? "Đã mở" : "Chưa mở shakker.ai");
+
+        // Account email — green when we have a recent sync (< 10 min),
+        // grey otherwise. "Chưa đồng bộ" if we've never synced.
+        const emailEl = document.getElementById("shakker-email");
+        if (sk.email) {
+            const fresh = sk.lastSync && (Date.now() - sk.lastSync < 10 * 60 * 1000);
+            emailEl.textContent = sk.email;
+            emailEl.style.color = fresh ? "#4ade80" : "#cbd5e1";
+        } else {
+            emailEl.textContent = "Chưa đồng bộ";
+            emailEl.style.color = "#64748b";
+        }
+        document.getElementById("shakker-last-sync").textContent = formatAgo(sk.lastSync);
     });
 }
 
 document.getElementById("open-labs").addEventListener("click", () => {
     chrome.tabs.create({ url: "https://labs.google/fx/tools/flow" });
+});
+
+document.getElementById("open-shakker").addEventListener("click", () => {
+    chrome.tabs.create({ url: "https://www.shakker.ai/aigenerator" });
 });
 
 document.getElementById("reset-metrics").addEventListener("click", () => {

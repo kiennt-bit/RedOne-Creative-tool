@@ -22,8 +22,10 @@ from .routers import (
     media_tools, settings as settings_router, files as files_router,
     tasks as tasks_router, system as system_router,
     sync as sync_router, auth as auth_router,
+    shakker_accounts as shakker_accounts_router,
+    shakker as shakker_router,
 )
-from .queue_manager import queue as task_queue
+from .queue_manager import queue as task_queue, shakker_queue
 
 # ── Logging ──────────────────────────────────────────────────
 log_file = DATA_DIR / "app.log"
@@ -86,8 +88,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning(f"cleanup_pending_folder failed: {e}")
     task_queue.start()
+    shakker_queue.start()   # independent lane → runs concurrently with Flow
     yield
     task_queue.stop()
+    shakker_queue.stop()
     log.info(f"=== {APP_NAME} shutting down ===")
 
 
@@ -166,6 +170,8 @@ async def auth_gate(request: Request, call_next):
     return RedirectResponse(url="/login.html", status_code=302)
 
 app.include_router(accounts.router)
+app.include_router(shakker_accounts_router.router)
+app.include_router(shakker_router.router)
 app.include_router(content.router)
 app.include_router(image_router.router)
 app.include_router(analyzer.router)

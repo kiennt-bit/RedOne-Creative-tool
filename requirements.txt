@@ -10,6 +10,14 @@ playwright>=1.40.0
 #    long-running operation support.
 google-genai>=0.5.0
 Pillow>=10.0.0
+# httpx — used by ShakkerClient (services/shakker_client.py) for all
+# shakker.ai API calls. Already a transitive dep of google-genai/fastapi
+# but pin it explicitly since we import it directly.
+httpx>=0.26.0
+# oss2 — Alibaba Cloud OSS SDK. ONLY needed for Shakker img2img reference
+# image upload (lazy-imported in shakker_client.upload_reference_image).
+# Text-to-image works without it. ~few MB pure-python + crcmod.
+oss2>=2.18.0
 yt-dlp>=2024.1.0
 imageio-ffmpeg>=0.4.9
 # opencv-python is REQUIRED from v1.0.4 — bundled into EXE so the Xóa

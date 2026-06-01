@@ -68,77 +68,12 @@ export function renderSettings(root) {
         + 'bạn chủ động chọn file muốn giữ qua nút "Lưu vào outputs" ở gallery.'),
     ),
     el('div', { class: 'field-group' },
-      el('label', { class: 'field-label' }, 'Auth mode'),
-      el('select', { class: 'select', id: 'st-authmode' },
-        el('option', { value: 'extension' }, 'Chrome Extension Bridge (Recommended — Free, ít 403)'),
-        el('option', { value: 'playwright' }, 'Playwright/Cloak (Legacy — Free, hay 403)'),
-        el('option', { value: 'vertex_api' }, 'Vertex AI Commercial (Paid — chuẩn enterprise, $0.04+ per call)'),
-      ),
+      el('label', { class: 'field-label' }, 'Chế độ kết nối'),
       el('div', { class: 'field-help' },
-        'Extension Bridge: token + cookies tới từ Chrome thật → Google không flag bot. '
-        + 'Cần cài extension "RedOne Auth Helper" (thư mục extension/ — Chrome > Extensions > Load unpacked). '
-        + 'Vertex AI Commercial: bypass Labs Flow hoàn toàn, dùng Google Cloud trả phí — '
-        + 'không cần Chrome, không 403, chất lượng tier paid.'),
+        'Tool dùng cố định Chrome Extension Bridge: token + cookies lấy từ '
+        + 'Chrome thật của bạn → Google không flag bot, dùng quota Labs Flow miễn phí. '
+        + 'Cần cài extension "RedOne Auth Helper" (thư mục extension/ — Chrome > Extensions > Load unpacked).'),
       el('div', { id: 'st-bridge-status', style: { marginTop: '6px' } }),
-    ),
-    // Vertex AI config section — visible only when auth_mode = "vertex_api"
-    el('div', { class: 'field-group', id: 'st-vertex-wrap', style: { display: 'none' } },
-      el('div', {
-        style: {
-          padding: '12px', borderRadius: '8px', marginBottom: '12px',
-          background: 'rgba(245,158,11,0.08)',
-          border: '1px solid rgba(245,158,11,0.25)',
-        },
-      },
-        el('div', { style: { fontWeight: 600, marginBottom: '6px' } },
-          '⚡ Vertex AI Commercial mode'),
-        el('div', { class: 'field-help', style: { lineHeight: '1.5' } },
-          'Trả phí per call. Free trial $300 / 90 ngày cho project mới. ',
-          el('br', null), null,
-          'Models support: Nano Banana 2, Nano Banana Pro, Veo 3.1 Lite/Fast/Quality.',
-          el('br', null), null,
-          'KHÔNG support: Veo Lite [LP] (free queue), Omni Flash. ',
-          el('a', {
-            href: 'https://cloud.google.com/vertex-ai/generative-ai/pricing',
-            target: '_blank', style: { color: 'var(--brand)' },
-          }, 'Xem giá'),
-        ),
-      ),
-      el('label', { class: 'field-label' }, 'Service Account JSON Path (cho cả image + video gen)'),
-      el('input', {
-        type: 'text', class: 'input', id: 'st-vertex-sapath',
-        placeholder: 'C:\\Users\\Admin\\Documents\\redone-vertex-key.json',
-      }),
-      el('div', { class: 'field-help', style: { marginBottom: '12px' } },
-        'Đường dẫn tới file JSON service account (Cloud Console → IAM → Service Accounts → KEYS → Add key → JSON). '
-        + 'Service account cần role "Agent Platform User" + "Storage Object User".'),
-
-      el('label', { class: 'field-label' }, 'Project ID'),
-      el('input', {
-        type: 'text', class: 'input', id: 'st-vertex-project',
-        placeholder: 'my-project-123456',
-      }),
-      el('div', { class: 'field-help', style: { marginBottom: '12px' } },
-        'Project ID (chuỗi text) — xem ở Google Cloud Console góc trên top bar.'),
-
-      el('label', { class: 'field-label' }, 'Region'),
-      el('select', { class: 'select', id: 'st-vertex-region' },
-        el('option', { value: 'us-central1' }, 'us-central1 (Iowa — recommended)'),
-        el('option', { value: 'europe-west4' }, 'europe-west4 (Netherlands)'),
-        el('option', { value: 'asia-southeast1' }, 'asia-southeast1 (Singapore — gần VN nhất)'),
-      ),
-      el('div', { class: 'field-help' },
-        'Region nào Vertex AI host model. us-central1 hỗ trợ nhiều model nhất + giá rẻ nhất.'),
-    ),
-    el('div', { class: 'field-group', id: 'st-backend-wrap' },
-      el('label', { class: 'field-label' }, 'Trình duyệt sử dụng (chỉ khi Playwright)'),
-      el('select', { class: 'select', id: 'st-backend' },
-        el('option', { value: 'chrome' }, 'Google Chrome (mặc định)'),
-        el('option', { value: 'cloak' }, 'CloakBrowser — Stealth Chromium (chống detect tốt hơn)'),
-      ),
-      el('div', { class: 'field-help', id: 'st-backend-help' },
-        'Chuyển sang CloakBrowser nếu hay bị reCAPTCHA 403 / 429. Lần đầu sẽ auto-download binary ~200MB.'),
-      el('div', { id: 'st-cloak-status', style: { marginTop: '6px' } }),
     ),
     el('div', { class: 'field-group' },
       el('label', { class: 'field-label' }, 'Đợi giữa các đợt gen (giây)'),
@@ -202,68 +137,6 @@ export function renderSettings(root) {
       root.querySelector('#st-quality').value = s.default_quality || 'fast';
       const autosave = s.auto_save_outputs === undefined ? true : !!s.auto_save_outputs;
       root.querySelector('#st-autosave').checked = autosave;
-      const backend = (s.browser_backend || 'chrome').toLowerCase();
-      root.querySelector('#st-backend').value = backend;
-      // New: auth mode (default extension)
-      const authMode = (s.auth_mode || 'extension').toLowerCase();
-      root.querySelector('#st-authmode').value = authMode;
-      // Show legacy browser dropdown only in playwright mode
-      const wrap = root.querySelector('#st-backend-wrap');
-      if (wrap) wrap.style.display = authMode === 'playwright' ? '' : 'none';
-      // Show Vertex AI config only in vertex_api mode
-      const vWrap = root.querySelector('#st-vertex-wrap');
-      if (vWrap) vWrap.style.display = authMode === 'vertex_api' ? '' : 'none';
-      // Vertex AI fields — masked key uses placeholder so user knows it's set
-      // vertex_api_key is deprecated (Google's API key + service account
-      // binding policy made it impractical). UI no longer renders the
-      // field — service account JSON path handles all auth.
-      void s.vertex_api_key_masked;
-      root.querySelector('#st-vertex-sapath').value = s.vertex_service_account_path || '';
-      root.querySelector('#st-vertex-project').value = s.vertex_project_id || '';
-      root.querySelector('#st-vertex-region').value = s.vertex_region || 'us-central1';
-
-      // If private_config.py is providing the Vertex creds, lock the UI
-      // fields and surface a hint so users don't think their edits are
-      // being ignored.
-      if (s.vertex_private_config_active) {
-        for (const id of ['st-vertex-sapath',
-                          'st-vertex-project', 'st-vertex-region']) {
-          const elx = root.querySelector('#' + id);
-          if (elx) {
-            elx.disabled = true;
-            elx.style.opacity = '0.6';
-          }
-        }
-        // No more API key field — service account path covers all auth
-        // Add a banner in the Vertex section
-        const vWrap2 = root.querySelector('#st-vertex-wrap');
-        if (vWrap2 && !vWrap2.querySelector('.private-config-banner')) {
-          const banner = el('div', {
-            class: 'private-config-banner',
-            style: {
-              padding: '10px 14px', marginBottom: '12px',
-              background: 'rgba(34, 197, 94, 0.1)',
-              border: '1px solid rgba(34, 197, 94, 0.3)',
-              borderRadius: '8px',
-              fontSize: '12.5px',
-              color: '#86efac',
-            },
-          },
-            '✓ Vertex AI credentials đã được admin cấu hình sẵn trong ',
-            el('code', null, 'private_config.py'),
-            '. Các field dưới đây chỉ để tham khảo (không sửa được).',
-          );
-          vWrap2.insertBefore(banner, vWrap2.firstChild);
-        }
-      }
-
-      // Live-toggle the Vertex section + Playwright section when user
-      // changes the dropdown (no need to save first).
-      root.querySelector('#st-authmode').addEventListener('change', (e) => {
-        const m = e.target.value;
-        if (wrap) wrap.style.display = m === 'playwright' ? '' : 'none';
-        if (vWrap) vWrap.style.display = m === 'vertex_api' ? '' : 'none';
-      });
       // Live extension status — poll once on load
       try {
         const br = await fetch('/sync/state').then(r => r.json());
@@ -284,21 +157,6 @@ export function renderSettings(root) {
       const cdMax = (s.batch_cooldown_max_seconds ?? 10);
       root.querySelector('#st-cooldown-min').value = cdMin;
       root.querySelector('#st-cooldown-max').value = cdMax;
-      // Show Cloak install status under the dropdown
-      try {
-        const cs = await api.settings.cloakStatus();
-        const wrap = root.querySelector('#st-cloak-status');
-        wrap.innerHTML = '';
-        if (cs.installed) {
-          wrap.appendChild(el('div', { class: 'chip chip-green' },
-            `✓ CloakBrowser v${cs.version || '?'} đã cài`));
-        } else {
-          wrap.appendChild(el('div', { class: 'chip chip-yellow' },
-            'CloakBrowser chưa cài — sẽ báo lỗi nếu chọn'));
-          wrap.appendChild(el('div', { class: 'field-help', style: { marginTop: '4px' } },
-            'Cài: chạy `pip install cloakbrowser` trong terminal, rồi restart tool'));
-        }
-      } catch (e) { /* non-fatal */ }
       // Fetch system info (includes GitHub repo + paths)
       let sysInfo = {};
       try { sysInfo = await api.system.info(); } catch (e) { /* ignore */ }
@@ -366,19 +224,13 @@ export function renderSettings(root) {
       if (Number.isNaN(cdMax) || cdMax < 0) cdMax = 0;
       if (cdMax < cdMin) { const t = cdMin; cdMin = cdMax; cdMax = t; }
 
-      // Vertex AI: service account JSON path covers auth for both
-      // image + video gen. No API key field anymore.
       const payload = {
         default_aspect: root.querySelector('#st-aspect').value,
         default_quality: root.querySelector('#st-quality').value,
         auto_save_outputs: root.querySelector('#st-autosave').checked,
-        browser_backend: root.querySelector('#st-backend').value,
-        auth_mode: root.querySelector('#st-authmode').value,
+        auth_mode: 'extension',   // only mode now — overwrites any legacy vertex/playwright value
         batch_cooldown_min_seconds: cdMin,
         batch_cooldown_max_seconds: cdMax,
-        vertex_service_account_path: root.querySelector('#st-vertex-sapath').value.trim(),
-        vertex_project_id: root.querySelector('#st-vertex-project').value.trim(),
-        vertex_region: root.querySelector('#st-vertex-region').value,
       };
       await api.settings.update(payload);
       // Sync into in-memory store so newly-opened pages pick up the changes.

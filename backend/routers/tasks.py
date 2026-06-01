@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ..database import db
-from ..queue_manager import queue
+from ..queue_manager import queue, shakker_queue
 from ..ws_hub import hub
 from ..config import OUTPUT_DIR, slugify_folder, TaskStatus, ItemStatus
 
@@ -18,9 +18,14 @@ log = logging.getLogger("navtools.tasks")
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
+def _queue_for_mode(mode: str):
+    """Which queue a task lives on. Shakker has its own concurrent lane."""
+    return shakker_queue if (mode or "").lower() == "shakker" else queue
+
+
 def _annotate(task: dict) -> dict:
     """Add queue position + progress percent to a DB task row."""
-    pos = queue.position_of(task["id"])
+    pos = _queue_for_mode(task.get("mode")).position_of(task["id"])
     total = task.get("total_count") or 0
     done = task.get("done_count") or 0
     err = task.get("error_count") or 0
@@ -32,13 +37,25 @@ def _annotate(task: dict) -> dict:
     }
 
 
+def _merged_snapshot() -> dict:
+    """Combine the Flow + Shakker queue snapshots. `current`/`queued` stay
+    present for backward-compat; `lanes` exposes each lane separately."""
+    a = queue.snapshot()
+    b = shakker_queue.snapshot()
+    return {
+        "current": a.get("current") or b.get("current"),
+        "queued": (a.get("queued") or []) + (b.get("queued") or []),
+        "lanes": {"flow": a, "shakker": b},
+    }
+
+
 @router.get("")
 async def list_tasks(limit: int = 200):
     """All tasks (newest first) with queue + progress info."""
     rows = db.list_tasks(limit=limit)
     return {
         "tasks": [_annotate(r) for r in rows],
-        "queue": queue.snapshot(),
+        "queue": _merged_snapshot(),
     }
 
 
@@ -57,8 +74,15 @@ async def get_task(task_id: int):
 
 @router.post("/{task_id}/cancel")
 async def cancel_task(task_id: int):
-    """Cancel a queued or running task (kind-agnostic)."""
-    ok = await queue.cancel(task_id)
+    """Cancel a queued or running task (kind-agnostic). Tries both the Flow
+    and Shakker queues since a task lives on one of them."""
+    task = db.get_task(task_id)
+    q = _queue_for_mode(task.get("mode") if task else "")
+    ok = await q.cancel(task_id)
+    if not ok:
+        # Fall back: try the other queue in case mode is missing/stale.
+        other = queue if q is shakker_queue else shakker_queue
+        ok = await other.cancel(task_id)
     if not ok:
         # Maybe task already finished, just update DB
         from ..config import TaskStatus
@@ -98,10 +122,16 @@ async def retry_task(task_id: int):
 
     # Pick the right runner based on task mode
     mode = (task.get("mode") or "").lower()
+    enqueue_q = queue
     if mode == "image":
         from . import image as image_mod
         runner = image_mod._process_image_task
         kind = "image"
+    elif mode == "shakker":
+        from . import shakker as shakker_mod
+        runner = shakker_mod._process_shakker_task
+        kind = "shakker"
+        enqueue_q = shakker_queue   # independent concurrent lane
     elif mode == "long_video":
         from . import long_video as lv_mod
         runner = lv_mod._run_long_video
@@ -111,7 +141,7 @@ async def retry_task(task_id: int):
         runner = content_mod._process_task
         kind = "content"
 
-    pos = await queue.enqueue(kind, task_id, runner)
+    pos = await enqueue_q.enqueue(kind, task_id, runner)
     await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
     return {"ok": True, "queue_position": pos, "kind": kind}
 
@@ -270,8 +300,8 @@ async def retry_failed(task_id: int):
 
 @router.get("/_/queue")
 async def queue_state():
-    """Get a snapshot of the queue (current + waiting)."""
-    return queue.snapshot()
+    """Get a snapshot of both queues (Flow + Shakker lanes)."""
+    return _merged_snapshot()
 
 
 def _resolve_task_folder(task: dict) -> Path | None:

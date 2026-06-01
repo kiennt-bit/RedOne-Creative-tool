@@ -15,6 +15,7 @@ import './tasks_store.js';
 
 import { renderContent } from './pages/content.js';
 import { renderImage } from './pages/image.js';
+import { renderShakker } from './pages/shakker.js';
 import { renderLongVideo } from './pages/long_video.js';
 import { renderYoutube } from './pages/youtube.js';
 import { renderScript } from './pages/script.js';
@@ -39,6 +40,7 @@ try {
 const PAGES = {
   'content':       { title: 'Tạo Video',         subtitle: 'Tạo video AI từ prompt (Text-to-Video / Image-to-Video)', render: renderContent },
   'image':         { title: 'Tạo Ảnh',           subtitle: 'Sinh ảnh AI bằng Nano Banana / Imagen qua Google Labs',  render: renderImage },
+  'shakker':       { title: 'Ảnh Shakker',       subtitle: 'Sinh ảnh hàng loạt qua Shakker.ai — model + LoRA + ảnh tham chiếu', render: renderShakker },
   'long-video':    { title: 'Video Dài',         subtitle: 'Ghép N cảnh thành video dài liên tục bằng Extend API', render: renderLongVideo },
   'youtube':       { title: 'YouTube → Prompt',  subtitle: 'Phân tích YouTube / TikTok thành storyboard',            render: renderYoutube },
   'script':        { title: 'Ý Tưởng → Video',   subtitle: 'Từ kịch bản tiếng Việt sang storyboard chuẩn Veo 3',     render: renderScript },

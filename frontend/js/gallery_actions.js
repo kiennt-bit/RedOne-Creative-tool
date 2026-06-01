@@ -251,7 +251,10 @@ export function attachCardCheckbox(card, path, toolbar) {
  *          tasksStore.resetErrorItems(taskId).
  * @returns {HTMLElement}
  */
-export function makeRetryFailedButton({ getTaskState, onResetUI }) {
+export function makeRetryFailedButton({ getTaskState, onResetUI, retryFn }) {
+  // retryFn lets non-Flow galleries (e.g. Shakker) swap in their own
+  // retry-failed endpoint. Defaults to the Flow tasks endpoint.
+  const doRetryFailed = retryFn || ((taskId) => api.tasks.retryFailed(taskId));
   const labelSpan = el('span', null, 'Gen lại lỗi');
   const btn = el('button', {
     class: 'btn btn-sm btn-warm hidden',
@@ -265,7 +268,7 @@ export function makeRetryFailedButton({ getTaskState, onResetUI }) {
       try {
         // retry-failed runs in a detached coroutine on the backend, so it
         // works even while the task is still generating other items.
-        await api.tasks.retryFailed(s.taskId);
+        await doRetryFailed(s.taskId);
         // Reset local UI immediately. Subsequent WS events will drive the
         // per-item progress (pending → generating → done/error).
         if (onResetUI) onResetUI(s.taskId);
@@ -320,7 +323,10 @@ export function makeRetryFailedButton({ getTaskState, onResetUI }) {
  *                            which always have an id by then)
  * @returns {HTMLElement}
  */
-export function makeItemRetryButton(taskId, itemId) {
+export function makeItemRetryButton(taskId, itemId, retryFn) {
+  // retryFn lets non-Flow galleries (e.g. Shakker) swap in their own
+  // per-item retry endpoint. Defaults to the Flow tasks endpoint.
+  const doRetryItem = retryFn || ((iid) => api.tasks.retryItem(iid));
   const btn = el('button', {
     class: 'btn btn-sm btn-warm',
     title: 'Gen lại riêng prompt này',
@@ -332,7 +338,7 @@ export function makeItemRetryButton(taskId, itemId) {
         // API first (returns immediately — backend runs gen in background).
         // Only then flip the UI, so a failed call leaves the card as 'error'
         // instead of stuck on a spinner.
-        await api.tasks.retryItem(itemId);
+        await doRetryItem(itemId);
         tasksStore.retryItemUI(taskId, itemId);
       } catch (e) {
         toast(`Gen lại lỗi: ${e.message}`, 'error');
