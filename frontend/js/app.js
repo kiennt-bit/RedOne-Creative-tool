@@ -104,6 +104,23 @@ async function refreshAccounts() {
   }
 }
 
+async function refreshShakkerPower() {
+  // Roll up usable power across enabled Shakker accounts → topbar chip.
+  try {
+    const r = await api.shakkerAccounts.list();
+    const accts = r.accounts || [];
+    store.shakkerAccounts = accts;
+    const total = accts
+      .filter(a => a.enabled)
+      .reduce((sum, a) => sum + (a.usable_power || 0), 0);
+    store.shakkerPower = total;
+    const elx = $('#topbar-shakker-power');
+    if (elx) elx.textContent = total.toLocaleString('vi-VN');
+  } catch (e) {
+    console.warn('Failed to load Shakker power:', e && e.message);
+  }
+}
+
 async function loadSettings() {
   try {
     const data = await api.settings.get();
@@ -132,15 +149,23 @@ async function loadSettings() {
  */
 function autoScanAccounts() {
   try {
-    const mode = (store.settings && store.settings.auth_mode) || '';
-    if (mode === 'playwright') return;
+    // Flow accounts (Chrome-extension bridge): refresh credit + session
+    // status so the user doesn't click "Check" per account. Skip if none.
     const accounts = store.accounts || [];
-    if (!accounts.length) return;
+    if (accounts.length) {
+      setTimeout(() => {
+        api.accounts.checkAll()
+          .then(() => refreshAccounts())
+          .catch((e) => console.warn('Auto-scan Flow accounts failed:', e && e.message));
+      }, 3500);
+    }
+    // Shakker accounts: independent pool, refreshed via the stored token
+    // (no browser). checkAll() is a harmless no-op when there are none.
+    // Fired slightly later so it doesn't contend with the Flow scan.
     setTimeout(() => {
-      api.accounts.checkAll()
-        .then(() => refreshAccounts())
-        .catch((e) => console.warn('Auto-scan accounts failed:', e && e.message));
-    }, 3500);
+      api.shakkerAccounts.checkAll()
+        .catch((e) => console.warn('Auto-scan Shakker accounts failed:', e && e.message));
+    }, 4500);
   } catch (e) {
     console.warn('autoScanAccounts error:', e);
   }
@@ -280,6 +305,55 @@ function showSessionDeadBanner(d) {
   }, '✕'));
 }
 
+/**
+ * After an update (auto-update or manual zip-replace), the on-disk files are
+ * new but Chrome keeps running the OLD unpacked extension until the user
+ * reloads it. A version bump that changes the manifest (e.g. v1.2.0 added the
+ * shakker.ai content script) WON'T take effect until that reload.
+ *
+ * Detect "version changed since last boot" via localStorage and show a
+ * one-time dismissible reminder. First-ever run records the version silently
+ * (no reminder). Uses its own banner element so it never fights the
+ * session-dead banner.
+ */
+function maybeShowUpdateNotice() {
+  try {
+    const KEY = 'redone_last_version';
+    const cur = (store.app && store.app.version) || '';
+    if (!cur) return;
+    const prev = localStorage.getItem(KEY);
+    localStorage.setItem(KEY, cur);
+    if (!prev || prev === cur) return;   // first run, or unchanged → no notice
+
+    const sb = $('#session-banner');
+    let banner = $('#update-notice-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'update-notice-banner';
+      banner.className = 'session-banner';   // reuse existing styling
+      if (sb && sb.parentNode) sb.parentNode.insertBefore(banner, sb.nextSibling);
+      else document.body.insertBefore(banner, document.body.firstChild);
+    }
+    banner.classList.remove('hidden');
+    banner.innerHTML = '';
+    banner.appendChild(el('div', { style: { flex: 1 } },
+      el('strong', null, `✓ Đã cập nhật lên v${cur}. `),
+      'Bản mới có thể kèm extension mới — mở ',
+      el('span', {
+        class: 'mono',
+        style: { background: 'rgba(255,255,255,0.18)', padding: '2px 8px', borderRadius: '99px', margin: '0 4px' },
+      }, 'chrome://extensions'),
+      ' → bấm ↻ Reload extension "RedOne Auth Helper", rồi refresh lại tab labs.google + shakker.ai.',
+    ));
+    banner.appendChild(el('button', {
+      class: 'btn btn-close',
+      onclick: () => banner.classList.add('hidden'),
+    }, '✕'));
+  } catch (e) {
+    console.warn('maybeShowUpdateNotice error:', e);
+  }
+}
+
 function setupWS() {
   ws.start();
   ws.on('_connected', () => {
@@ -298,6 +372,10 @@ function setupWS() {
     showSessionDeadBanner(d || {});
     toast(`Session ${d?.email || ''} hết hạn — login lại trong tab Tài Khoản`, 'error', 10000);
   });
+  // Shakker account pool → keep the topbar power chip live.
+  ws.on('shakker_account_synced', refreshShakkerPower);
+  ws.on('shakker_account_updated', refreshShakkerPower);
+  ws.on('shakker_account_deleted', refreshShakkerPower);
 }
 
 async function checkForUpdate() {
@@ -569,7 +647,11 @@ async function init() {
     // and the user can still try to use OpenCV features.
   }
 
-  await Promise.all([refreshAccounts(), loadSettings()]);
+  await Promise.all([refreshAccounts(), loadSettings(), refreshShakkerPower()]);
+
+  // After an update, remind the user to reload the Chrome extension (Chrome
+  // doesn't hot-reload unpacked extensions — new manifest needs a manual ↻).
+  maybeShowUpdateNotice();
 
   // Auto-scan accounts (Flow credit + session) once per tool open. Runs after
   // settings + accounts are loaded so it can honour the auth_mode guard.
@@ -588,4 +670,4 @@ if (document.readyState === 'loading') {
   init();
 }
 
-window.__app = { store, navigate, refreshAccounts };
+window.__app = { store, navigate, refreshAccounts, refreshShakkerPower };

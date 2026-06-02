@@ -263,6 +263,8 @@ Sidebar → **Hệ Thống → Cài Đặt**.
 - Bấm **"Tải xuống & cài đặt"** → tool tự tải zip, giải nén, cài đè và khởi động lại.
 - **`data\` và `outputs\` được giữ nguyên** → tài khoản, cài đặt, ảnh/video đã tạo không mất.
 
+> ⚠️ **Sau khi cập nhật: reload lại Extension.** Bản cập nhật có thể kèm extension mới, nhưng Chrome **không tự nạp lại** extension đã "Load unpacked". Vào `chrome://extensions/` → tìm **"RedOne Auth Helper"** → bấm nút **↻ Reload** → kiểm tra version đã lên đúng → rồi refresh lại tab **labs.google** và **shakker.ai**. (Tool sẽ tự hiện banner nhắc việc này sau mỗi lần cập nhật.)
+
 ---
 
 ## 12. Lỗi thường gặp

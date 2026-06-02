@@ -18,6 +18,31 @@ export function renderAccounts(root) {
   const grid = el('div', { class: 'account-grid' });
   root.appendChild(grid);
 
+  // ── Shakker accounts section ──
+  root.appendChild(el('div', {
+    style: {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      flexWrap: 'wrap', gap: '8px', margin: '28px 0 12px',
+      borderTop: '1px solid var(--border)', paddingTop: '20px',
+    },
+  },
+    el('div', null,
+      el('h3', { style: { margin: 0, fontSize: '16px' } }, 'Tài khoản Shakker'),
+      el('div', { class: 'field-help', style: { margin: '2px 0 0' } },
+        'Tự thêm khi đăng nhập shakker.ai trong Chrome (qua extension). '
+        + 'Khi báo "Hết phiên" → mở lại shakker.ai để extension đồng bộ token mới.'),
+    ),
+    el('div', { style: { display: 'flex', gap: '8px' } },
+      el('button', { class: 'btn btn-sm btn-ghost',
+        onclick: () => window.open('https://www.shakker.ai/', '_blank') },
+        icon('upload', 14), 'Mở shakker.ai'),
+      el('button', { class: 'btn btn-sm', onclick: () => checkAllShakker() },
+        icon('refresh', 14), 'Check Shakker'),
+    ),
+  ));
+  const shakkerGrid = el('div', { class: 'account-grid' });
+  root.appendChild(shakkerGrid);
+
   function renderStats() {
     clear(stats);
     const accs = store.accounts || [];
@@ -231,8 +256,93 @@ export function renderAccounts(root) {
     } catch (e) { toast(e.message, 'error'); }
   }
 
+  // ── Shakker account management ──
+  function renderShakkerGrid(accts) {
+    clear(shakkerGrid);
+    if (!accts.length) {
+      shakkerGrid.appendChild(el('div', { class: 'empty', style: { gridColumn: '1 / -1' } },
+        el('div', { class: 'empty-icon' }, icon('image', 32)),
+        el('div', null, 'Chưa có tài khoản Shakker. Mở shakker.ai trong Chrome (đã cài extension) và đăng nhập — tài khoản sẽ tự xuất hiện.'),
+      ));
+      return;
+    }
+    accts.forEach(a => {
+      const enabled = !!a.enabled;
+      const statusMap = {
+        OK: ['chip-green', 'Hoạt động'],
+        TOKEN_EXPIRED: ['chip-red', 'Hết phiên'],
+        ERROR: ['chip-yellow', a.status_msg || 'Lỗi'],
+      };
+      const [chipCls, chipTxt] = statusMap[a.status]
+        || (a.has_token ? ['chip-yellow', 'Chưa kiểm tra'] : ['chip-red', 'Chưa có token']);
+      const card = el('div', { class: 'account-card', style: enabled ? {} : { opacity: '0.55' } },
+        el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center' } },
+          el('div', { class: 'account-avatar' }, (a.email || 'S')[0].toUpperCase()),
+          el('div', { style: { flex: 1, minWidth: 0 } },
+            el('div', { class: 'account-email' }, a.email || '(tài khoản Shakker)'),
+            el('div', { class: 'account-meta' },
+              el('span', null, `${(a.usable_power || 0).toLocaleString('vi-VN')} power`),
+              el('span', { style: { margin: '0 6px' } }, '•'),
+              el('span', { class: `chip ${chipCls}` }, chipTxt),
+            ),
+          ),
+          el('label', { class: 'toggle' },
+            el('input', {
+              type: 'checkbox', ...(enabled ? { checked: 'true' } : {}),
+              onchange: () => api.shakkerAccounts.toggle(a.id).then(loadShakker).catch(e => toast(e.message, 'error')),
+            }),
+            el('span', { class: 'toggle-track' }),
+          ),
+        ),
+        el('div', { class: 'account-meta', style: { marginTop: '8px' } },
+          `${a.tier || 'FREE'} · đã dùng ${(a.used_power || 0).toLocaleString('vi-VN')}`
+          + (a.last_check_at ? ` · ${String(a.last_check_at).replace('T', ' ')}` : '')),
+        el('div', { class: 'account-actions' },
+          el('button', { class: 'btn btn-sm btn-ghost', onclick: () => checkOneShakker(a.id) },
+            icon('refresh', 14), 'Check'),
+          el('button', { class: 'btn btn-sm btn-danger', onclick: () => deleteShakker(a) },
+            icon('trash', 14)),
+        ),
+      );
+      shakkerGrid.appendChild(card);
+    });
+  }
+
+  async function loadShakker() {
+    try {
+      const r = await api.shakkerAccounts.list();
+      renderShakkerGrid(r.accounts || []);
+      if (window.__app && window.__app.refreshShakkerPower) window.__app.refreshShakkerPower();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function checkOneShakker(id) {
+    try {
+      toast('Đang kiểm tra Shakker...', 'info');
+      await api.shakkerAccounts.check(id);
+      await loadShakker();
+      toast('Đã kiểm tra', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function checkAllShakker() {
+    try {
+      toast('Đang kiểm tra tất cả Shakker...', 'info');
+      await api.shakkerAccounts.checkAll();
+      await loadShakker();
+      toast('Xong', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function deleteShakker(a) {
+    if (!await confirm(`Xóa tài khoản Shakker "${a.email || a.id}"?`, 'Xác nhận')) return;
+    try {
+      await api.shakkerAccounts.del(a.id);
+      toast('Đã xóa', 'success');
+      await loadShakker();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   // Initial load
   renderStats();
   renderGrid();
   reload();
+  loadShakker();
 }
