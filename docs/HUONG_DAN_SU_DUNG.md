@@ -3,7 +3,7 @@
 > Tool tạo **ảnh & video AI** cho nội bộ RedOne:
 > **Google Flow** (Veo 3.1 + Nano Banana) và **Shakker.ai** (Stable Diffusion + LoRA).
 >
-> **Phiên bản:** v1.2.0 · **Hệ điều hành:** Windows 10/11
+> **Phiên bản:** v1.2.1 · **Hệ điều hành:** Windows 10/11
 
 ---
 

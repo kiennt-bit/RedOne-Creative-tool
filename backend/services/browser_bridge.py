@@ -94,6 +94,10 @@ class BrowserBridge:
         self._in_flight: dict[str, _BridgeTask] = {}
         # Extension liveness tracking
         self._ext_last_poll: float = 0.0
+        # Last time ANY instance reported a signed-in labs.google tab. With the
+        # extension installed in several Chrome profiles (all polling the same
+        # localhost backend), only the profile holding the tab reports "ready".
+        self._ext_last_ready_poll: float = 0.0
         self._ext_last_status: str = "unknown"  # "ready" | "no_tab" | "no_login" | "unknown"
         self._ext_last_url: str = ""
 
@@ -105,6 +109,8 @@ class BrowserBridge:
         self._ext_last_poll = time.time()
         self._ext_last_status = status or "unknown"
         self._ext_last_url = url or ""
+        if status == "ready":
+            self._ext_last_ready_poll = time.time()
 
     def bump_liveness(self) -> None:
         """Refresh the 'extension is alive' timestamp WITHOUT touching
@@ -116,6 +122,13 @@ class BrowserBridge:
 
     def is_extension_live(self) -> bool:
         return (time.time() - self._ext_last_poll) < EXT_LIVE_THRESHOLD_S
+
+    def is_ready_extension_live(self) -> bool:
+        """True if an instance WITH a signed-in labs.google tab polled recently.
+        Distinguishes 'an extension is connected' from 'an extension that can
+        actually run Flow tasks is connected' — needed when the extension is
+        loaded in multiple profiles and only one holds the labs.google tab."""
+        return (time.time() - self._ext_last_ready_poll) < EXT_LIVE_THRESHOLD_S
 
     def snapshot_state(self) -> dict:
         return {
@@ -130,13 +143,24 @@ class BrowserBridge:
 
     # ── Extension-facing (called from routers/sync.py) ──────────────
 
-    async def pop_task_for_extension(self, timeout: float = 0.0) -> Optional[_BridgeTask]:
+    async def pop_task_for_extension(self, timeout: float = 0.0,
+                                     tab_status: str = "ready") -> Optional[_BridgeTask]:
         """Extension polls; we hand it the next pending task, or None.
 
         `timeout=0.0` returns immediately if queue is empty (matches the
-        extension's short-poll model). We can extend to long-poll later
-        by passing a positive timeout.
+        extension's short-poll model).
+
+        CAPABILITY GATE: only an instance reporting `tab_status == "ready"`
+        (a signed-in labs.google tab) may claim a task. The extension can be
+        installed in MULTIPLE Chrome profiles — every profile's service worker
+        polls this SAME localhost backend. A profile without a labs.google tab
+        reports "no_tab"/"no_login"; if it claimed a task it would fail
+        mid-flight with "no labs.google tab". Returning None leaves the task
+        queued for the profile that actually holds the tab. This is what lets
+        the extension live in several profiles without errors.
         """
+        if tab_status and tab_status != "ready":
+            return None
         try:
             if timeout > 0:
                 task = await asyncio.wait_for(self._pending.get(), timeout=timeout)
@@ -177,6 +201,16 @@ class BrowserBridge:
             raise BridgeExtensionOfflineError(
                 "Extension chưa kết nối. Mở Chrome có cài 'RedOne Auth Helper' "
                 "+ tab labs.google đã đăng nhập."
+            )
+        # An extension is polling, but does any instance actually hold a
+        # signed-in labs.google tab? If not — and nothing is mid-flight (which
+        # would mean a ready instance is just busy) — fail fast with a clear
+        # message instead of letting the task sit unclaimed until TASK_TTL_S.
+        if not self.is_ready_extension_live() and not self._in_flight:
+            raise BridgeExtensionOfflineError(
+                "Đã thấy extension nhưng CHƯA có tab labs.google đã đăng nhập. "
+                "Trong Chrome (profile có 'RedOne Auth Helper'): mở tab "
+                "https://labs.google/fx/tools/flow, đăng nhập, ghim tab, rồi gen lại."
             )
         task = _BridgeTask(id=uuid.uuid4().hex, kind=kind, payload=payload)
         await self._pending.put(task)

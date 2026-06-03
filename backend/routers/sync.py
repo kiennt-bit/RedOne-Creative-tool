@@ -136,7 +136,10 @@ async def next_task(
     """
     from ..services.browser_bridge import bridge
     bridge.update_tab_state(tab_status, tab_url)
-    task = await bridge.pop_task_for_extension(timeout=0.0)
+    # Pass tab_status so the bridge only hands tasks to a "ready" instance
+    # (signed-in labs.google tab). Lets the extension run in multiple Chrome
+    # profiles — the ones without the tab poll harmlessly and claim nothing.
+    task = await bridge.pop_task_for_extension(timeout=0.0, tab_status=tab_status)
     if task is None:
         return {"task": None}
     return envelope({"task": task.to_dict()})

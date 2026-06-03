@@ -79,61 +79,78 @@ class BridgeFlowClient(FlowClient):
         """Fetch `ya29.*` Bearer token via the extension. The /fx/api/auth/session
         endpoint is same-origin with labs.google (the user's tab), so the
         proxy_fetch carries valid cookies and returns the NextAuth session.
+
+        A `status == 0` reply means the extension couldn't even run the fetch —
+        almost always because the labs.google tab was momentarily not found
+        (Chrome discarded it via Memory Saver, it was navigating/redirecting,
+        or the MV3 service worker had just woken). That's TRANSIENT, so we
+        retry a few times before declaring the session dead — otherwise a
+        split-second blip disables the account + pops the red banner even
+        though the user IS logged in (the "thi thoảng Session hết hạn" bug).
         """
         log.info(f"[{self._account_email}] (bridge) fetching NextAuth session...")
-        try:
-            r = await bridge.proxy_fetch(
-                url="https://labs.google/fx/api/auth/session",
-                method="GET",
-                headers={"Accept": "application/json"},
-                response_mode="json",
-                timeout_ms=15000,
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                r = await bridge.proxy_fetch(
+                    url="https://labs.google/fx/api/auth/session",
+                    method="GET",
+                    headers={"Accept": "application/json"},
+                    response_mode="json",
+                    timeout_ms=15000,
+                )
+            except BridgeExtensionOfflineError as e:
+                raise SessionDeadError(self._account_email, str(e))
+
+            status = r.get("status", 0)
+            body = r.get("body")
+            err = r.get("error")
+
+            log.info(
+                f"[{self._account_email}] (bridge) auth/session response "
+                f"(attempt {attempt}/{attempts}): status={status} error={err!r} "
+                f"body_type={type(body).__name__} body_preview={str(body)[:200]!r}"
             )
-        except BridgeExtensionOfflineError as e:
-            raise SessionDeadError(self._account_email, str(e))
 
-        status = r.get("status", 0)
-        body = r.get("body")
-        err = r.get("error")
+            if status == 200 and isinstance(body, dict) and body.get("access_token"):
+                self._token = body["access_token"]
+                log.info(f"[{self._account_email}] (bridge) got token ya29...{self._token[-8:]}")
+                return
 
-        # Log everything the extension gave us — invaluable for diagnosing
-        # "why does this say not logged in when I am?" cases.
-        log.info(
-            f"[{self._account_email}] (bridge) auth/session response: "
-            f"status={status} error={err!r} body_type={type(body).__name__} "
-            f"body_preview={str(body)[:200]!r}"
-        )
+            # status=0 → extension couldn't fetch (labs.google tab momentarily
+            # missing/discarded/navigating). TRANSIENT → wait + retry.
+            if status == 0 and attempt < attempts:
+                log.warning(
+                    f"[{self._account_email}] (bridge) auth/session transient "
+                    f"(status=0, {err or 'no detail'}) — retry {attempt}/{attempts}…"
+                )
+                await asyncio.sleep(1.0 * attempt)
+                continue
+            if status == 0:
+                raise SessionDeadError(
+                    self._account_email,
+                    f"Extension không fetch được /fx/api/auth/session ({err or 'no detail'}) "
+                    f"sau {attempts} lần thử. Kiểm tra: chrome://extensions có 'RedOne Auth Helper' "
+                    "+ popup 3 dòng xanh + tab labs.google/fx đang mở, đã đăng nhập, và ĐỪNG để "
+                    "Chrome 'ngủ' (discard) tab đó.",
+                )
 
-        if status == 200 and isinstance(body, dict) and body.get("access_token"):
-            self._token = body["access_token"]
-            log.info(f"[{self._account_email}] (bridge) got token ya29...{self._token[-8:]}")
-            return
+            # 200 OK but no access_token = page returned but user signed out.
+            # 404 = labs.google has no NextAuth session for current Chrome user.
+            # These are NOT transient → fail fast.
+            if status == 404 or (status == 200 and not (isinstance(body, dict) and body.get("access_token"))):
+                raise SessionDeadError(
+                    self._account_email,
+                    "Chưa đăng nhập Google trong Chrome thật (không phải Cloak). "
+                    "Mở tab https://labs.google/fx/tools/flow trong Chrome thật, "
+                    "click Sign in, chọn account Google. Sau đó retry task.",
+                )
 
-        # status=0 means the extension itself couldn't fetch (no labs tab,
-        # executeScript failed, etc.) — surface ext error verbatim.
-        if status == 0:
+            log.error(f"[{self._account_email}] (bridge) token fetch failed: HTTP {status} {body}")
             raise SessionDeadError(
                 self._account_email,
-                f"Extension không fetch được /fx/api/auth/session ({err or 'no detail'}). "
-                "Verify: chrome://extensions có 'RedOne Auth Helper' + popup hiện 3 dòng xanh + "
-                "tab labs.google/fx đã đăng nhập.",
+                f"Không lấy được session token (HTTP {status}, error: {err}). Login lại trong Chrome.",
             )
-
-        # 200 OK but no access_token = page returned but user signed out.
-        # 404 = labs.google has no NextAuth session for current Chrome user.
-        if status == 404 or (status == 200 and not (isinstance(body, dict) and body.get("access_token"))):
-            raise SessionDeadError(
-                self._account_email,
-                "Chưa đăng nhập Google trong Chrome thật (không phải Cloak). "
-                "Mở tab https://labs.google/fx/tools/flow trong Chrome thật, "
-                "click Sign in, chọn account Google. Sau đó retry task.",
-            )
-
-        log.error(f"[{self._account_email}] (bridge) token fetch failed: HTTP {status} {body}")
-        raise SessionDeadError(
-            self._account_email,
-            f"Không lấy được session token (HTTP {status}, error: {err}). Login lại trong Chrome.",
-        )
 
     async def renew_token(self):
         """Force a fresh /fx/api/auth/session. No page reload needed —

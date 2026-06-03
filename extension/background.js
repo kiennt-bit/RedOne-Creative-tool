@@ -168,24 +168,34 @@ async function _findShakkerTab() {
  * the email in the top-right menu when signed in.
  */
 async function _findLabsTab() {
-    try {
-        const tabs = await chrome.tabs.query({});
-        const labsTabs = tabs.filter(t =>
-            t.url
-            && t.url.includes("labs.google")
-            && !t.url.includes("accounts.google.com")
-        );
-        if (labsTabs.length === 0) return null;
-        // Prefer /fx/tools/flow tabs since they have reCAPTCHA loaded
-        const ranked = labsTabs.sort((a, b) => {
-            const aw = a.url.includes("/fx/tools/flow") ? 0 : 1;
-            const bw = b.url.includes("/fx/tools/flow") ? 0 : 1;
-            return aw - bw;
-        });
-        return ranked[0];
-    } catch (_) {
-        return null;
+    // Retry a few times: a labs.google tab can momentarily be invisible to
+    // chrome.tabs.query while it's navigating/redirecting, freshly discarded by
+    // Chrome's Memory Saver, or right when the MV3 service worker wakes up.
+    // Returning null too eagerly here makes the backend declare the account's
+    // session "dead" on a split-second blip — the intermittent bug.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const tabs = await chrome.tabs.query({});
+            const labsTabs = tabs.filter(t => {
+                // During navigation `url` may be empty but `pendingUrl` holds
+                // the target — accept either.
+                const u = t.url || t.pendingUrl || "";
+                return u.includes("labs.google") && !u.includes("accounts.google.com");
+            });
+            if (labsTabs.length > 0) {
+                // Rank: non-discarded first, then a Flow tab (reCAPTCHA loaded).
+                // Match "/tools/flow" (locale-agnostic) — real URLs include a
+                // locale segment, e.g. /fx/vi/tools/flow, /fx/en/tools/flow.
+                const score = (t) => {
+                    const u = t.url || t.pendingUrl || "";
+                    return (t.discarded ? 2 : 0) + (u.includes("/tools/flow") ? 0 : 1);
+                };
+                return labsTabs.sort((a, b) => score(a) - score(b))[0];
+            }
+        } catch (_) { /* fall through to retry */ }
+        await new Promise(r => setTimeout(r, 300));
     }
+    return null;
 }
 
 /**
