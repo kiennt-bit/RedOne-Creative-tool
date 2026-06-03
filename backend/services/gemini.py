@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -52,6 +53,70 @@ def _client() -> Optional["genai.Client"]:
     return genai.Client(api_key=key)
 
 
+# Media over this size (or ANY video) must go through the Gemini Files API
+# rather than inline base64 bytes (Gemini caps a single request at ~20MB).
+_INLINE_LIMIT = 18 * 1024 * 1024
+
+
+def _guess_mime(path: Path) -> str:
+    """Real mime from file extension. Critical: the YouTube analyzer feeds a
+    downloaded .mp4 here — labelling it image/jpeg (the old behaviour) made
+    Gemini reply 400 'Unable to process input image'."""
+    ext = path.suffix.lower()
+    table = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic",
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+        ".mov": "video/quicktime", ".mkv": "video/x-matroska",
+        ".avi": "video/x-msvideo", ".mpeg": "video/mpeg",
+    }
+    if ext in table:
+        return table[ext]
+    guessed, _ = mimetypes.guess_type(str(path))
+    return guessed or "image/jpeg"
+
+
+async def _build_media_part(client, img):
+    """Build a Gemini content part for an image OR video input.
+
+    - raw bytes → inline JPEG (only image-describe callers pass bytes)
+    - small image file → inline bytes with the CORRECT mime
+    - video file OR file > ~18MB → upload via the Files API and wait until it
+      finishes processing (required for video; also bypasses the inline cap)
+    Returns None if it can't be built.
+    """
+    if not isinstance(img, (str, Path)):
+        return gtypes.Part.from_bytes(data=img, mime_type="image/jpeg")
+
+    path = Path(img)
+    mime = _guess_mime(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+
+    if mime.startswith("video/") or size > _INLINE_LIMIT:
+        def _upload_and_wait():
+            f = client.files.upload(file=str(path))
+            import time as _t
+            waited = 0.0
+            # Video needs server-side processing before it's usable.
+            while getattr(getattr(f, "state", None), "name", "") == "PROCESSING" and waited < 90:
+                _t.sleep(2.0)
+                waited += 2.0
+                f = client.files.get(name=f.name)
+            return f
+        try:
+            return await asyncio.to_thread(_upload_and_wait)
+        except Exception as e:
+            log.warning(f"Gemini Files API upload failed ({e}); trying inline fallback")
+            if size <= _INLINE_LIMIT:
+                return gtypes.Part.from_bytes(data=path.read_bytes(), mime_type=mime)
+            raise
+
+    return gtypes.Part.from_bytes(data=path.read_bytes(), mime_type=mime)
+
+
 async def generate_text(
     prompt: str,
     *,
@@ -71,14 +136,9 @@ async def generate_text(
     parts: list[Any] = [prompt]
     if images:
         for img in images:
-            if isinstance(img, (str, Path)):
-                data = Path(img).read_bytes()
-            else:
-                data = img
-            parts.append(gtypes.Part.from_bytes(
-                data=data,
-                mime_type="image/jpeg",
-            ))
+            part = await _build_media_part(client, img)
+            if part is not None:
+                parts.append(part)
 
     fallback_log = []
     last_err: Optional[Exception] = None

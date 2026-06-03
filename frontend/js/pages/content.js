@@ -9,11 +9,12 @@ import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeIt
 const form = {
   mode: 't2v',
   prompts: [''],
-  quality: 'fast',
+  quality: 'lite_lp',   // mặc định: Veo 3.1 Lite [Lower Priority] — miễn phí
   aspect: '16:9',
   resolution: '720p',
   duration: 8,
   concurrent: 1,
+  loop: false,        // I2V "Loop video": dùng cùng 1 ảnh làm khung đầu + khung cuối
   taskName: '',
   // Per-prompt reference images (I2V): same index as prompts
   //   refs[i] = { path, previewUrl, name } | null
@@ -133,6 +134,28 @@ export function renderContent(root) {
                 id: 'cnt-image-file', style: { display: 'none' } }),
             ),
             el('div', { id: 'cnt-ref-pairing', style: { marginTop: '8px' } }),
+            // Loop video (I2V only) — reuse the SAME image as first + last
+            // frame. Lives inside #i2v-image-block → auto-hidden in T2V mode.
+            el('label', {
+              style: {
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: '12px', marginTop: '12px', padding: '10px 12px',
+                border: '1px solid var(--border)', borderRadius: 'var(--r-md)',
+                background: 'var(--bg-2)', cursor: 'pointer',
+              },
+            },
+              el('div', { style: { lineHeight: '1.35' } },
+                el('div', { style: { fontWeight: 600, fontSize: '13px' } }, 'Loop video'),
+                el('div', { class: 'field-help', style: { margin: 0 } },
+                  'Frame đầu và frame cuối giống nhau.'),
+              ),
+              el('span', { class: 'toggle' },
+                el('input', { type: 'checkbox', id: 'cnt-loop',
+                  ...(form.loop ? { checked: 'true' } : {}),
+                  onchange: (e) => { form.loop = e.target.checked; } }),
+                el('span', { class: 'toggle-track' }),
+              ),
+            ),
           ),
           el('div', { class: 'field-group' },
             el('label', { class: 'field-label' }, 'Số luồng song song'),
@@ -146,8 +169,6 @@ export function renderContent(root) {
               icon('stop'), el('span', null, 'Hủy'),
             ),
           ),
-          el('div', { class: 'field-help', style: { marginTop: '12px' } },
-            'Bấm sang trang khác rồi quay lại sẽ KHÔNG mất tiến độ.'),
         ),
       ),
       // RIGHT
@@ -731,6 +752,7 @@ export function renderContent(root) {
         duration: form.duration,
         concurrent: form.concurrent,
         reference_images: ref_images,
+        loop: form.mode === 'i2v' && form.loop,   // chỉ I2V mới loop được
         task_name: form.taskName || defaultTaskName('video'),
       });
       tasksStore.register(res.task_id, 'content', {

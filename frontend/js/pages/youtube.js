@@ -2,8 +2,11 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → survives SPA tab navigation. renderYoutube() restores
+// the storyboard + inputs from here, so switching tabs no longer wipes results.
+const state = { mode: 'url', scenes: [], modelUsed: null, lastData: null, inputs: {} };
+
 export function renderYoutube(root) {
-  const state = { mode: 'url', scenes: [], modelUsed: null, log: [] };
 
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('sparkles', 28)),
@@ -137,6 +140,8 @@ export function renderYoutube(root) {
       }
       state.scenes = data.scenes || [];
       state.modelUsed = data.model_used;
+      state.lastData = data;
+      _saveInputs();
       renderBanner(data);
       renderScenes(state.scenes);
       root.querySelector('#yt-status').textContent = `Đã sinh ${state.scenes.length} cảnh`;
@@ -171,16 +176,16 @@ export function renderYoutube(root) {
     clear(wrap);
     const grid = el('div', { class: 'scene-grid' });
     scenes.forEach((sc, i) => {
-      const card = el('div', { class: 'scene-card' },
-        el('div', { class: 'scene-thumb' },
-          el('div', { class: 'scene-number' }, `#${sc.scene || i + 1}`),
-          el('div', { style: { color: 'var(--text-faint)', fontSize: '12px' } }, sc.shot || ''),
-        ),
+      const card = el('div', { class: 'scene-card sb-card' },
         el('div', { class: 'scene-info' },
-          el('div', { class: 'scene-meta' },
-            sc.shot ? el('span', { class: 'chip chip-blue' }, sc.shot) : null,
-            sc.camera ? el('span', { class: 'chip chip-purple' }, sc.camera) : null,
+          el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+            el('span', { class: 'sb-num' }, `Cảnh ${sc.scene || i + 1}`),
+            el('div', { class: 'scene-meta', style: { margin: 0 } },
+              sc.shot ? el('span', { class: 'chip chip-blue' }, sc.shot) : null,
+              sc.camera ? el('span', { class: 'chip chip-purple' }, sc.camera) : null,
+            ),
           ),
+          sc.narration ? el('div', { class: 'sb-narration' }, `"${sc.narration}"`) : null,
           el('div', { class: 'scene-prompt' }, sc.prompt || sc.narration || ''),
           el('div', { class: 'scene-actions' },
             el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy prompt', onclick: () => {
@@ -239,4 +244,40 @@ export function renderYoutube(root) {
     window.__app.navigate('content');
     toast(`Đã chuyển ${prompts.length} prompts`, 'success');
   }
+
+  function _saveInputs() {
+    state.inputs = {
+      url: root.querySelector('#yt-url')?.value || '',
+      style: root.querySelector('#yt-style')?.value || '',
+      stylelock: root.querySelector('#yt-stylelock')?.value || '',
+      max: root.querySelector('#yt-max')?.value || '12',
+      quick: !!root.querySelector('#yt-quick')?.checked,
+      mode: state.mode,
+    };
+  }
+
+  // Restore inputs + storyboard after returning to this tab (state is
+  // module-level so the previous analysis isn't lost on navigation).
+  (function _restore() {
+    const inp = state.inputs || {};
+    const set = (id, v) => { const e = root.querySelector(id); if (e && v != null) e.value = v; };
+    set('#yt-url', inp.url);
+    set('#yt-style', inp.style);
+    set('#yt-stylelock', inp.stylelock);
+    set('#yt-max', inp.max);
+    const q = root.querySelector('#yt-quick');
+    if (q && typeof inp.quick === 'boolean') q.checked = inp.quick;
+    if (inp.mode === 'upload') {
+      state.mode = 'upload';
+      root.querySelectorAll('.tab').forEach((t, idx) => t.classList.toggle('active', idx === 1));
+      root.querySelector('#yt-url-block').style.display = 'none';
+      root.querySelector('#yt-upload-block').style.display = 'block';
+    }
+    if (state.lastData) renderBanner(state.lastData);
+    if (state.scenes && state.scenes.length) {
+      renderScenes(state.scenes);
+      const st = root.querySelector('#yt-status');
+      if (st) st.textContent = `Đã sinh ${state.scenes.length} cảnh`;
+    }
+  })();
 }

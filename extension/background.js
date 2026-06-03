@@ -213,6 +213,34 @@ async function _isSignedIn() {
     }
 }
 
+// ── Task: read browser cookies for given domains ────────────────────
+// Used by the backend to feed yt-dlp YouTube auth without exporting a
+// cookies.txt by hand. chrome.cookies returns ALREADY-DECRYPTED cookies, so
+// this sidesteps yt-dlp's "could not copy Chrome cookie database" problem
+// (which fails while Chrome is running). Requires host_permissions for the
+// domains + the "cookies" permission (manifest).
+async function _doGetCookiesTask(task) {
+    const domains = (task.payload && task.payload.domains) || [".youtube.com", ".google.com"];
+    const out = [];
+    for (const d of domains) {
+        try {
+            const cks = await chrome.cookies.getAll({ domain: d });
+            for (const c of cks) {
+                out.push({
+                    domain: c.domain,
+                    name: c.name,
+                    value: c.value,
+                    path: c.path || "/",
+                    secure: !!c.secure,
+                    hostOnly: !!c.hostOnly,
+                    expirationDate: c.expirationDate || 0,
+                });
+            }
+        } catch (_) { /* skip this domain */ }
+    }
+    return { cookies: out, count: out.length };
+}
+
 
 // ── Task: reCAPTCHA harvest ──────────────────────────────────────────
 
@@ -430,6 +458,8 @@ async function _pollLoop() {
                     result = await _doRecaptchaTask(task);
                 } else if (task.kind === "proxy_fetch") {
                     result = await _doProxyFetchTask(task);
+                } else if (task.kind === "get_cookies") {
+                    result = await _doGetCookiesTask(task);
                 } else {
                     result = { error: `unknown task kind: ${task.kind}` };
                 }

@@ -134,7 +134,7 @@ export function renderSettings(root) {
       }
       root.querySelector('#st-folder').value = r.app.output_dir || '';
       root.querySelector('#st-aspect').value = s.default_aspect || '16:9';
-      root.querySelector('#st-quality').value = s.default_quality || 'fast';
+      root.querySelector('#st-quality').value = s.default_quality || 'lite_lp';
       const autosave = s.auto_save_outputs === undefined ? true : !!s.auto_save_outputs;
       root.querySelector('#st-autosave').checked = autosave;
       // Live extension status — poll once on load

@@ -276,6 +276,14 @@ class BrowserBridge:
         result = await self._enqueue_and_wait("proxy_fetch", payload)
         return result
 
+    async def get_cookies(self, domains: list[str]) -> dict:
+        """Ask the extension to read the user's Chrome cookies for `domains`
+        (via the chrome.cookies API → already decrypted, no DB-copy problem).
+        Used to auto-feed yt-dlp YouTube auth. Returns
+        {"cookies": [{domain,name,value,path,secure,hostOnly,expirationDate}], "count": N}.
+        """
+        return await self._enqueue_and_wait("get_cookies", {"domains": domains})
+
     async def proxy_fetch_binary(
         self,
         url: str,

@@ -14,6 +14,7 @@
   --border: #ececef;
   --border-strong: #e0e0e4;
   --border-soft: #f2f2f4;
+  --toggle-off: #cdd3dd;   /* off-state track of toggle switch */
 
   --text: #161618;
   --text-2: #2a2a2e;
@@ -88,6 +89,7 @@
   --border: #21252c;
   --border-strong: #2a2e36;
   --border-soft: #1d2027;
+  --toggle-off: #3a3f49;   /* off-state track of toggle switch (dark) */
 
   --text: #ececef;
   --text-2: #c8c8cc;

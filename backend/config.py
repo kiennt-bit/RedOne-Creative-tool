@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -155,6 +155,25 @@ EXTEND_MODEL_MAP = {
     "quality": "veo_3_1_extension_t2v",
     "lite_lp": "veo_3_1_extension_lite_low_priority",
 }
+
+# Interpolation (first-frame + last-frame → video) model keys. Used by the
+# I2V "Loop video" feature: same image as startImage AND endImage → a clip
+# that ends where it started. Endpoint: video:batchAsyncGenerateVideoStartAndEndImage.
+#   CONFIRMED via labs.google HAR capture: lite_lp = veo_3_1_interpolation_lite_low_priority.
+#   Other tiers follow the same naming pattern as T2V/I2V (best-guess until
+#   captured); fall back to the confirmed lite_lp key on any miss.
+INTERPOLATION_MODEL_MAP = {
+    "lite_lp": "veo_3_1_interpolation_lite_low_priority",   # CONFIRMED
+    "lite":    "veo_3_1_interpolation_lite",                # guess
+    "fast":    "veo_3_1_interpolation_fast_ultra",          # guess
+    "quality": "veo_3_1_interpolation",                     # guess
+}
+
+
+def interpolation_model_for(quality: str) -> str:
+    """Model key for first+last-frame interpolation (Loop video). Omni Flash
+    has no interpolation variant → falls back to the free lite_lp key."""
+    return INTERPOLATION_MODEL_MAP.get(quality, INTERPOLATION_MODEL_MAP["lite_lp"])
 
 # Allowed duration options (seconds) per model preset.
 #

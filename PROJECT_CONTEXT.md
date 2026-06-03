@@ -2,7 +2,7 @@
 
 > **Mục đích file này**: tóm tắt toàn bộ kiến trúc + quyết định + lịch sử để mở session AI mới (hoặc onboard dev mới) mà không mất context. Đọc file này + xem code = hiểu hệ thống.
 >
-> **Cập nhật lần cuối**: 2026-06-03 · phiên bản hiện tại **v1.2.1**
+> **Cập nhật lần cuối**: 2026-06-03 · phiên bản hiện tại **v1.2.2**
 
 ---
 
@@ -232,7 +232,8 @@ Migration idempotent: `_add_column_if_missing(...)` chạy mỗi boot.
 | v1.0.x | Web app cơ bản: Veo 3.1 + Nano Banana, sequential queue, multi-account, Playwright |
 | v1.1.x | Chrome Extension Bridge (giảm 403), Vertex AI commercial mode, OAuth gate @redone.vn, batch cooldown |
 | v1.2.0 | **Ảnh Shakker** (model + multi-LoRA + img2img + bulk). **Gỡ Vertex AI + Playwright/Cloak** → chỉ còn Extension Bridge. **Queue song song** Flow ⇄ Shakker. Viết lại toàn bộ thông báo lỗi. OAuth chuyển project mới (project cũ bị Google suspend). |
-| **v1.2.1 (current)** | Quản lý tài khoản Shakker dời sang tab **Tài Khoản** + chip "Tín dụng Shakker" trên topbar (auto-scan khi login). Banner nhắc **reload extension** sau update. Sửa lỗi **"Session hết hạn" gián đoạn**: `_do_get_token` retry status=0 thay vì báo session-dead ngay. **Capability gate** (`browser_bridge.pop_task_for_extension` + `is_ready_extension_live`): extension chạy được ở **nhiều profile Chrome** — chỉ instance có tab labs.google (`tab_status="ready"`) nhận task. Extension manifest **1.2.1** (`_findLabsTab` retry 3× + khớp mọi locale `/vi/`,`/en/`). |
+| v1.2.1 | Quản lý tài khoản Shakker dời sang tab **Tài Khoản** + chip "Tín dụng Shakker" trên topbar (auto-scan khi login). Banner nhắc **reload extension** sau update. Sửa lỗi **"Session hết hạn" gián đoạn**: `_do_get_token` retry status=0 thay vì báo session-dead ngay. **Capability gate** (`browser_bridge.pop_task_for_extension` + `is_ready_extension_live`): extension chạy được ở **nhiều profile Chrome** — chỉ instance có tab labs.google (`tab_status="ready"`) nhận task. Extension `_findLabsTab` retry 3× + khớp mọi locale `/vi/`,`/en/`. |
+| **v1.2.2 (current)** | **Loop video** (I2V): cùng ảnh làm frame đầu+cuối → interpolation (endpoint `video:batchAsyncGenerateVideoStartAndEndImage`, model `veo_3_1_interpolation_*`). UI: toggle + card kết quả đẹp lại (toàn cục), card storyboard riêng cho analyzer (`.sb-card`, không ô ảnh), default video model = `lite_lp`. **YouTube→Prompt fix**: Gemini nhận video đúng (mime + Files API trong `gemini.py`), auto-harvest cookie YouTube qua extension (manifest **1.2.2** + task `get_cookies` + `bridge.get_cookies`), yt-dlp merge format + `player_client`. **State-persist** module-level cho 3 tab analyzer (youtube/script/image_prompt) + 4 tab Xử lý ảnh (bg_remove/watermark/upscale/batch_resize) — giữ input + kết quả khi chuyển tab. |
 
 ---
 

@@ -2,8 +2,10 @@
 import { el, clear, toast, setLoading, icon, modal } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → survives SPA tab navigation (restored on re-render).
+const state = { scenes: [], script: '', modelUsed: null, lastData: null, inputs: {} };
+
 export function renderScript(root) {
-  const state = { scenes: [], script: '', modelUsed: null };
 
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('sparkles', 28)),
@@ -107,6 +109,8 @@ export function renderScript(root) {
       });
       state.scenes = data.scenes || [];
       state.modelUsed = data.model_used;
+      state.lastData = data;
+      _saveInputs();
       renderBanner(data);
       renderScenes(state.scenes);
       root.querySelector('#sc-status').textContent = `${state.scenes.length} cảnh`;
@@ -144,18 +148,16 @@ export function renderScript(root) {
     ));
     const grid = el('div', { class: 'scene-grid' });
     scenes.forEach((sc, i) => {
-      const card = el('div', { class: 'scene-card' },
-        el('div', { class: 'scene-thumb' },
-          el('div', { class: 'scene-number' }, `Cảnh ${sc.scene || i + 1}`),
-          el('div', { style: { color: 'var(--text-faint)', fontSize: '12px', padding: '8px', textAlign: 'center' } },
-            sc.shot || ''),
-        ),
+      const card = el('div', { class: 'scene-card sb-card' },
         el('div', { class: 'scene-info' },
-          el('div', { class: 'scene-meta' },
-            sc.shot ? el('span', { class: 'chip chip-blue' }, sc.shot) : null,
-            sc.camera ? el('span', { class: 'chip chip-purple' }, sc.camera) : null,
+          el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+            el('span', { class: 'sb-num' }, `Cảnh ${sc.scene || i + 1}`),
+            el('div', { class: 'scene-meta', style: { margin: 0 } },
+              sc.shot ? el('span', { class: 'chip chip-blue' }, sc.shot) : null,
+              sc.camera ? el('span', { class: 'chip chip-purple' }, sc.camera) : null,
+            ),
           ),
-          sc.narration ? el('div', { style: { fontSize: '12px', color: 'var(--text)', fontStyle: 'italic' } }, `"${sc.narration}"`) : null,
+          sc.narration ? el('div', { class: 'sb-narration' }, `"${sc.narration}"`) : null,
           el('div', { class: 'scene-prompt' }, sc.prompt || ''),
           el('div', { class: 'scene-actions' },
             el('button', { class: 'btn btn-sm btn-ghost', onclick: () => {
@@ -196,4 +198,36 @@ export function renderScript(root) {
     window.__app.navigate('content');
     toast(`Đã chuyển ${prompts.length} prompts`, 'success');
   }
+
+  function _saveInputs() {
+    state.inputs = {
+      script: root.querySelector('#sc-script')?.value || '',
+      style: root.querySelector('#sc-style')?.value || '',
+      num: root.querySelector('#sc-num')?.value || '5',
+      auto: !!root.querySelector('#sc-auto')?.checked,
+      stylelock: root.querySelector('#sc-stylelock')?.value || '',
+      ctx: root.querySelector('#sc-ctx')?.value || '',
+      voice: root.querySelector('#sc-voice')?.value || 'female',
+    };
+  }
+
+  // Restore inputs + storyboard after returning to this tab.
+  (function _restore() {
+    const inp = state.inputs || {};
+    const set = (id, v) => { const e = root.querySelector(id); if (e && v != null) e.value = v; };
+    set('#sc-script', inp.script);
+    set('#sc-style', inp.style);
+    set('#sc-num', inp.num);
+    set('#sc-stylelock', inp.stylelock);
+    set('#sc-ctx', inp.ctx);
+    set('#sc-voice', inp.voice);
+    const a = root.querySelector('#sc-auto');
+    if (a && typeof inp.auto === 'boolean') a.checked = inp.auto;
+    if (state.lastData) renderBanner(state.lastData);
+    if (state.scenes && state.scenes.length) {
+      renderScenes(state.scenes);
+      const st = root.querySelector('#sc-status');
+      if (st) st.textContent = `${state.scenes.length} cảnh`;
+    }
+  })();
 }

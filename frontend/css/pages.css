@@ -209,12 +209,13 @@
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow: hidden;
-  transition: 0.15s;
   display: flex;
   flex-direction: column;
   box-shadow: var(--sh-card);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 .scene-card:hover {
+  transform: translateY(-2px);
   border-color: var(--border-strong);
   box-shadow: var(--sh-md);
 }
@@ -237,19 +238,17 @@
 }
 .scene-card .card-checkbox {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 10px;
+  right: 10px;
   z-index: 3;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   margin: 0;
   cursor: pointer;
   accent-color: var(--brand);
-  /* Drop shadow so it stays visible on any thumbnail color */
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
-  /* Slight white backdrop inside the box */
-  background: white;
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 5px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 [data-theme="dark"] .scene-card .card-checkbox {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
@@ -261,6 +260,16 @@
   display: grid; place-items: center;
   color: var(--text-faint);
 }
+/* Soft top scrim so the #N badge + checkbox stay readable on bright media */
+.scene-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 52px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.28), transparent);
+  pointer-events: none;
+  z-index: 1;
+}
 .scene-thumb video, .scene-thumb img {
   width: 100%; height: 100%;
   object-fit: cover;
@@ -268,41 +277,70 @@
 .scene-number {
   position: absolute;
   top: 10px; left: 10px;
-  background: var(--brand);
-  color: white;
+  z-index: 2;
+  background: rgba(17, 19, 22, 0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
   padding: 3px 9px;
   border-radius: var(--r-full);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   font-family: var(--font-mono);
-  box-shadow: var(--sh-red);
 }
 .scene-info {
-  padding: 14px;
+  padding: 12px 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
   flex: 1;
 }
 .scene-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+  align-items: center;
 }
 .scene-prompt {
   font-size: 12.5px;
   color: var(--text-dim);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.5;
 }
 .scene-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   margin-top: auto;
-  padding-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Storyboard (analyzer) prompt cards — no image thumb, text-focused.
+   Used by YouTube→Prompt + Ý Tưởng→Video where there's no media to show. */
+.sb-card .scene-info { gap: 10px; }
+.sb-card .scene-prompt { -webkit-line-clamp: 5; font-size: 13px; }
+.sb-num {
+  display: inline-block;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+.sb-narration {
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.5;
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
 }
 
 /* AI banner */

@@ -2,8 +2,11 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → survives SPA tab navigation (cleared only on F5).
+const _st = { file: null, resultUrl: null, note: null };
+
 export function renderUpscale(root) {
-  let file = null;
+  let file = _st.file;
 
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('sparkles', 28)),
@@ -51,11 +54,24 @@ export function renderUpscale(root) {
   const fi = root.querySelector('#up-file');
   dz.addEventListener('click', () => fi.click());
   fi.addEventListener('change', () => {
-    file = fi.files[0]; if (!file) return;
+    file = fi.files[0];
+    _st.file = file;
+    showPreview();
+  });
+  function showPreview() {
+    if (!file) return;
     const preview = root.querySelector('#up-preview');
     preview.innerHTML = '';
     preview.appendChild(el('img', { src: URL.createObjectURL(file), class: 'thumb', style: { maxHeight: '200px', objectFit: 'contain' } }));
-  });
+  }
+  function showResult(url, note) {
+    const out = root.querySelector('#up-result');
+    clear(out);
+    out.appendChild(el('img', { src: url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
+    if (note) out.appendChild(el('div', { class: 'field-help', style: { marginTop: '8px' } }, note));
+    out.appendChild(el('a', { href: url, download: '', class: 'btn btn-primary', style: { marginTop: '8px' } },
+      icon('download'), 'Tải về'));
+  }
 
   root.querySelector('#up-go').addEventListener('click', async () => {
     if (!file) return toast('Cần chọn ảnh', 'warning');
@@ -66,14 +82,14 @@ export function renderUpscale(root) {
       fd.append('file', file);
       fd.append('scale', root.querySelector('#up-scale').value);
       const r = await api.media.upscale(fd);
-      const out = root.querySelector('#up-result');
-      clear(out);
-      out.appendChild(el('img', { src: r.url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
-      if (r.note) out.appendChild(el('div', { class: 'field-help', style: { marginTop: '8px' } }, r.note));
-      out.appendChild(el('a', { href: r.url, download: '', class: 'btn btn-primary', style: { marginTop: '8px' } },
-        icon('download'), 'Tải về'));
+      _st.resultUrl = r.url; _st.note = r.note || null;
+      showResult(r.url, _st.note);
       toast('Đã upscale', 'success');
     } catch (e) { toast(e.message, 'error'); }
     finally { setLoading(btn, false); }
   });
+
+  // Restore preview + result after returning to this tab
+  if (file) showPreview();
+  if (_st.resultUrl) showResult(_st.resultUrl, _st.note);
 }

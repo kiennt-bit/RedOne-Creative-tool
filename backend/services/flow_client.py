@@ -844,6 +844,7 @@ class FlowClient:
         self,
         prompt: str,
         reference_image: Optional[str] = None,
+        end_image: Optional[str] = None,
         model_key: str = "veo_3_generate_video_fast",
         aspect_ratio: str = "LANDSCAPE",
         duration: int = 8,
@@ -885,7 +886,47 @@ class FlowClient:
             if not prompt or prompt.strip() == "":
                 prompt = "Static shot"
                 
-            if reference_image:
+            if reference_image and end_image:
+                # Loop / interpolation: first-frame + last-frame → video.
+                # When start == end (same mediaId) the clip loops back to its
+                # opening frame. Payload mirrors the T2V shape (per labs.google
+                # HAR) plus startImage + endImage.
+                ar_int = ("VIDEO_ASPECT_RATIO_PORTRAIT"
+                          if ("9:16" in str(aspect_ratio)
+                              or "PORTRAIT" in str(aspect_ratio).upper())
+                          else "VIDEO_ASPECT_RATIO_LANDSCAPE")
+                client_context = {
+                    "projectId": self.project_id,
+                    "tool": "PINHOLE",
+                    # HAR shows userPaygateTier present even for the
+                    # _low_priority interpolation model (unlike free T2V) —
+                    # replicate exactly so the validator accepts it.
+                    "userPaygateTier": "PAYGATE_TIER_TWO",
+                    "sessionId": f";{int(time.time() * 1000)}",
+                }
+                if recaptcha_token:
+                    client_context["recaptchaContext"] = {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                    }
+                payload = {
+                    "mediaGenerationContext": {
+                        "batchId": str(uuid.uuid4()),
+                        "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+                    },
+                    "clientContext": client_context,
+                    "requests": [{
+                        "aspectRatio": ar_int,
+                        "textInput": {"structuredPrompt": {"parts": [{"text": prompt}]}},
+                        "videoModelKey": model_key,
+                        "seed": random.randint(10000, 99999),
+                        "metadata": {},
+                        "startImage": {"mediaId": reference_image},
+                        "endImage": {"mediaId": end_image},
+                    }],
+                    "useV2ModelConfig": True,
+                }
+            elif reference_image:
                 request_item = {
                     "textInput": {
                         "structuredPrompt": {
@@ -971,7 +1012,12 @@ class FlowClient:
             if attempt == 0:
                 log.info(f"[{self._account_email}] Generating video: model={model_key}, ref={reference_image is not None}")
             
-            endpoint = "video:batchAsyncGenerateVideoStartImage" if reference_image else "video:batchAsyncGenerateVideoText"
+            if reference_image and end_image:
+                endpoint = "video:batchAsyncGenerateVideoStartAndEndImage"
+            elif reference_image:
+                endpoint = "video:batchAsyncGenerateVideoStartImage"
+            else:
+                endpoint = "video:batchAsyncGenerateVideoText"
             result = await self._browser_sandbox_request(endpoint, payload, is_text_plain=True)
             
             if "error" in result:

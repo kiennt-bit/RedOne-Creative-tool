@@ -114,8 +114,6 @@ export function renderImage(root) {
           icon('stop'), el('span', null, 'Hủy'),
         ),
       ),
-      el('div', { class: 'field-help', style: { marginTop: '12px' } },
-        'Bấm sang trang khác rồi quay lại sẽ KHÔNG mất tiến độ.'),
     ),
   );
   layout.appendChild(left);

@@ -4,8 +4,11 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → survives SPA tab navigation (cleared only on F5).
+const _st = { file: null, resultUrl: null };
+
 export function renderWatermark(root) {
-  let file = null;
+  let file = _st.file;
   let rect = { x: 0, y: 0, w: 0, h: 0 };
   let imageEl = null;
   let drawing = false;
@@ -65,6 +68,7 @@ export function renderWatermark(root) {
   dz.addEventListener('click', () => fi.click());
   fi.addEventListener('change', () => {
     file = fi.files[0];
+    _st.file = file;
     if (!file) return;
     showImage();
   });
@@ -174,14 +178,23 @@ export function renderWatermark(root) {
       fd.append('w', w); fd.append('h', h);
       fd.append('padding', root.querySelector('#wm-pad').value);
       const r = await api.media.watermark(fd);
-      const out = root.querySelector('#wm-result');
-      clear(out);
-      out.appendChild(el('h4', { style: { marginTop: 0 } }, 'Sau khi xóa'));
-      out.appendChild(el('img', { src: r.url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
-      out.appendChild(el('a', { href: r.url, download: '', class: 'btn btn-primary', style: { marginTop: '8px' } },
-        icon('download'), 'Tải về'));
+      _st.resultUrl = r.url;
+      showResult(r.url);
       toast('Đã xóa watermark', 'success');
     } catch (e) { toast(e.message, 'error'); }
     finally { setLoading(btn, false); }
   });
+
+  function showResult(url) {
+    const out = root.querySelector('#wm-result');
+    clear(out);
+    out.appendChild(el('h4', { style: { marginTop: 0 } }, 'Sau khi xóa'));
+    out.appendChild(el('img', { src: url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
+    out.appendChild(el('a', { href: url, download: '', class: 'btn btn-primary', style: { marginTop: '8px' } },
+      icon('download'), 'Tải về'));
+  }
+
+  // Restore source image (for redraw) + result after returning to this tab
+  if (file) showImage();
+  if (_st.resultUrl) showResult(_st.resultUrl);
 }

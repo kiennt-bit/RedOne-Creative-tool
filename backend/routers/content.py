@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..database import db
 from ..config import (
     OUTPUT_DIR, TaskStatus, ItemStatus, ASPECT_RATIOS, RESOLUTIONS,
-    video_model_for, get_save_dir, clamp_duration,
+    video_model_for, interpolation_model_for, get_save_dir, clamp_duration,
 )
 from ..ws_hub import hub
 from ..queue_manager import queue
@@ -33,6 +33,7 @@ class StartTaskRequest(BaseModel):
     concurrent: int = 1
     reference_images: Optional[list[str]] = None  # uploaded image paths
     character_images: Optional[dict] = None
+    loop: bool = False               # I2V "Loop video": reuse the image as first+last frame
     task_name: Optional[str] = None
 
 
@@ -183,13 +184,19 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
     try:
         ref_image_path = None
+        loop = False
         if item.get("extra_json"):
             extra = json.loads(item["extra_json"])
             ref_image_path = extra.get("reference_image")
+            loop = bool(extra.get("loop"))
         ref_media = None
         if ref_image_path and Path(ref_image_path).exists():
             ref_media = await client.upload_image(ref_image_path)
 
+        # "Loop video" only applies with a reference image — it reuses that
+        # image as BOTH first and last frame (interpolation) so the clip ends
+        # where it started. No ref image → nothing to loop.
+        loop = loop and bool(ref_media)
         mode = "i2v" if ref_media else "t2v"
         # Omni Flash doesn't support I2V yet — fall back to Veo 3.1 Lite [LP]
         # (free queue) when a ref image is set.
@@ -201,7 +208,11 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             )
             eff_quality = "lite_lp"
         duration_s = int(task.get("duration") or 8)
-        model_key = video_model_for(eff_quality, mode, duration_s)
+        if loop:
+            # Interpolation model (first+last frame). Omni Flash has none → lite_lp.
+            model_key = interpolation_model_for(eff_quality)
+        else:
+            model_key = video_model_for(eff_quality, mode, duration_s)
 
         done_state = None
         last_err = None
@@ -211,6 +222,7 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
                 model_key=model_key,
                 aspect_ratio=aspect,
                 reference_image=ref_media,
+                end_image=(ref_media if loop else None),   # same image → loop
                 duration=duration_s,
             )
             done_state = await client.wait_for_completion(workflow)
@@ -413,6 +425,8 @@ async def start_content_task(body: StartTaskRequest):
             ref = body.reference_images[i]
             if ref:
                 extra["reference_image"] = ref
+                if body.loop:
+                    extra["loop"] = True   # reuse this image as the last frame too
         db.add_task_item(task_id, p, extra=extra or None)
 
     position = await queue.enqueue("content", task_id, _process_task)

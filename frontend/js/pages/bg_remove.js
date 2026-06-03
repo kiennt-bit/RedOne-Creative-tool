@@ -2,8 +2,12 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → survives SPA tab navigation (file object + result URL
+// stay valid in memory; only a full browser refresh clears them).
+const _st = { file: null, resultUrl: null };
+
 export function renderBgRemove(root) {
-  let file = null;
+  let file = _st.file;
 
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('image', 28)),
@@ -60,11 +64,22 @@ export function renderBgRemove(root) {
   dz.addEventListener('click', () => fi.click());
   fi.addEventListener('change', () => {
     file = fi.files[0];
+    _st.file = file;
+    showPreview();
+  });
+  function showPreview() {
     if (!file) return;
     const preview = root.querySelector('#bg-preview');
     preview.innerHTML = '';
     preview.appendChild(el('img', { src: URL.createObjectURL(file), class: 'thumb', style: { maxHeight: '200px', objectFit: 'contain' } }));
-  });
+  }
+  function showResult(url) {
+    const out = root.querySelector('#bg-result');
+    clear(out);
+    out.appendChild(el('img', { src: url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
+    out.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
+      el('a', { href: url, download: '', class: 'btn btn-primary' }, icon('download'), 'Tải về')));
+  }
 
   root.querySelector('#bg-go').addEventListener('click', async () => {
     if (!file) return toast('Cần chọn ảnh', 'warning');
@@ -78,14 +93,14 @@ export function renderBgRemove(root) {
         fd.append('fill_color', root.querySelector('#bg-color').value);
       }
       const r = await api.media.bgRemove(fd);
-      const out = root.querySelector('#bg-result');
-      clear(out);
-      out.appendChild(el('img', { src: r.url, class: 'thumb', style: { maxHeight: '420px', objectFit: 'contain' } }));
-      out.appendChild(el('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
-        el('a', { href: r.url, download: '', class: 'btn btn-primary' }, icon('download'), 'Tải về'),
-      ));
+      _st.resultUrl = r.url;
+      showResult(r.url);
       toast('Đã tách nền', 'success');
     } catch (e) { toast(e.message, 'error'); }
     finally { setLoading(btn, false); }
   });
+
+  // Restore preview + result after returning to this tab
+  if (file) showPreview();
+  if (_st.resultUrl) showResult(_st.resultUrl);
 }

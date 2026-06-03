@@ -2,6 +2,9 @@
 import { el, clear, toast, setLoading, icon } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → the generated prompt survives SPA tab navigation.
+const state = { output: '', instruction: '' };
+
 export function renderImagePrompt(root) {
   let selectedFile = null;
 
@@ -89,6 +92,8 @@ export function renderImagePrompt(root) {
       fd.append('instruction', root.querySelector('#ip-inst').value);
       const r = await api.analyzer.imageToPrompt(fd);
       output.value = r.prompt || '';
+      state.output = output.value;
+      state.instruction = root.querySelector('#ip-inst').value;
       copyBtn.disabled = false;
       toast('Đã sinh prompt', 'success');
     } catch (e) { toast(e.message, 'error'); }
@@ -103,4 +108,11 @@ export function renderImagePrompt(root) {
     sessionStorage.setItem('inject_prompts', JSON.stringify([output.value.trim()]));
     window.__app.navigate('content');
   });
+
+  // Restore the generated prompt + instruction after returning to this tab.
+  if (state.instruction) root.querySelector('#ip-inst').value = state.instruction;
+  if (state.output) {
+    output.value = state.output;
+    copyBtn.disabled = false;
+  }
 }

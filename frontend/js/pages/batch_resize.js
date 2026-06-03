@@ -2,8 +2,11 @@
 import { el, clear, toast, setLoading, icon, formatBytes } from '../ui.js';
 import { api } from '../api.js';
 
+// Module-level state → file list + results survive SPA tab navigation
+// (File objects stay valid in memory; only a full F5 clears them).
+const state = { files: [], presets: {}, results: null };
+
 export function renderBatchResize(root) {
-  const state = { files: [], presets: {} };
 
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('image', 28)),
@@ -133,24 +136,33 @@ export function renderBatchResize(root) {
       fd.append('bg_color', root.querySelector('#br-bg').value);
       fd.append('fmt', root.querySelector('#br-fmt').value);
       const r = await api.media.batchResize(fd);
-      const out = root.querySelector('#br-result');
-      clear(out);
-      out.appendChild(el('h4', { style: { marginTop: '16px' } }, 'Kết quả'));
-      const grid = el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '8px' } });
-      (r.results || []).forEach(res => {
-        if (res.error) {
-          grid.appendChild(el('div', { class: 'card', style: { padding: '8px', fontSize: '11px', color: 'var(--red)' } },
-            res.name, ': ', res.error));
-        } else {
-          grid.appendChild(el('div', null,
-            el('img', { src: res.url, class: 'thumb', style: { objectFit: 'cover' } }),
-            el('div', { style: { fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' } }, res.name),
-          ));
-        }
-      });
-      out.appendChild(grid);
-      toast(`Resize xong ${r.results.filter(x => !x.error).length} file`, 'success');
+      state.results = r.results || [];
+      renderResult(state.results);
+      toast(`Resize xong ${state.results.filter(x => !x.error).length} file`, 'success');
     } catch (e) { toast(e.message, 'error'); }
     finally { setLoading(btn, false); }
   });
+
+  function renderResult(results) {
+    const out = root.querySelector('#br-result');
+    clear(out);
+    out.appendChild(el('h4', { style: { marginTop: '16px' } }, 'Kết quả'));
+    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '8px' } });
+    (results || []).forEach(res => {
+      if (res.error) {
+        grid.appendChild(el('div', { class: 'card', style: { padding: '8px', fontSize: '11px', color: 'var(--red)' } },
+          res.name, ': ', res.error));
+      } else {
+        grid.appendChild(el('div', null,
+          el('img', { src: res.url, class: 'thumb', style: { objectFit: 'cover' } }),
+          el('div', { style: { fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' } }, res.name),
+        ));
+      }
+    });
+    out.appendChild(grid);
+  }
+
+  // Restore file list + results after returning to this tab
+  renderList();
+  if (state.results) renderResult(state.results);
 }
