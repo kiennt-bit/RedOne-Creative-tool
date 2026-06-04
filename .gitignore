@@ -49,3 +49,7 @@ gcp-*.json
 # image storage tokens. NEVER commit (security). Kept locally only.
 docs/shakker_capture/
 *.har
+
+# Local rollback snapshots taken before risky changes (e.g. before the
+# extension parallel-dispatch change). Per-machine safety nets, not source.
+_backup_pre_*/

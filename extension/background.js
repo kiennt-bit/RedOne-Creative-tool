@@ -27,9 +27,23 @@
 
 const BRIDGE_HOST = "http://127.0.0.1:8000";
 const POLL_INTERVAL_MS = 1500;
+// When we just claimed a task AND still have spare capacity, poll again
+// almost immediately so a batch of N parallel items fans out in a few
+// hundred ms instead of N × POLL_INTERVAL_MS. Only used during fan-out.
+const FAST_POLL_MS = 150;
+// Max tasks the extension runs CONCURRENTLY inside the labs.google tab.
+// Previously every task ran strictly one-at-a-time (the poll loop awaited
+// each ~27s generation before claiming the next), so the backend's
+// "luồng song song" setting had no effect. We now dispatch up to this many
+// at once. Kept modest: too many simultaneous generate calls from one
+// session looks bot-like to Google → more reCAPTCHA / 429. The backend's
+// own batch size (the user's concurrency setting) is the real throttle;
+// this is just a safety ceiling so it can actually run in parallel.
+const MAX_CONCURRENT = 4;
 const XOR_KEY = 0x5A;
 
 let _polling = false;
+let _inFlight = 0;          // tasks currently executing (not yet result-posted)
 let _connected = false;
 let _tokenCount = 0;
 let _lastSuccessAt = null;
@@ -432,10 +446,40 @@ async function _doProxyFetchTask(task) {
 
 // ── Poll loop ────────────────────────────────────────────────────────
 
+// Execute ONE task to completion and post its result. Runs detached from
+// the poll loop (we don't await it there) so multiple tasks can be in
+// flight at once. Always decrements _inFlight via the caller's .finally().
+async function _runTask(task) {
+    let result = null;
+    try {
+        if (task.kind === "recaptcha") {
+            result = await _doRecaptchaTask(task);
+        } else if (task.kind === "proxy_fetch") {
+            result = await _doProxyFetchTask(task);
+        } else if (task.kind === "get_cookies") {
+            result = await _doGetCookiesTask(task);
+        } else {
+            result = { error: `unknown task kind: ${task.kind}` };
+        }
+    } catch (e) {
+        // Never let a thrown task kill the loop — report it as a result so
+        // the awaiting backend future resolves instead of timing out.
+        result = { error: String((e && e.message) || e) };
+    }
+    try {
+        await _bridgePost("/sync/task-result", {
+            task_id: task.id,
+            kind: task.kind,
+            result,
+        });
+    } catch (_) { /* best effort */ }
+}
+
 async function _pollLoop() {
     if (_polling) return;
     _polling = true;
     while (_polling) {
+        let claimed = false;
         try {
             // Tell the backend what we currently can/can't do so it can
             // surface meaningful errors instead of hanging.
@@ -443,9 +487,14 @@ async function _pollLoop() {
             const signedIn = await _isSignedIn();
             const status = !tab ? "no_tab" : !signedIn ? "no_login" : "ready";
 
+            // How many more tasks we can take right now. When 0 we still
+            // poll (to keep tab_status fresh) but the backend hands nothing.
+            const capacity = Math.max(0, MAX_CONCURRENT - _inFlight);
+
             const params = new URLSearchParams({
                 tab_status: status,
                 tab_url: tab && tab.url ? tab.url : "",
+                capacity: String(capacity),
             }).toString();
 
             const data = await _bridgeGet(`/sync/next-task?${params}`);
@@ -453,28 +502,22 @@ async function _pollLoop() {
 
             const task = data && data.task;
             if (task && task.id && task.kind) {
-                let result = null;
-                if (task.kind === "recaptcha") {
-                    result = await _doRecaptchaTask(task);
-                } else if (task.kind === "proxy_fetch") {
-                    result = await _doProxyFetchTask(task);
-                } else if (task.kind === "get_cookies") {
-                    result = await _doGetCookiesTask(task);
-                } else {
-                    result = { error: `unknown task kind: ${task.kind}` };
-                }
-                try {
-                    await _bridgePost("/sync/task-result", {
-                        task_id: task.id,
-                        kind: task.kind,
-                        result,
-                    });
-                } catch (_) { /* best effort */ }
+                claimed = true;
+                _inFlight++;
+                // Fire WITHOUT awaiting → the loop is free to claim more
+                // tasks (up to MAX_CONCURRENT). This is what makes the
+                // "luồng song song" setting actually run in parallel.
+                _runTask(task).finally(() => {
+                    _inFlight = Math.max(0, _inFlight - 1);
+                });
             }
         } catch (_) {
             _connected = false;
         }
-        await _delay(POLL_INTERVAL_MS);
+        // Just grabbed one and still have room → poll again right away to
+        // fan out the rest of the batch; otherwise idle the normal interval.
+        const moreRoom = _inFlight < MAX_CONCURRENT;
+        await _delay(claimed && moreRoom ? FAST_POLL_MS : POLL_INTERVAL_MS);
     }
 }
 

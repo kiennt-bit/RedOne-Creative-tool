@@ -120,9 +120,11 @@ class TaskResultBody(BaseModel):
 async def next_task(
     tab_status: str = "ready",
     tab_url: str = "",
+    capacity: int = 1,
 ):
-    """Extension long-polls (well, short-polls — every ~1.5s) for the
-    next task to run. Returns `{task: null}` if the queue is empty.
+    """Extension short-polls (~1.5s) for the next task. Returns
+    `{task: null}` if the queue is empty OR the extension has no spare
+    capacity right now.
 
     The `tab_status` query string is the extension reporting back what
     it can currently do:
@@ -130,12 +132,23 @@ async def next_task(
         - "no_tab"    — no labs.google tab open
         - "no_login"  — tab is open but user isn't signed into Google
 
+    `capacity` is how many MORE tasks the extension can run concurrently
+    (MAX_CONCURRENT − in-flight). The extension now dispatches tasks in
+    parallel instead of one-at-a-time, so it keeps polling (to refresh
+    tab_status) even while busy but sends `capacity=0` — we must NOT hand
+    out a task it can't run yet, or that task would sit in `_in_flight`
+    and time out. Defaults to 1 so an OLD (pre-parallel) extension that
+    doesn't send the param still gets one task per poll as before.
+
     Backend tracks the last-seen tab status so other routers (accounts,
     settings) can show a meaningful "Extension is offline / no tab open"
     banner without needing to poll the extension themselves.
     """
     from ..services.browser_bridge import bridge
     bridge.update_tab_state(tab_status, tab_url)
+    # At capacity → keep the heartbeat/tab_status fresh but claim nothing.
+    if capacity <= 0:
+        return {"task": None}
     # Pass tab_status so the bridge only hands tasks to a "ready" instance
     # (signed-in labs.google tab). Lets the extension run in multiple Chrome
     # profiles — the ones without the tab poll harmlessly and claim nothing.

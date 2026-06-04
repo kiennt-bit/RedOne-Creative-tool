@@ -84,6 +84,18 @@ class FlowClient:
         self._last_model_key = None
         self._recaptcha_provider = None
         self._recaptcha_fail_count = 0
+        # Per-task cache of uploaded reference images → media_id. The same
+        # reference image is otherwise re-uploaded once per prompt: I2I shares
+        # the same N reference images across EVERY prompt (dozens of duplicate
+        # uploads of the same files), and I2V re-uploads on every "Gen lại".
+        # Keyed by (resolved path, mtime, size) so a replaced file re-uploads;
+        # different files (different paths) never collide, so I2V's
+        # one-image-per-prompt mapping is preserved exactly. Scoped to this
+        # client instance (one client per task) → no stale id leaks across
+        # tasks. `_upload_locks` serializes concurrent uploads of the SAME
+        # file within a parallel batch so each image is uploaded exactly once.
+        self._uploaded_media: dict[str, str] = {}
+        self._upload_locks: dict[str, asyncio.Lock] = {}
         # Use persistent project_id per account (not random each time!)
         if account_email not in FlowClient._PROJECT_IDS:
             FlowClient._PROJECT_IDS[account_email] = str(uuid.uuid4())
@@ -425,16 +437,61 @@ class FlowClient:
     # ── Upload Image (NAV Tools pattern) ─────────────────────
     
     async def upload_image(self, image_path: str) -> Optional[str]:
-        """Upload image to Google Flow, return media_id (UUID).
-        
-        Uses browser fetch to POST base64 image to /v1/flow/uploadImage.
-        Returns the 'name' field (UUID) from response, or None on failure.
+        """Upload a reference image to Google Flow, return its media_id.
+
+        Cached + deduped: the same file is uploaded ONCE per task (see the
+        `_uploaded_media` / `_upload_locks` comment in __init__). A cache hit
+        returns the stored media_id without touching the network; concurrent
+        callers for the same file serialize on a per-file lock so a parallel
+        batch (e.g. I2I sharing 3 refs across many prompts) uploads each image
+        exactly once. The actual upload lives in `_upload_image_raw`.
         """
         path = Path(image_path)
         if not path.exists():
             log.error(f"Image not found: {image_path}")
             return None
-        
+
+        # Cache key: path + mtime + size so a replaced file re-uploads, while
+        # distinct files (distinct paths) never share a media_id.
+        try:
+            stt = path.stat()
+            key = f"{path.resolve()}::{int(stt.st_mtime)}::{stt.st_size}"
+        except OSError:
+            key = str(path.resolve())
+
+        cached = self._uploaded_media.get(key)
+        if cached:
+            log.info(f"[{self._account_email}] Upload cache hit: {path.name} → {cached}")
+            return cached
+
+        # Serialize concurrent uploads of the SAME file (parallel batch).
+        lock = self._upload_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._upload_locks[key] = lock
+
+        async with lock:
+            # Another concurrent caller may have uploaded it while we waited.
+            cached = self._uploaded_media.get(key)
+            if cached:
+                log.info(
+                    f"[{self._account_email}] Upload cache hit (post-lock): "
+                    f"{path.name} → {cached}"
+                )
+                return cached
+
+            media_id = await self._upload_image_raw(path)
+            if media_id:
+                self._uploaded_media[key] = media_id
+            return media_id
+
+    async def _upload_image_raw(self, path: "Path") -> Optional[str]:
+        """Do the actual base64 POST to /flow/uploadImage (no caching).
+
+        Returns the 'name' field (UUID/media_id) from the response, or None
+        on failure. Raises ValueError on a server-side upload error so the
+        caller can surface a friendly message.
+        """
         # Read and base64 encode
         raw = path.read_bytes()
         b64 = base64.b64encode(raw).decode("utf-8")
