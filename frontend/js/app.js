@@ -15,6 +15,7 @@ import './tasks_store.js';
 
 import { renderContent } from './pages/content.js';
 import { renderImage } from './pages/image.js';
+import { renderStoryboard } from './pages/storyboard.js';
 import { renderShakker } from './pages/shakker.js';
 import { renderLongVideo } from './pages/long_video.js';
 import { renderYoutube } from './pages/youtube.js';
@@ -40,10 +41,11 @@ try {
 const PAGES = {
   'content':       { title: 'Tạo Video',         subtitle: 'Tạo video AI từ prompt (Text-to-Video / Image-to-Video)', render: renderContent },
   'image':         { title: 'Tạo Ảnh',           subtitle: 'Sinh ảnh AI bằng Nano Banana / Imagen qua Google Labs',  render: renderImage },
+  'storyboard':    { title: 'Tạo Storyboard',    subtitle: 'Ý tưởng + ảnh tham chiếu → kịch bản phân cảnh (prompt + ảnh) → gửi sang Tạo Video I2V', render: renderStoryboard },
   'shakker':       { title: 'Ảnh Shakker',       subtitle: 'Sinh ảnh hàng loạt qua Shakker.ai — model + LoRA + ảnh tham chiếu', render: renderShakker },
   'long-video':    { title: 'Video Dài',         subtitle: 'Ghép N cảnh thành video dài liên tục bằng Extend API', render: renderLongVideo },
   'youtube':       { title: 'YouTube → Prompt',  subtitle: 'Phân tích YouTube / TikTok thành storyboard',            render: renderYoutube },
-  'script':        { title: 'Ý Tưởng → Video',   subtitle: 'Từ kịch bản tiếng Việt sang storyboard chuẩn Veo 3',     render: renderScript },
+  'script':        { title: 'Ý Tưởng → Prompt',  subtitle: 'Từ kịch bản tiếng Việt sang storyboard prompt — gửi sang Tạo Video hoặc Tạo Ảnh', render: renderScript },
   'image-prompt':  { title: 'Ảnh → Prompt',      subtitle: 'Phân tích ảnh và sinh prompt cho video',                 render: renderImagePrompt },
   'bg-remove':     { title: 'Tách Nền',          subtitle: 'Xóa background ảnh (rembg / Gemini)',                    render: renderBgRemove },
   'watermark':     { title: 'Xóa Logo / Watermark', subtitle: 'Xóa watermark khỏi ảnh (vẽ vùng + inpaint OpenCV)',  render: renderWatermark },
@@ -88,6 +90,28 @@ export function navigate(pageId, opts = {}) {
     container.appendChild(el('div', { class: 'card' }, `Lỗi render trang: ${e.message}`));
   }
   history.replaceState(null, '', `#${pageId}`);
+
+  // Eye-icon deep-link (Tasks Manager) → bring the task's RESULTS gallery into
+  // view so the user lands on the output, not the top of a long prompt form.
+  // The gallery is already rendered (page.render is synchronous + consumes
+  // _pendingTaskId); rAF just lets layout settle before scrolling. Harmless
+  // when results are already on screen — scrollIntoView then barely moves.
+  if (opts.taskId != null) {
+    const RESULTS_SEL = {
+      content: '#cnt-results',
+      image: '#img-results',
+      storyboard: '#sb2-results',
+      'long-video': '#lv-progress',
+      shakker: '#shk-results',
+    };
+    const sel = RESULTS_SEL[pageId];
+    if (sel) {
+      requestAnimationFrame(() => {
+        const target = document.querySelector(sel);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+  }
 }
 
 async function refreshAccounts() {

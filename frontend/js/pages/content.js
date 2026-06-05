@@ -1,6 +1,6 @@
 // Content page — T2V / I2V batch generation
 // State persisted via tasksStore + module-level form so navigation doesn't reset.
-import { el, clear, toast, setLoading, icon } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
@@ -38,12 +38,15 @@ const MODELS_FOR_MODE = {
   t2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
   i2v: ['lite_lp', 'lite', 'fast', 'quality'],  // no omni_flash
 };
+// Labels kept short so they fit the (narrow) config column without
+// overflowing into the dropdown arrow. The longer details (durations,
+// what "Lower Priority" means) live in the field-help line below.
 const MODEL_LABELS = {
-  omni_flash: 'Omni Flash (hỗ trợ 10s)',
-  lite_lp:    'Veo 3.1 — Lite [Lower Priority] · Miễn phí',
-  lite:       'Veo 3.1 — Lite · 5 credit',
-  fast:       'Veo 3.1 — Fast · 10 credit',
-  quality:    'Veo 3.1 — Quality · 100 credit',
+  omni_flash: 'Omni Flash · Miễn phí',
+  lite_lp:    'Veo 3.1 Lite · Miễn phí (chậm)',
+  lite:       'Veo 3.1 Lite · 5 credit',
+  fast:       'Veo 3.1 Fast · 10 credit',
+  quality:    'Veo 3.1 Quality · 100 credit',
 };
 
 function defaultTaskName(prefix = 'video') {
@@ -243,6 +246,7 @@ export function renderContent(root) {
   function tabBtn(mode, label) {
     return el('button', {
       class: `tab ${form.mode === mode ? 'active' : ''}`,
+      'data-mode': mode,
       onclick: (e) => {
         form.mode = mode;
         root.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -561,6 +565,11 @@ export function renderContent(root) {
   const list = root.querySelector('#cnt-list');
   const countEl = root.querySelector('#cnt-count');
   function refreshList() {
+    // Preserve the column's scroll position. clear()ing the list collapses
+    // its height, so the browser clamps the scroll container's scrollTop to 0
+    // — without restoring it, deleting a row jumps the page to the top.
+    const _scroller = list.closest('.gen-config, .gen-results');
+    const _scrollTop = _scroller ? _scroller.scrollTop : 0;
     clear(list);
     const isI2V = form.mode === 'i2v';
     form.prompts.forEach((p, i) => {
@@ -618,6 +627,7 @@ export function renderContent(root) {
       list.appendChild(row);
     });
     countEl.textContent = `${form.prompts.length} prompt${form.prompts.length > 1 ? 's' : ''}`;
+    if (_scroller) _scroller.scrollTop = _scrollTop;
   }
   refreshList();
 
@@ -632,7 +642,7 @@ export function renderContent(root) {
         const r = await api.content.uploadImage(file);
         form.refs[idx] = {
           path: r.path,
-          previewUrl: URL.createObjectURL(file),
+          previewUrl: await makeThumbnail(file),
           name: file.name,
         };
         refreshList();
@@ -694,7 +704,7 @@ export function renderContent(root) {
         if (idx < 0) idx = form.refs.length;
         form.refs[idx] = {
           path: r.path,
-          previewUrl: URL.createObjectURL(file),
+          previewUrl: await makeThumbnail(file),
           name: file.name,
         };
       } catch (e) {
@@ -1027,7 +1037,7 @@ export function renderContent(root) {
   });
   obs.observe(document.body, { childList: true, subtree: true });
 
-  // Inject prompts from other pages
+  // Inject prompts from other pages (T2V — text only)
   const inject = sessionStorage.getItem('inject_prompts');
   if (inject) {
     try {
@@ -1039,5 +1049,30 @@ export function renderContent(root) {
       }
     } catch (e) { /* ignore */ }
     sessionStorage.removeItem('inject_prompts');
+  }
+
+  // Inject I2V scenes from Storyboard ("Gửi tất cả sang Tạo Video"):
+  // each scene = { prompt, path (server image), url, name }. Switches to I2V,
+  // sets each prompt + its reference image (the scene's generated image).
+  const injI2V = sessionStorage.getItem('inject_i2v');
+  if (injI2V) {
+    try {
+      const arr = JSON.parse(injI2V);
+      if (Array.isArray(arr) && arr.length) {
+        form.mode = 'i2v';
+        form.prompts = arr.map(x => x.prompt || '');
+        form.refs = arr.map(x => (x.path ? { path: x.path, previewUrl: x.url || '', name: x.name || 'scene' } : null));
+        root.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.mode === 'i2v'));
+        const i2vBlock = root.querySelector('#i2v-image-block');
+        if (i2vBlock) i2vBlock.style.display = 'block';
+        refreshModelDropdown();
+        refreshDurationDropdown();
+        refreshBulkPromptBlock();
+        refreshList();
+        refreshRefPairing();
+        toast(`Đã nạp ${arr.length} cảnh sang I2V`, 'success');
+      }
+    } catch (e) { /* ignore */ }
+    sessionStorage.removeItem('inject_i2v');
   }
 }

@@ -122,6 +122,40 @@ export function formatBytes(b) {
   return `${b.toFixed(b >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+/**
+ * Build a small JPEG data-URL thumbnail from an image File. Used for ALL
+ * reference-image previews so uploading many high-res photos doesn't lag the
+ * UI (a raw object-URL renders the full-res image into a tiny <img>, eating
+ * memory/CPU). The original File is still uploaded at full quality elsewhere —
+ * only the on-screen preview is downscaled. Falls back to a plain object URL
+ * on any error.
+ */
+export function makeThumbnail(file, maxSide = 320, quality = 0.8) {
+  return new Promise((resolve) => {
+    let url;
+    try {
+      url = URL.createObjectURL(file);
+    } catch (_) { return resolve(''); }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+        const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+        const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (_) {
+        resolve(url);   // keep the object URL (don't revoke — still in use)
+      }
+    };
+    img.onerror = () => { try { URL.revokeObjectURL(url); } catch (_) {} resolve(url); };
+    img.src = url;
+  });
+}
+
 // Icon helper (returns SVG element)
 export function icon(name, size = 16) {
   const paths = {

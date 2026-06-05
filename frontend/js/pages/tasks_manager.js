@@ -6,6 +6,7 @@ import { ws } from '../ws.js';
 
 const KIND_LABEL = {
   image: 'Tạo Ảnh',
+  storyboard: 'Storyboard',
   content: 'Tạo Video',
   t2v: 'Tạo Video',
   i2v: 'Tạo Video (I2V)',
@@ -13,6 +14,7 @@ const KIND_LABEL = {
 };
 const KIND_NAV = {
   image: 'image',
+  storyboard: 'storyboard',
   content: 'content',
   t2v: 'content',
   i2v: 'content',

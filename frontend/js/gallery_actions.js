@@ -18,12 +18,13 @@ import { tasksStore } from './tasks_store.js';
  *        Clear button is hidden.
  * @param {(card: HTMLElement) => {id:number, mediaId:string}|null} [opts.itemOf]
  *        - extract item_id + media_id from a card; required for upscale.
- *          When provided, "Tải về 2K" / "Tải về 4K" buttons appear next to
- *          download. Only items with a media_id are sent.
+ *          When provided, "Nâng cấp 2K" / "Nâng cấp 4K" buttons appear next
+ *          to download. Only items with a media_id are sent.
  * @param {(itemIds:number[], resolution:'2k'|'4k') => Promise} [opts.onUpscale]
  *        - called when user clicks 2K/4K. Receives the IDs of selected items
- *          that actually have a media_id. Responsible for showing progress
- *          and triggering download of the result.
+ *          that actually have a media_id. Responsible for showing progress.
+ *          Does NOT auto-download — the upscaled file is saved server-side
+ *          and offered per-card via its own "Tải <res>" button.
  * @param {(paths:string[]) => Promise} [opts.onRemoveWatermark]
  *        - called when user clicks "Xóa watermark". Receives selected card
  *          file paths. Responsible for showing progress + result.
@@ -31,6 +32,12 @@ import { tasksStore } from './tasks_store.js';
  */
 export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
+  // Live overall upscale progress ("Đang upscale 2/5"). Hidden until the
+  // page calls toolbar._setUpscaleProgress() with an active batch.
+  const upscaleProgressEl = el('span', {
+    class: 'chip chip-blue upscale-toolbar-progress',
+    style: { display: 'none' },
+  });
 
   function selectedCards() {
     return getCards().filter(c => c.classList.contains('selected'));
@@ -96,18 +103,28 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     if (skipped > 0) {
       toast(`Bỏ qua ${skipped} ảnh không có media_id`, 'info');
     }
+    const ids = items.map(x => x.id);
+    // Optimistically flag the queue so cards show "Chờ upscale" immediately,
+    // before the backend's first WS event arrives.
+    tasksStore.markUpscaleQueued(ids, res);
     try {
-      await onUpscale(items.map(x => x.id), res);
+      await onUpscale(ids, res);
     } catch (e) {
+      // Clear the optimistic queue so cards don't stay stuck on "Chờ upscale"
+      // when the request failed before any WS event (e.g. instant 401).
+      tasksStore.clearUpscaleQueue();
       toast(`Upscale lỗi: ${e.message}`, 'error');
     }
   }
 
+  // Labelled "Nâng cấp" (upscale), not "Tải về": the result is saved
+  // server-side and shown on each card with its own "Tải <res>" button —
+  // there's no automatic download anymore.
   const btn2k = upscaleEnabled
-    ? iconBtn('upscale', 'Tải về 2K', () => runUpscale('2k'))
+    ? iconBtn('upscale', 'Nâng cấp 2K', () => runUpscale('2k'))
     : null;
   const btn4k = upscaleEnabled
-    ? iconBtn('upscale', 'Tải về 4K', () => runUpscale('4k'), 'btn-primary')
+    ? iconBtn('upscale', 'Nâng cấp 4K', () => runUpscale('4k'), 'btn-primary')
     : null;
 
   // Watermark removal — uses built-in Veo mask. Only shown when caller
@@ -167,6 +184,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
       refreshCounter();
     }),
     counterEl,
+    upscaleProgressEl,
     el('div', { style: { flex: 1 } }),
     btnDownload,
     ...(btn2k ? [btn2k] : []),
@@ -197,6 +215,21 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
   }
 
   toolbar._refreshCounter = refreshCounter;
+
+  // Page calls this each render with tasksStore.getUpscaleBatch(). Shows
+  // "Đang upscale 2/5" while a batch runs, or "Chờ upscale N ảnh" before the
+  // first image starts; hidden otherwise.
+  toolbar._setUpscaleProgress = (info) => {
+    if (!(info && info.active && info.total > 0)) {
+      upscaleProgressEl.style.display = 'none';
+      return;
+    }
+    const res = (info.resolution || '').toUpperCase();
+    upscaleProgressEl.style.display = '';
+    upscaleProgressEl.textContent = info.running > 0
+      ? `Đang upscale ${info.running}/${info.total}${res ? ' → ' + res : ''}`
+      : `Chờ upscale ${info.total} ảnh${res ? ' → ' + res : ''}`;
+  };
 
   return toolbar;
 }

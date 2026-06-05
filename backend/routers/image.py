@@ -124,6 +124,10 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
     await hub.broadcast("item_status", {
         "task_id": task_id, "item_id": item_id,
         "status": ItemStatus.GENERATING.value,
+        # Carry the prompt so the frontend pairs prompt↔image by item_id —
+        # essential for the Storyboard view where concurrent gen can claim
+        # slots out of order.
+        "prompt": item.get("prompt", ""),
     })
     db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
     try:
@@ -168,6 +172,7 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             "width": result.get("width"),
             "height": result.get("height"),
             "media_id": result.get("media_id"),
+            "prompt": item.get("prompt", ""),
         })
         return True
     except fc_mod.SessionDeadError:

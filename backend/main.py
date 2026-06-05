@@ -24,6 +24,7 @@ from .routers import (
     sync as sync_router, auth as auth_router,
     shakker_accounts as shakker_accounts_router,
     shakker as shakker_router,
+    storyboard as storyboard_router,
 )
 from .queue_manager import queue as task_queue, shakker_queue
 
@@ -175,6 +176,7 @@ app.include_router(shakker_router.router)
 app.include_router(content.router)
 app.include_router(image_router.router)
 app.include_router(analyzer.router)
+app.include_router(storyboard_router.router)
 app.include_router(long_video.router)
 app.include_router(media_tools.router)
 app.include_router(settings_router.router)

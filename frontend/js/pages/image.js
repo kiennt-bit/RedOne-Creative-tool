@@ -1,6 +1,6 @@
 // Image generation page (Imagen / Nano Banana via Google Labs)
 // State is persisted in tasksStore so the gallery survives page navigation.
-import { el, clear, toast, setLoading, icon } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
@@ -30,6 +30,34 @@ function applySavedDefaults() {
   // Image page only uses aspect from settings (its model dropdown is independent
   // of video quality presets)
   if (s.default_aspect) form.aspect = s.default_aspect;
+}
+
+// Build the upscale-state pill overlaid on a card's thumbnail. Returns an
+// element for the current `upscale_status` (queued | running | done | error).
+// Done is a clickable link to the upscaled file; the rest are plain pills.
+function _upscaleBadge(it) {
+  const res = (it.upscale_resolution || '').toUpperCase();
+  switch (it.upscale_status) {
+    case 'queued':
+      return el('div', { class: 'upscale-badge is-queued', title: 'Đang chờ tới lượt upscale' },
+        `⏳ Chờ ${res}`);
+    case 'running':
+      return el('div', { class: 'upscale-badge is-running' },
+        el('span', { class: 'upscale-badge-spin' }),
+        `Đang upscale ${res}…`);
+    case 'done':
+      return el('a', {
+        class: 'upscale-badge is-done',
+        href: it.upscale_url || '#', target: '_blank', download: '',
+        title: `Ảnh ${res} — click để tải`,
+        onclick: (e) => e.stopPropagation(),
+      }, `✓ ${res}`);
+    case 'error':
+      return el('div', { class: 'upscale-badge is-error', title: it.upscale_error || 'Lỗi upscale' },
+        `⚠ Lỗi ${res}`);
+    default:
+      return el('span');
+  }
 }
 
 export function renderImage(root) {
@@ -233,24 +261,14 @@ export function renderImage(root) {
     );
     try {
       const r = await api.image.upscaleBatch(itemIds, resolution);
-      // Auto-download results
-      const paths = (r.completed || []).map(c => c.path);
-      if (paths.length === 1) {
-        const url = (r.completed[0].url) || ('/files/' + paths[0].split(/outputs[\\/]/).pop());
-        const a = document.createElement('a');
-        a.href = url; a.download = '';
-        document.body.appendChild(a); a.click(); a.remove();
-      } else if (paths.length > 1) {
-        try {
-          await api.files.downloadZip(paths);
-        } catch (e) {
-          toast(`Tải zip lỗi: ${e.message}`, 'error');
-        }
-      }
+      // No auto-download — upscaled files are saved server-side and each
+      // finished card shows a "Tải <res>" button + a clickable badge, so the
+      // user downloads only the ones they want, when they want.
+      const RES = resolution.toUpperCase();
       const okN = (r.completed || []).length;
       const errN = (r.errors || []).length;
       if (errN === 0) {
-        toast(`Đã upscale ${okN} ảnh → ${resolution.toUpperCase()}`, 'success');
+        toast(`Đã upscale ${okN} ảnh → ${RES}. Bấm "Tải ${RES}" ở ảnh để lưu về.`, 'success');
       } else {
         toast(`Upscale: ${okN} OK, ${errN} lỗi`, errN ? 'warning' : 'success');
       }
@@ -263,6 +281,12 @@ export function renderImage(root) {
   async function clearCurrentTask() {
     const tid = currentTaskId();
     if (!tid) return;
+    // Block while a 2K/4K upscale batch is running — clearing now would cancel
+    // the task and tear down the gallery the upscale is still writing into.
+    if (tasksStore.getUpscaleBatch().active) {
+      toast('Đang upscale 2K/4K — không thể xóa danh sách. Đợi upscale xong đã.', 'warning');
+      return;
+    }
     // Best-effort cancel if still running
     try {
       const t = tasksStore.get(tid);
@@ -280,6 +304,10 @@ export function renderImage(root) {
   const list = root.querySelector('#img-list');
   const countLabel = root.querySelector('#img-count-label');
   function refreshList() {
+    // Preserve column scroll — see content.js refreshList for the rationale
+    // (clear() collapses height → scrollTop clamps to 0 → page jumps to top).
+    const _scroller = list.closest('.gen-config, .gen-results');
+    const _scrollTop = _scroller ? _scroller.scrollTop : 0;
     clear(list);
     form.prompts.forEach((p, i) => {
       const row = el('div', { class: 'prompt-row' },
@@ -303,6 +331,7 @@ export function renderImage(root) {
       list.appendChild(row);
     });
     countLabel.textContent = `${form.prompts.length} prompt${form.prompts.length > 1 ? 's' : ''}`;
+    if (_scroller) _scroller.scrollTop = _scrollTop;
   }
   refreshList();
 
@@ -450,7 +479,7 @@ export function renderImage(root) {
     for (const file of accepted) {
       try {
         const r = await api.content.uploadImage(file);
-        const url = URL.createObjectURL(file);
+        const url = await makeThumbnail(file);
         const thumb = { path: r.path, url, name: file.name };
         form.refImagePaths.push(r.path);
         form.refImagePreviews.push(thumb);
@@ -539,7 +568,16 @@ export function renderImage(root) {
     clear(wrap);
 
     const clearBtn = root.querySelector('#img-clear-all');
-    if (clearBtn) clearBtn.classList.toggle('hidden', !taskState);
+    if (clearBtn) {
+      clearBtn.classList.toggle('hidden', !taskState);
+      // Disable while an upscale batch runs — re-enabled when it finishes
+      // (upscale_batch_done re-renders the gallery).
+      const upscaling = tasksStore.getUpscaleBatch().active;
+      clearBtn.disabled = upscaling;
+      clearBtn.title = upscaling
+        ? 'Đang upscale 2K/4K — không thể xóa danh sách. Đợi upscale xong.'
+        : 'Xóa toàn bộ danh sách (huỷ tác vụ đang chạy, file vẫn còn trên ổ đĩa)';
+    }
     retryBtn.refresh(taskState);
 
     if (!taskState) {
@@ -580,6 +618,15 @@ export function renderImage(root) {
         },
       });
       wrap.appendChild(toolbar);
+      // Reflect any in-progress 2K/4K batch ("Đang upscale 2/5"). The toolbar
+      // is rebuilt on every store notify, so reading the batch here keeps it
+      // live as upscale_started/_completed events arrive.
+      if (toolbar._setUpscaleProgress) {
+        // Only show progress for an upscale started from THIS gallery's task —
+        // otherwise a Storyboard upscale would also show here (shared global).
+        const ub = tasksStore.getUpscaleBatch();
+        toolbar._setUpscaleProgress(ub.active && ub.taskId === taskState.id ? ub : null);
+      }
     }
 
     taskState.items.forEach((it, i) => {
@@ -606,7 +653,16 @@ export function renderImage(root) {
       } else {
         thumb.appendChild(el('div', { class: 'spinner' }));
       }
+      // Upscale (2K/4K) state overlaid on the thumbnail so the actions row
+      // stays a clean single line: queued → running → done/error.
+      if (it.upscale_status) {
+        thumb.appendChild(_upscaleBadge(it));
+        if (it.upscale_status === 'queued') card.classList.add('is-upscale-queued');
+      }
       card.appendChild(thumb);
+      if (it.upscale_status === 'running') {
+        card.appendChild(el('div', { class: 'upscale-progress-bar' }));
+      }
 
       const chipClass = it.status === 'done' ? 'chip-green'
                      : it.status === 'error' ? 'chip-red'
@@ -635,21 +691,15 @@ export function renderImage(root) {
             toast('Đã copy prompt', 'success');
           } }, icon('copy', 14)),
         );
-        // Upscale status chip — shows realtime progress when 2K/4K is running
-        if (it.upscale_status === 'running') {
-          actions.appendChild(el('span', { class: 'chip chip-blue', style: { marginLeft: 'auto' } },
-            `Đang upscale ${(it.upscale_resolution || '').toUpperCase()}…`));
-        } else if (it.upscale_status === 'done' && it.upscale_url) {
+        // When an upscaled file exists, offer a clean "Tải 4K" button. The
+        // live status (queued/running/error) shows as a badge on the
+        // thumbnail instead, so this row never wraps.
+        if (it.upscale_status === 'done' && it.upscale_url) {
           actions.appendChild(el('a', {
             href: it.upscale_url, download: '', target: '_blank',
-            class: 'chip chip-green', style: { marginLeft: 'auto', textDecoration: 'none' },
-            title: 'File upscaled — click để tải về',
-          }, `✓ ${(it.upscale_resolution || '').toUpperCase()}`));
-        } else if (it.upscale_status === 'error') {
-          actions.appendChild(el('span', {
-            class: 'chip chip-red', style: { marginLeft: 'auto' },
-            title: it.upscale_error || 'Lỗi upscale',
-          }, 'Upscale lỗi'));
+            class: 'btn btn-sm btn-ghost', style: { marginLeft: 'auto' },
+            title: 'Tải ảnh đã upscale',
+          }, icon('download', 14), `Tải ${(it.upscale_resolution || '').toUpperCase()}`));
         }
         info.appendChild(actions);
       }

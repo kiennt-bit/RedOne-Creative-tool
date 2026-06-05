@@ -193,8 +193,10 @@ export function renderYoutube(root) {
               toast('Đã copy prompt', 'success');
             } }, icon('copy', 14)),
             el('button', { class: 'btn btn-sm btn-ghost', title: 'Sửa', onclick: () => editScene(i) }, icon('edit', 14)),
-            el('button', { class: 'btn btn-sm btn-primary', title: 'Tạo video', onclick: () => sendToContent(sc) },
-              icon('play', 14), 'Tạo'),
+            el('button', { class: 'btn btn-sm btn-primary', title: 'Gửi sang Tạo Video', onclick: () => sendToContent(sc) },
+              icon('play', 14), 'Video'),
+            el('button', { class: 'btn btn-sm btn-ghost', title: 'Gửi sang Tạo Ảnh', onclick: () => sendToImage(sc) },
+              icon('image', 14), 'Ảnh'),
           ),
         ),
       );
@@ -205,6 +207,8 @@ export function renderYoutube(root) {
     wrap.prepend(el('div', { style: { marginBottom: '12px', display: 'flex', gap: '8px' } },
       el('button', { class: 'btn btn-primary', onclick: () => sendAllToContent() },
         icon('play'), `Tạo tất cả ${scenes.length} video`),
+      el('button', { class: 'btn btn-ghost', onclick: () => sendAllToImage() },
+        icon('image'), `Tạo tất cả ${scenes.length} ảnh`),
       el('button', { class: 'btn btn-ghost', onclick: () => {
         const json = JSON.stringify(scenes, null, 2);
         navigator.clipboard.writeText(json);
@@ -243,6 +247,17 @@ export function renderYoutube(root) {
     sessionStorage.setItem('inject_prompts', JSON.stringify(prompts));
     window.__app.navigate('content');
     toast(`Đã chuyển ${prompts.length} prompts`, 'success');
+  }
+  function sendToImage(scene) {
+    sessionStorage.setItem('inject_prompts', JSON.stringify([scene.prompt]));
+    window.__app.navigate('image');
+    toast('Đã chuyển sang Tạo Ảnh', 'success');
+  }
+  function sendAllToImage() {
+    const prompts = state.scenes.map(s => s.prompt).filter(Boolean);
+    sessionStorage.setItem('inject_prompts', JSON.stringify(prompts));
+    window.__app.navigate('image');
+    toast(`Đã chuyển ${prompts.length} prompts sang Tạo Ảnh`, 'success');
   }
 
   function _saveInputs() {

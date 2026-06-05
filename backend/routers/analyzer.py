@@ -12,12 +12,42 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
-from ..config import OUTPUT_DIR, DATA_DIR
-from ..services.gemini import generate_text, describe_image
+from ..config import OUTPUT_DIR, DATA_DIR, GEMINI_IMAGE_PROMPT_CHAIN
+from ..services.gemini import generate_text, describe_image, parse_prompt_list
 from ..ws_hub import hub
 
 log = logging.getLogger("navtools.analyzer")
 router = APIRouter(prefix="/api/analyzer", tags=["analyzer"])
+
+
+# System instruction for the "Ý tưởng → Prompt (Ảnh)" path — a faithful port
+# of the user's "Gem Thumbnail" image-prompt Gem. Kept as a system_instruction
+# so the persona (quality keyword suite, shot variety, 9+1 rule, selective
+# extraction from reference images) drives every generation. The interactive
+# consultation + mandatory-upload parts of the original Gem are intentionally
+# dropped — this tool runs one-shot, with reference images OPTIONAL.
+IMAGE_PROMPT_SYSTEM_INSTRUCTION = """You are an expert image-prompt architect \
+specializing in 8K photorealistic, cinematic visual art (a faithful port of \
+the "Gem Thumbnail" / Visual Prompt Architect Gem). Turn the user's idea — \
+optionally guided by reference images — into a series of complete, \
+self-contained ENGLISH image-generation prompts.
+
+REFERENCE IMAGES (selective extraction): when reference images are provided, \
+the user states which is which. Extract ONLY:
+- SUBJECT image -> the main character/object (ignore its background & style)
+- BACKGROUND image -> the environment/setting (ignore its subject & style)
+- STYLE image -> artistic texture, color palette, lighting, camera feel (ignore its content)
+Fuse the extracted elements coherently.
+
+PROMPT RULES:
+- English only. Each prompt is ONE complete, vivid, flowing description (not a dry tag list).
+- Structure: [shot type / camera angle] + [main subject & action] + [environment] + [mood/atmosphere] + [color tone] + [lens & aperture] + the mandatory quality suite.
+- Mandatory quality suite on EVERY prompt: "8k resolution, photorealistic, ultra-sharp focus, shot on 35mm lens, f/1.8, cinematic lighting, highly detailed textures, RAW photo, masterpiece, no blur, high contrast" — vary the lens/aperture per shot (e.g. 24mm, 50mm, 85mm, 100mm macro, f/2.8) but keep the rest.
+- Vary shot types & angles across the series: Wide, Medium, Close-Up, Extreme Close-Up, Over-the-shoulder, Low/High angle, Tracking, Silhouette, etc.
+- 9+1 rule: most prompts are grounded/realistic; about 1 in every 10 is a bold "creative breakthrough" shot (surreal angle, double-exposure, holographic, artistic concept).
+- Honor the user's requested subject, actions, color tone and scene list. Produce EXACTLY the number of prompts requested.
+- If style or color palette is unspecified, choose the most fitting one yourself and apply it consistently. NEVER ask the user questions — generate directly.
+- Photorealism is the priority: outputs should look like real photographs."""
 
 
 def _write_netscape_cookies(path: Path, cookies: list[dict]) -> None:
@@ -387,5 +417,85 @@ async def image_to_prompt(
         return {"prompt": text}
     except Exception as e:
         raise HTTPException(500, f"Failed: {e}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------- Idea → Image Prompts (Gem-ported) ----------------
+
+@router.post("/idea-image-prompts")
+async def idea_image_prompts(
+    idea: str = Form(...),
+    count: int = Form(10),
+    subject: Optional[UploadFile] = File(None),
+    background: Optional[UploadFile] = File(None),
+    style: Optional[UploadFile] = File(None),
+):
+    """Turn a text idea (+ optional Subject/Background/Style reference images)
+    into a list of photorealistic English image-generation prompts, via the
+    ported "Gem Thumbnail" system instruction on the Pro-preferring Gemini
+    chain. Returns {prompts: [str], model_used, fallback_log}.
+    """
+    idea = (idea or "").strip()
+    if not idea:
+        raise HTTPException(400, "Cần nhập ý tưởng")
+    count = max(1, int(count or 10))   # no upper cap — user decides (model may
+    #                                    truncate very large counts at its output
+    #                                    token limit; the UI warns about this).
+
+    tmp = Path(tempfile.mkdtemp(prefix="navtools_idea_"))
+    try:
+        # Save whichever reference slots were provided, in fixed order so the
+        # prompt can tell Gemini which image is which.
+        images: list[Path] = []
+        labels: list[str] = []
+        for slot_name, up in (("SUBJECT", subject), ("BACKGROUND", background), ("STYLE", style)):
+            if up is not None and up.filename:
+                p = tmp / f"{slot_name.lower()}_{up.filename}"
+                with p.open("wb") as f:
+                    shutil.copyfileobj(up.file, f)
+                images.append(p)
+                labels.append(slot_name)
+
+        if labels:
+            ref_note = (
+                "Reference images are attached in this order: "
+                + ", ".join(f"image {i + 1} = {lbl}" for i, lbl in enumerate(labels))
+                + ". Apply the selective-extraction rule.\n\n"
+            )
+        else:
+            ref_note = "No reference images provided — work from the idea text alone.\n\n"
+
+        user_prompt = (
+            f"{ref_note}"
+            f"IDEA:\n{idea}\n\n"
+            f"Generate EXACTLY {count} image prompt(s) following all your rules.\n"
+            f"Output ONLY a valid JSON array of {count} strings — each string a "
+            f"complete English prompt. No markdown, no commentary, no keys."
+        )
+
+        result = await generate_text(
+            user_prompt,
+            images=images or None,
+            system_instruction=IMAGE_PROMPT_SYSTEM_INSTRUCTION,
+            model_chain=GEMINI_IMAGE_PROMPT_CHAIN,
+            response_mime_type="application/json",
+        )
+
+        # Robust parse: tolerates fences/prose, drops stray "["/"]" lines, and
+        # truncates to `count` so over-generation doesn't leak extra scenes.
+        prompts = parse_prompt_list(result["text"], count)
+        if not prompts:
+            raise HTTPException(500, "Model không trả về prompt nào — thử lại.")
+
+        return {
+            "prompts": prompts,
+            "model_used": result["model_used"],
+            "fallback_log": result["fallback_log"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"AI analysis failed: {e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

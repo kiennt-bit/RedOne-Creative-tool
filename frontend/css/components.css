@@ -164,6 +164,11 @@
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 34px;
+  /* Safety net: if an option label is longer than the box, truncate with an
+     ellipsis instead of letting it run under the dropdown arrow. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Chips/Tags */

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.0"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -90,10 +90,22 @@ ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 RESOLUTIONS = ["720p", "1080p"]
 
 GEMINI_MODELS_CHAIN = [
-    "gemini-3-flash-preview",
+    "gemini-3.5-flash",        # GA (replaced the dead gemini-3-flash-preview id)
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemma-4-31b-it",
+]
+
+# Chain for the "Ý tưởng → Prompt (Ảnh)" + Storyboard paths.
+# NOTE: gemini-3.1-pro-preview returns 429 RESOURCE_EXHAUSTED on free /
+# non-billing API keys (Pro models aren't in the free tier), so it is NOT the
+# default — using it first just wastes a failed call on every request. 3.5
+# Flash is GA, works on the free tier, and is plenty for prompt writing. Add
+# "gemini-3.1-pro-preview" back at the front ONLY on a billing-enabled key.
+GEMINI_IMAGE_PROMPT_CHAIN = [
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
 ]
 
 MAX_CONCURRENT_TASKS = 20

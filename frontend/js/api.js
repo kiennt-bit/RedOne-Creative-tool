@@ -103,6 +103,11 @@ export const api = {
     youtube: (payload) => request('POST', '/api/analyzer/youtube', { body: payload }),
     youtubeUpload: (form) => request('POST', '/api/analyzer/youtube-upload', { form }),
     imageToPrompt: (form) => request('POST', '/api/analyzer/image-to-prompt', { form }),
+    ideaImagePrompts: (form) => request('POST', '/api/analyzer/idea-image-prompts', { form }),
+  },
+
+  storyboard: {
+    start: (form) => request('POST', '/api/storyboard/start', { form }),
   },
 
   media: {

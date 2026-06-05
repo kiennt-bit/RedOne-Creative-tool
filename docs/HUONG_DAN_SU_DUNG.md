@@ -1,9 +1,10 @@
 # 📘 RedOne Creative — Hướng dẫn sử dụng
 
 > Tool tạo **ảnh & video AI** cho nội bộ RedOne:
-> **Google Flow** (Veo 3.1 + Nano Banana) và **Shakker.ai** (Stable Diffusion + LoRA).
+> **Google Flow** (Veo 3.1 + Nano Banana) và **Shakker.ai** (Stable Diffusion + LoRA),
+> kèm **Tạo Storyboard** và **Ý Tưởng → Prompt** chạy bằng Gemini.
 >
-> **Phiên bản:** v1.2.2 · **Hệ điều hành:** Windows 10/11
+> **Phiên bản:** v1.3.0 · **Hệ điều hành:** Windows 10/11
 
 ---
 
@@ -15,6 +16,8 @@
 4. [Tạo ảnh AI (Google Flow)](#4-tạo-ảnh-ai-google-flow)
 5. [Ảnh Shakker (mới)](#5-ảnh-shakker-mới)
 6. [Tạo video (Text→Video & Image→Video)](#6-tạo-video)
+   - 🎬 Tạo Storyboard (mới v1.3.0)
+   - ✍️ Ý Tưởng → Prompt (mới v1.3.0)
 7. [Gen song song: Shakker + Flow cùng lúc](#7-gen-song-song-shakker--flow-cùng-lúc)
 8. [Khi gặp lỗi: thông báo & Gen lại](#8-khi-gặp-lỗi-thông-báo--gen-lại)
 9. [Quản lý task & tải file](#9-quản-lý-task--tải-file)
@@ -118,9 +121,9 @@ Gallery bên phải hiện các card: **Đang chờ → Đang tạo → Hoàn th
 
 File lưu ở `outputs\image\<ngày>\<tên_task>\item_X.png` (mặc định auto-lưu).
 
-### 4.5. Tải về 2K / 4K (Upscale)
+### 4.5. Upscale 2K / 4K
 
-Tick ảnh → toolbar hiện **Tải về 2K / 4K** (dùng Labs Flow upscale).
+Tick ảnh → toolbar hiện **Nâng cấp 2K / 4K** (dùng Labs Flow upscale). Trạng thái hiện ngay trên ảnh (Chờ → Đang upscale → ✓ 2K/4K) + tiến trình "đang upscale N/M" trên thanh công cụ. Xong, bấm **Tải 2K/4K** trên từng ảnh để lưu về (không tự tải).
 
 ---
 
@@ -184,6 +187,43 @@ Ví dụ: `Medium shot, static camera, a woman in red dress walking through autu
 Mỗi video ~30–90 giây. Xong có **player ngay trong card** + nút **Tải** (MP4). File ở `outputs\video\<ngày>\<tên_task>\item_X.mp4`.
 
 > ⏳ Giữa mỗi đợt gen, tool **nghỉ ngẫu nhiên 5–10 giây** (chỉnh được ở Cài đặt) để tránh bị Google rate-limit.
+
+---
+
+## 🎬 Tạo Storyboard (mới v1.3.0)
+
+Tab **Tạo Storyboard** (sidebar → SÁNG TẠO): từ **một ý tưởng** + (tùy chọn) **ảnh tham chiếu**, AI tự **chia thành nhiều phân cảnh**, viết prompt cho từng cảnh rồi **gen ảnh hàng loạt** — ra một bộ storyboard hoàn chỉnh.
+
+> 🔑 Cần **Gemini API Key** (Cài đặt → API Keys) + đã cài extension & đăng nhập labs.google trong Chrome (mục 3).
+
+**Cấu hình (panel trái):**
+
+| Mục | Lựa chọn |
+|---|---|
+| **Ý tưởng** | Mô tả tổng (vd: "cảnh thiên nhiên rừng xanh, nhiều góc khác nhau") |
+| **Ảnh tham chiếu** | (tùy chọn) tối đa **10 ảnh** — AI bám chủ thể/bối cảnh/phong cách của chúng để các cảnh đồng nhất |
+| **Model gen ảnh** | Nano Banana Pro / Nano Banana 2 / Imagen 4 |
+| **Tỉ lệ** | 1:1, 16:9, 9:16, 4:3, 3:4 |
+| **Số cảnh** | bao nhiêu cũng được |
+| **Số luồng song song** | số ảnh gen đồng thời (cao quá dễ bị 429) |
+
+**Sử dụng:** bấm **Tạo Storyboard** → AI viết prompt từng cảnh → gen ảnh dần. Mỗi card = **SCENE N** (ảnh + prompt), có nút **Tải** + **Copy prompt**.
+
+**Upscale & gửi sang Tạo Video:**
+- Tick các cảnh → toolbar **Nâng cấp 2K / 4K** (giống tab Tạo Ảnh).
+- Nút **"Gửi tất cả N cảnh sang Tạo Video (I2V)"** → chuyển toàn bộ cảnh sang tab Tạo Video ở chế độ Image→Video (mỗi ảnh = khung đầu của 1 video). **Cảnh nào đã upscale thì gửi bản đã upscale.**
+
+---
+
+## ✍️ Ý Tưởng → Prompt (mới v1.3.0)
+
+Tab **Ý Tưởng → Prompt** (đổi tên từ "Ý Tưởng → Video"): dán **kịch bản / ý tưởng** → AI sinh **prompt chuẩn** cho video hoặc ảnh.
+
+- Toggle trên cùng: **Tạo Video** (mặc định) hoặc **Tạo Ảnh**.
+- Chế độ **Ảnh**: upload được **ảnh tham chiếu** (chủ thể / bối cảnh / style) + chọn số lượng prompt.
+- Mỗi prompt (và "tất cả") gửi được sang **Tạo Video** *hoặc* **Tạo Ảnh**.
+
+> 🔑 Cần **Gemini API Key**. Dùng Gemini 3.5 Flash (model Pro cần API key đã bật billing).
 
 ---
 

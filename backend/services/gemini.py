@@ -19,6 +19,51 @@ except Exception:
     HAS_GENAI = False
 
 
+def parse_prompt_list(text: str, limit: Optional[int] = None) -> list:
+    """Robustly turn a model response into a clean list of prompt strings.
+
+    Handles ```json fences, leading/trailing prose (extracts the [...] slice),
+    and a cleaned line-split fallback that drops bracket/punctuation-only lines
+    (the cause of stray "[" / "]" "prompts"). Filters out junk shorter than 8
+    chars and truncates to `limit` so the model over-generating (e.g. 13 when
+    10 was asked) doesn't leak extra/empty scenes.
+    """
+    import json as _json
+    import re as _re
+    s = _re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", (text or "").strip())
+    out: list = []
+    candidates = [s]
+    lb, rb = s.find("["), s.rfind("]")
+    if lb != -1 and rb > lb:
+        candidates.append(s[lb:rb + 1])
+    for cand in candidates:
+        try:
+            parsed = _json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(parsed, list):
+            out = [str(x).strip() for x in parsed if str(x).strip()]
+            break
+        if isinstance(parsed, dict):
+            for v in parsed.values():
+                if isinstance(v, list):
+                    out = [str(x).strip() for x in v if str(x).strip()]
+                    break
+            if out:
+                break
+    if not out:
+        # Fallback: one prompt per line, stripping wrapping quotes/commas and
+        # skipping bracket/punctuation-only lines.
+        for ln in s.splitlines():
+            t = ln.strip().strip(",").strip().strip('"').strip("'").strip()
+            if len(t) >= 8:
+                out.append(t)
+    out = [p for p in out if len(p.strip()) >= 8]
+    if limit and len(out) > limit:
+        out = out[:limit]
+    return out
+
+
 def _missing_lib_msg() -> str:
     """Build a copy-pasteable install command that points at the SAME Python
     that's currently running the server. Avoids the common "I installed it
@@ -124,8 +169,14 @@ async def generate_text(
     response_schema: Optional[dict] = None,
     response_mime_type: Optional[str] = None,
     model_chain: Optional[list[str]] = None,
+    system_instruction: Optional[str] = None,
 ) -> dict:
-    """Generate with model fallback chain. Returns {text, model_used, fallback_log}."""
+    """Generate with model fallback chain. Returns {text, model_used, fallback_log}.
+
+    `system_instruction` (the "persona" — e.g. a ported Gemini Gem) is passed
+    via GenerateContentConfig for Gemini models. Gemma models don't support a
+    system_instruction field, so for those we prepend it to the prompt text.
+    """
     if not HAS_GENAI:
         raise RuntimeError(_missing_lib_msg())
     client = _client()
@@ -144,16 +195,26 @@ async def generate_text(
     last_err: Optional[Exception] = None
     for model in chain:
         try:
+            is_gemma = "gemma" in model.lower()
             cfg = {}
-            if response_mime_type and "gemma" not in model.lower():
+            if response_mime_type and not is_gemma:
                 cfg["response_mime_type"] = response_mime_type
-            if response_schema and "gemma" not in model.lower():
+            if response_schema and not is_gemma:
                 cfg["response_schema"] = response_schema
+
+            # System instruction: Gemini supports the dedicated field; Gemma
+            # doesn't, so fold it into the prompt text for those models.
+            contents = parts
+            if system_instruction:
+                if is_gemma:
+                    contents = [f"{system_instruction}\n\n{parts[0]}", *parts[1:]]
+                else:
+                    cfg["system_instruction"] = system_instruction
 
             resp = await asyncio.to_thread(
                 client.models.generate_content,
                 model=model,
-                contents=parts,
+                contents=contents,
                 config=gtypes.GenerateContentConfig(**cfg) if cfg else None,
             )
             return {

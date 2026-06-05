@@ -24,12 +24,13 @@ const DURATION_BY_MODEL = {
 };
 
 // Omni Flash doesn't support image-input yet → hide if start_image is set.
+// Short labels so they fit the narrow config column (see content.js).
 const MODEL_LABELS = {
-  omni_flash: 'Omni Flash (hỗ trợ 10s)',
-  lite_lp:    'Veo 3.1 — Lite [Lower Priority] · Miễn phí',
-  lite:       'Veo 3.1 — Lite · 5 credit/cảnh',
-  fast:       'Veo 3.1 — Fast · 10 credit/cảnh',
-  quality:    'Veo 3.1 — Quality · 100 credit/cảnh',
+  omni_flash: 'Omni Flash · Miễn phí',
+  lite_lp:    'Veo 3.1 Lite · Miễn phí (chậm)',
+  lite:       'Veo 3.1 Lite · 5 credit/cảnh',
+  fast:       'Veo 3.1 Fast · 10 credit/cảnh',
+  quality:    'Veo 3.1 Quality · 100 credit/cảnh',
 };
 const MODELS_NO_IMAGE = ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'];
 const MODELS_WITH_IMAGE = ['lite_lp', 'lite', 'fast', 'quality'];
@@ -215,6 +216,10 @@ export function renderLongVideo(root) {
   const list = root.querySelector('#lv-list');
   const countEl = root.querySelector('#lv-count');
   function refreshList() {
+    // Preserve column scroll — see content.js refreshList (clear() collapses
+    // height → scrollTop clamps to 0 → page jumps to top on row delete).
+    const _scroller = list.closest('.gen-config, .gen-results');
+    const _scrollTop = _scroller ? _scroller.scrollTop : 0;
     clear(list);
     form.prompts.forEach((p, i) => {
       const row = el('div', { class: 'prompt-row' },
@@ -233,6 +238,7 @@ export function renderLongVideo(root) {
       list.appendChild(row);
     });
     countEl.textContent = `${form.prompts.length} cảnh`;
+    if (_scroller) _scroller.scrollTop = _scrollTop;
   }
   refreshList();
 

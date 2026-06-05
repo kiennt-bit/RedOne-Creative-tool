@@ -26,6 +26,15 @@ const tasks = new Map();
 const subscribers = new Map();
 const kindSubscribers = new Map();
 
+// Progress of the current 2K/4K upscale batch. Upscale is sequential (one
+// image at a time, anti-429) and only one batch runs at once, so a single
+// module-level record is enough. Read by the gallery toolbar to render
+// "Đang upscale 2/5". `running` is the 1-based index currently processing.
+// `taskId` scopes the progress to ONE gallery so an upscale started from the
+// Storyboard tab doesn't show "Đang upscale" in the Tạo Ảnh tab (both read
+// this global).
+let upscaleBatch = { active: false, total: 0, done: 0, running: 0, resolution: '', taskId: null };
+
 // ── Persistence ────────────────────────────────────────────
 function persist() {
   try {
@@ -200,6 +209,57 @@ export const tasksStore = {
   },
 
   /**
+   * Optimistically mark selected items as queued for 2K/4K upscale the
+   * instant the user clicks — so the gallery shows "Chờ upscale" on them
+   * before the backend's first WS event arrives. The WS events
+   * (upscale_started / _completed / _error) then flip each card to
+   * running / done / error in turn. Also seeds the batch progress shown in
+   * the toolbar so it reads "Chờ upscale N ảnh" immediately.
+   */
+  markUpscaleQueued(itemIds, resolution) {
+    const ids = new Set(itemIds);
+    let taskId = null;
+    upscaleBatch = {
+      active: true, total: itemIds.length, done: 0, running: 0,
+      resolution: resolution || '', taskId: null,
+    };
+    for (const t of tasks.values()) {
+      let changed = false;
+      for (const it of t.items) {
+        if (ids.has(it.id)) {
+          it.upscale_status = 'queued';
+          it.upscale_resolution = resolution;
+          it.upscale_error = null;
+          changed = true;
+          if (taskId == null) taskId = t.id;   // scope progress to this gallery
+        }
+      }
+      if (changed) notify(t.id);
+    }
+    upscaleBatch.taskId = taskId;
+  },
+
+  /** Current 2K/4K batch progress for the gallery toolbar. */
+  getUpscaleBatch() { return upscaleBatch; },
+
+  /**
+   * Abort the optimistic queue state — used when the upscale request fails
+   * before any WS event arrives (e.g. an immediate 401 on a dead session),
+   * which would otherwise leave cards stuck on "Chờ upscale".
+   */
+  clearUpscaleQueue() {
+    upscaleBatch = { active: false, total: 0, done: 0, running: 0, resolution: '', taskId: null };
+    // Notify every task unconditionally so batch-tied UI (the disabled
+    // "Xóa danh sách" button) re-enables even if nothing was queued.
+    for (const t of tasks.values()) {
+      for (const it of t.items) {
+        if (it.upscale_status === 'queued') it.upscale_status = null;
+      }
+      notify(t.id);
+    }
+  },
+
+  /**
    * Optimistically flip ONE errored item back to 'generating' — called the
    * instant the user clicks the per-item "Gen lại" button, before the backend
    * WS events (item_status → item_completed/item_error) stream in. Keeps the
@@ -269,6 +329,9 @@ ws.on('item_status', (d) => {
   if (!t) return;
   const it = findOrClaimSlot(t, d.item_id);
   if (!it) return;
+  // Pair prompt↔item by item_id (storyboard: concurrent gen can claim slots
+  // out of order; the event carries the correct prompt for this id).
+  if (d.prompt != null && d.prompt !== '') it.prompt = d.prompt;
   // Map backend ItemStatus → UI status. Anything that's not done/error is
   // treated as "generating" while the item is moving through stages.
   const s = (d.status || '').toUpperCase();
@@ -285,6 +348,7 @@ ws.on('item_completed', (d) => {
   if (!t) return;
   const it = findOrClaimSlot(t, d.item_id);
   if (!it) return;
+  if (d.prompt != null && d.prompt !== '') it.prompt = d.prompt;
   // Only bump counter when transitioning to done
   if (it.status !== 'done') t.done += 1;
   it.status = 'done';
@@ -297,45 +361,78 @@ ws.on('item_completed', (d) => {
 });
 
 // ── Upscale (2K / 4K) events ──────────────────────────────
+// Per-item flags drive the card badges (queued → running → done/error);
+// `upscaleBatch` drives the toolbar "Đang upscale 2/5". Upscale carries no
+// task_id, so we look the item up across all tasks.
+function _findItemById(itemId) {
+  for (const t of tasks.values()) {
+    const it = t.items.find(x => x.id === itemId);
+    if (it) return { task: t, item: it };
+  }
+  return null;
+}
+
+ws.on('upscale_batch_started', (d) => {
+  upscaleBatch = {
+    active: true,
+    total: (d && d.total) || 0,
+    done: 0,
+    running: 0,
+    resolution: (d && d.resolution) || '',
+    taskId: upscaleBatch.taskId,   // keep the gallery scope set by markUpscaleQueued
+  };
+  for (const t of tasks.values()) notify(t.id);
+});
+
 ws.on('upscale_started', (d) => {
   if (!d || d.item_id == null) return;
-  // Find the item across all tasks (upscale doesn't carry task_id)
-  for (const t of tasks.values()) {
-    const it = t.items.find(x => x.id === d.item_id);
-    if (it) {
-      it.upscale_status = 'running';
-      it.upscale_resolution = d.resolution;
-      it.upscale_error = null;
-      notify(t.id);
-      return;
-    }
-  }
+  upscaleBatch.active = true;
+  if (typeof d.index === 'number') upscaleBatch.running = d.index;
+  if (typeof d.total === 'number') upscaleBatch.total = d.total;
+  if (d.resolution) upscaleBatch.resolution = d.resolution;
+  const hit = _findItemById(d.item_id);
+  if (!hit) return;
+  upscaleBatch.taskId = hit.task.id;   // authoritative gallery scope
+  hit.item.upscale_status = 'running';
+  hit.item.upscale_resolution = d.resolution;
+  hit.item.upscale_error = null;
+  notify(hit.task.id);
 });
 
 ws.on('upscale_completed', (d) => {
   if (!d || d.item_id == null) return;
-  for (const t of tasks.values()) {
-    const it = t.items.find(x => x.id === d.item_id);
-    if (it) {
-      it.upscale_status = 'done';
-      it.upscale_url = d.url;
-      it.upscale_path = d.path;
-      notify(t.id);
-      return;
-    }
-  }
+  if (typeof d.index === 'number') upscaleBatch.done = d.index;
+  const hit = _findItemById(d.item_id);
+  if (!hit) return;
+  upscaleBatch.taskId = hit.task.id;
+  hit.item.upscale_status = 'done';
+  hit.item.upscale_url = d.url;
+  hit.item.upscale_path = d.path;
+  notify(hit.task.id);
 });
 
 ws.on('upscale_error', (d) => {
   if (!d || d.item_id == null) return;
+  if (typeof d.index === 'number') upscaleBatch.done = d.index;
+  const hit = _findItemById(d.item_id);
+  if (!hit) return;
+  hit.item.upscale_status = 'error';
+  hit.item.upscale_error = d.error || 'Lỗi upscale';
+  notify(hit.task.id);
+});
+
+ws.on('upscale_batch_done', () => {
+  upscaleBatch.active = false;
+  upscaleBatch.taskId = null;
+  // Clear any item still 'queued' (batch may have aborted early, e.g. on a
+  // dead session) so no card is stuck showing "Chờ upscale". Notify EVERY
+  // task unconditionally so UI tied to the batch state — e.g. the disabled
+  // "Xóa danh sách" button — refreshes even when nothing was left queued.
   for (const t of tasks.values()) {
-    const it = t.items.find(x => x.id === d.item_id);
-    if (it) {
-      it.upscale_status = 'error';
-      it.upscale_error = d.error || 'Lỗi upscale';
-      notify(t.id);
-      return;
+    for (const it of t.items) {
+      if (it.upscale_status === 'queued') it.upscale_status = null;
     }
+    notify(t.id);
   }
 });
 

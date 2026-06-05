@@ -2,7 +2,7 @@
 // Mirrors pages/image.js (gallery via tasksStore, survives navigation) but
 // targets the Shakker provider: checkpoint + multi-LoRA + 1 reference image
 // + 7 aspect ratios + bulk prompts.
-import { el, clear, toast, setLoading, icon, modal } from '../ui.js';
+import { el, clear, toast, setLoading, icon, modal, makeThumbnail } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { ws } from '../ws.js';
@@ -353,8 +353,8 @@ export function renderShakker(root) {
       async function doUpload() {
         if (!fi.files[0]) return;
         const file = fi.files[0];
-        const localUrl = URL.createObjectURL(file);
         dz.querySelector('div:nth-child(2)').textContent = 'Đang upload…';
+        const localUrl = await makeThumbnail(file);
         try {
           const r = await api.shakker.uploadRef(file);
           form.refImageUrl = r.url;
@@ -460,6 +460,10 @@ export function renderShakker(root) {
   const list = root.querySelector('#shk-list');
   const countLabel = root.querySelector('#shk-count-label');
   function refreshList() {
+    // Preserve column scroll — see content.js refreshList (clear() collapses
+    // height → scrollTop clamps to 0 → page jumps to top on row delete).
+    const _scroller = list.closest('.gen-config, .gen-results');
+    const _scrollTop = _scroller ? _scroller.scrollTop : 0;
     clear(list);
     form.prompts.forEach((p, i) => {
       const row = el('div', { class: 'prompt-row' },
@@ -475,6 +479,7 @@ export function renderShakker(root) {
       list.appendChild(row);
     });
     countLabel.textContent = `${form.prompts.length} prompt${form.prompts.length > 1 ? 's' : ''}`;
+    if (_scroller) _scroller.scrollTop = _scrollTop;
   }
   refreshList();
 

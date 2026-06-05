@@ -29,6 +29,49 @@ from ..config import (
     POLL_INTERVAL_SECONDS, MAX_RETRY_COUNT
 )
 
+# Reference images can be huge (e.g. 17-19MB video frames). Sending 20MB+ as
+# base64 through the extension bridge (per-char XOR envelope + executeScript
+# arg) times out. Shrink anything over the budget to a sane size before upload;
+# small images pass through untouched so existing flows are unaffected.
+_UPLOAD_MAX_BYTES = 2_000_000
+_UPLOAD_MAX_SIDE = 1920
+
+
+def _shrink_image_for_upload(path: "Path") -> "tuple[bytes, str]":
+    """Return (bytes, mime) for uploadImage. Downscales + re-encodes only when
+    the file exceeds the budget; otherwise returns the original bytes. Never
+    raises — on any failure it falls back to the original file."""
+    raw = path.read_bytes()
+    base_mime = {
+        ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    }.get(path.suffix.lower(), "image/jpeg")
+    if len(raw) <= _UPLOAD_MAX_BYTES:
+        return raw, base_mime
+    try:
+        import io
+        from PIL import Image, ImageOps
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        w, h = img.size
+        scale = min(1.0, _UPLOAD_MAX_SIDE / max(w, h))
+        if scale < 1.0:
+            img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+        has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+        buf = io.BytesIO()
+        if has_alpha:
+            img.convert("RGBA").save(buf, format="PNG", optimize=True)
+            out, mime = buf.getvalue(), "image/png"
+        else:
+            img.convert("RGB").save(buf, format="JPEG", quality=90, optimize=True)
+            out, mime = buf.getvalue(), "image/jpeg"
+        log.info(f"Shrunk upload {path.name}: {len(raw)//1024}KB → {len(out)//1024}KB "
+                 f"({w}x{h} → {img.size[0]}x{img.size[1]})")
+        return out, mime
+    except Exception as e:
+        log.warning(f"Image shrink failed for {path.name} ({e}); uploading original")
+        return raw, base_mime
+
+
 # Per-account reCAPTCHA lock (NAV Tools pattern)
 _RECAPTCHA_LOCKS: dict[str, asyncio.Lock] = {}
 
@@ -492,14 +535,12 @@ class FlowClient:
         on failure. Raises ValueError on a server-side upload error so the
         caller can surface a friendly message.
         """
-        # Read and base64 encode
-        raw = path.read_bytes()
+        # Read + (if oversized) shrink, then base64-encode. Large refs (e.g.
+        # 17-19MB video frames) otherwise time out through the bridge. Runs in
+        # a thread so the resize doesn't block concurrent uploads.
+        raw, mime = await asyncio.to_thread(_shrink_image_for_upload, path)
         b64 = base64.b64encode(raw).decode("utf-8")
-        
-        # Detect MIME type
-        suffix = path.suffix.lower()
-        mime = {".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}.get(suffix, "image/jpeg")
-        
+
         payload = {
             "imageBytes": b64,
             "mimeType": mime,
@@ -507,8 +548,8 @@ class FlowClient:
                 "tool": "PINHOLE"
             }
         }
-        
-        log.info(f"[{self._account_email}] Uploading {path.name} ({len(raw)} bytes)...")
+
+        log.info(f"[{self._account_email}] Uploading {path.name} ({len(raw)} bytes, {mime})...")
         result = await self._browser_sandbox_request("flow/uploadImage", payload)
         
         if "error" in result:
