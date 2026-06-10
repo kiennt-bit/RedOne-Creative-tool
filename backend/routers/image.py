@@ -119,8 +119,12 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
     model = task["image_model"]
     aspect = task["aspect_ratio"]
 
-    # Jitter to avoid hammering Google at the same ms
-    await asyncio.sleep(_rng.uniform(0.0, 1.2))
+    # Mark GENERATING in the DB *before* the jitter sleep. A regen-from-done
+    # flips this item COMPLETED→GENERATING; if we slept first the item would
+    # still read COMPLETED during the sleep window, and a sibling item
+    # finishing in that window could trip _maybe_finalize into broadcasting
+    # task_completed prematurely. Writing the status first closes that race.
+    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
     await hub.broadcast("item_status", {
         "task_id": task_id, "item_id": item_id,
         "status": ItemStatus.GENERATING.value,
@@ -129,7 +133,8 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
         # slots out of order.
         "prompt": item.get("prompt", ""),
     })
-    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
+    # Jitter to avoid hammering Google at the same ms
+    await asyncio.sleep(_rng.uniform(0.0, 1.2))
     try:
         extra = json.loads(item.get("extra_json") or "{}")
         ref_paths = extra.get("reference_images") or []
@@ -156,6 +161,18 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
         if not ok:
             raise RuntimeError("Image download failed")
 
+        # Nano Banana trả ảnh 16:9 ở 1376×768 (lệch tỉ lệ). Crop 2 bên về đúng
+        # 1366×768. Chỉ áp dụng cho 16:9; các tỉ lệ khác giữ nguyên. Tái dùng
+        # cùng resize_image(mode="cover") mà tab "Resize Hàng Loạt" dùng.
+        out_w, out_h = result.get("width"), result.get("height")
+        if aspect == "16:9":
+            try:
+                from ..services.image_utils import crop_cover_inplace
+                if crop_cover_inplace(out_path, width=1366, height=768):
+                    out_w, out_h = 1366, 768
+            except Exception as e:
+                log.warning(f"Crop 16:9 failed (giữ ảnh gốc): {e}")
+
         # Persist media_id so the upscale endpoint can find it later.
         extra["media_id"] = result.get("media_id")
         db.update_item(
@@ -169,8 +186,8 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             "task_id": task_id, "item_id": item_id,
             "output_path": str(out_path),
             "kind": "image",
-            "width": result.get("width"),
-            "height": result.get("height"),
+            "width": out_w,
+            "height": out_h,
             "media_id": result.get("media_id"),
             "prompt": item.get("prompt", ""),
         })
@@ -201,6 +218,11 @@ async def _process_image_task(task_id: int):
     items = db.get_task_items(task_id)
     if not task or not items:
         return
+    # Normal generation = bridge priority class 2 (below regen=0 and
+    # upscale=1). Set once at the runner top; every proxy_fetch issued by the
+    # gathered per-item coroutines inherits this via the copied context.
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+    set_gen_priority(2, next_gen_seq())
     db.update_task(task_id, status=TaskStatus.RUNNING.value, started_at=str(time.time()))
     await hub.broadcast("task_started", {"task_id": task_id, "kind": "image"})
 
@@ -387,19 +409,35 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
     else:
         out_path = _save_upscaled(item_id, resolution, raw, task)
 
+    # Upscale đi qua media_id nên Flow upscale ảnh gốc 1376×768 (lệch 16:9).
+    # Crop + chuẩn hóa về 2K=2560×1440 / 4K=3840×2160 (crop 2 bên rồi resize
+    # 1 lần). Dùng cùng resize_image(mode="cover") của tab Resize Hàng Loạt.
+    up_w, up_h = r.get("width"), r.get("height")
+    _UPSCALE_DIMS = {"2k": (2560, 1440), "4k": (3840, 2160)}
+    tw, th = _UPSCALE_DIMS.get(resolution.lower(), (3840, 2160))
+    try:
+        from ..services.image_utils import crop_cover_inplace
+        crop_cover_inplace(out_path, width=tw, height=th)
+        up_w, up_h = tw, th
+    except Exception as e:
+        log.warning(f"Crop upscale 16:9 failed (giữ ảnh gốc): {e}")
+
     rel = out_path.relative_to(OUTPUT_DIR).as_posix()
     return {
         "item_id": item_id,
         "path": str(out_path),
         "url": f"/files/{rel}",
-        "width": r.get("width"),
-        "height": r.get("height"),
+        "width": up_w,
+        "height": up_h,
     }
 
 
 @router.post("/upscale/{item_id}")
 async def upscale_existing(item_id: int, resolution: str = "4k"):
     """Upscale a single already-generated image to 2K/4K via Google Labs."""
+    # Upscale = bridge priority class 1: above normal gen (2), below regen (0).
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+    set_gen_priority(1, next_gen_seq())
     if resolution.lower() not in ("2k", "4k"):
         raise HTTPException(400, "resolution phải là '2k' hoặc '4k'")
 
@@ -464,6 +502,9 @@ async def upscale_batch(body: UpscaleBatchRequest):
       • upscale_completed    {item_id, resolution, path, url}
       • upscale_error        {item_id, resolution, error}
     """
+    # Upscale = bridge priority class 1: above normal gen (2), below regen (0).
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+    set_gen_priority(1, next_gen_seq())
     if body.resolution.lower() not in ("2k", "4k"):
         raise HTTPException(400, "resolution phải là '2k' hoặc '4k'")
     if not body.item_ids:

@@ -1,9 +1,9 @@
 // Content page — T2V / I2V batch generation
 // State persisted via tasksStore + module-level form so navigation doesn't reset.
-import { el, clear, toast, setLoading, icon, makeThumbnail } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, makeLazyVideoObserver, ensureFlowAccountOrWarn } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
 
 // Form state survives navigation
 const form = {
@@ -20,6 +20,11 @@ const form = {
   //   refs[i] = { path, previewUrl, name } | null
   refs: [],
 };
+
+// Last task the user was viewing (module-level → survives SPA navigation).
+// Restored on re-mount so the view doesn't auto-jump to the newest task
+// (e.g. one being upscaled/regenerated). Only explicit actions change it.
+let _lastViewedTaskId = null;
 
 // Duration options per model. Confirmed via labs.google network capture:
 //   Omni Flash internal key = abra_t2v_<N>s — has 4/6/8/10
@@ -219,7 +224,7 @@ export function renderContent(root) {
         el('div', { class: 'card' },
           el('div', { class: 'card-header' },
             el('div', null,
-              el('h3', { class: 'card-title' }, 'Kết quả'),
+              el('h3', { class: 'card-title', id: 'cnt-results-title' }, 'Kết quả'),
               el('div', { class: 'card-subtitle', id: 'cnt-status' }, 'Chưa có job'),
             ),
             el('div', { id: 'cnt-header-actions', style: { display: 'flex', gap: '8px' } },
@@ -751,6 +756,9 @@ export function renderContent(root) {
 
     const promptsToSend = pairs.map(p => p.prompt);
 
+    if (!(await ensureFlowAccountOrWarn())) return;
+
+    const taskName = form.taskName || defaultTaskName('video');
     setLoading(startBtn, true);
     try {
       const res = await api.content.start({
@@ -763,12 +771,13 @@ export function renderContent(root) {
         concurrent: form.concurrent,
         reference_images: ref_images,
         loop: form.mode === 'i2v' && form.loop,   // chỉ I2V mới loop được
-        task_name: form.taskName || defaultTaskName('video'),
+        task_name: taskName,
       });
       tasksStore.register(res.task_id, 'content', {
         items: promptsToSend,
         aspect: form.aspect,
         model: form.quality,
+        name: taskName,
       });
       attachToTask(res.task_id);
       toast(`Đã tạo task #${res.task_id} (${res.items} items)`, 'success');
@@ -842,6 +851,14 @@ export function renderContent(root) {
     if (!wrap) return;
     clear(wrap);
 
+    // Show WHICH task these cards belong to (task name).
+    const titleEl = root.querySelector('#cnt-results-title');
+    if (titleEl) {
+      titleEl.textContent = taskState
+        ? `Kết quả — ${taskState.name || ('Task #' + taskState.id)}`
+        : 'Kết quả';
+    }
+
     const clearBtn = root.querySelector('#cnt-clear-all');
     if (clearBtn) clearBtn.classList.toggle('hidden', !taskState);
     retryBtn.refresh(taskState);
@@ -865,6 +882,16 @@ export function renderContent(root) {
       toolbar = makeSelectionToolbar({
         getCards: () => [...grid.querySelectorAll('.scene-card[data-path]')],
         pathOf: (card) => card.dataset.path,
+        itemOf: (card) => {
+          const id = parseInt(card.dataset.itemId || '0', 10);
+          if (!id) return null;
+          const t = tasksStore.get(taskState.id);
+          return (t && t.items.find(x => x.id === id)) || { id };
+        },
+        onRegen: async (ids) => {
+          await api.tasks.retryItems(taskState.id, ids);
+          ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid));
+        },
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {
           tasksStore.removeItemsByPath(taskState.id, paths);
@@ -883,7 +910,10 @@ export function renderContent(root) {
         el('div', { class: 'scene-number' }, `#${i + 1}`),
       );
       if (it.status === 'done' && it.output_url) {
-        thumb.appendChild(el('video', { src: it.output_url, controls: true, style: { width: '100%', height: '100%' } }));
+        // Lazy: no `src` yet — `data-src` is wired by _mediaObs (below) so only
+        // videos near the viewport fetch metadata/first-frame. Prevents 100+
+        // simultaneous metadata fetches that lag the page.
+        thumb.appendChild(el('video', { 'data-src': it.output_url, controls: true, preload: 'none', style: { width: '100%', height: '100%' } }));
       } else if (it.status === 'error') {
         // Show the FULL friendly message (no truncation) so the user knows
         // exactly what happened. Tooltip carries the raw detail for debugging.
@@ -944,27 +974,33 @@ export function renderContent(root) {
         }
       }
 
-      // Error cards get their own per-item "Gen lại" button so the user can
-      // retry just this prompt — even while the rest of the task is running.
-      const errorActions = (it.status === 'error' && it.id != null)
-        ? el('div', { class: 'scene-actions' }, makeItemRetryButton(taskState.id, it.id))
-        : null;
-
+      // (Per-card "Gen lại" removed — regen is now on the selection toolbar:
+      //  tick cards → "Gen lại".)
       card.appendChild(el('div', { class: 'scene-info' },
         el('div', { class: 'scene-meta' },
           el('span', { class: `chip ${chipClass}` }, chipText),
         ),
         el('div', { class: 'scene-prompt' }, it.prompt),
         sceneActions,
-        errorActions,
       ));
       if (it.status === 'done' && it.output_path) {
+        if (it.id != null) card.dataset.itemId = String(it.id);
         attachCardCheckbox(card, it.output_path, toolbar);
       }
       grid.appendChild(card);
     });
 
     wrap.appendChild(grid);
+
+    // Lazy-load videos: only those near the viewport fetch metadata/first-frame
+    // (preview preserved); the rest stay cheap placeholders. Fresh observer per
+    // render; disconnect the previous one to avoid leaking across rebuilds.
+    if (_mediaObs) { _mediaObs.disconnect(); _mediaObs = null; }
+    const lazyVids = grid.querySelectorAll('video[data-src]:not([src])');
+    if (lazyVids.length) {
+      _mediaObs = makeLazyVideoObserver(null);
+      lazyVids.forEach(v => _mediaObs.observe(v));
+    }
 
     const total = taskState.total || taskState.items.length;
     let statusText;
@@ -1009,29 +1045,53 @@ export function renderContent(root) {
   // Live subscription
   let unsubscribe = null;
   let _currentTaskId = null;
+  let _mediaObs = null;     // IntersectionObserver for lazy videos (Change B2)
+  let _rafId = 0;           // coalesces re-renders to ~1 per frame (Change A)
   function currentTaskId() { return _currentTaskId; }
+  // Coalesce the WS-event render storm: many notifies in one frame → ONE
+  // rebuild reading the LATEST store state (not a stale captured `s`).
+  function scheduleRender() {
+    if (_rafId) return;
+    _rafId = requestAnimationFrame(() => {
+      _rafId = 0;
+      if (!root.isConnected) return;
+      renderTaskGallery(tasksStore.get(currentTaskId()));
+    });
+  }
   function attachToTask(taskId) {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+    if (_mediaObs) { _mediaObs.disconnect(); _mediaObs = null; }
     _currentTaskId = taskId;
-    renderTaskGallery(tasksStore.get(taskId));
-    unsubscribe = tasksStore.on(taskId, (s) => renderTaskGallery(s));
+    _lastViewedTaskId = taskId;   // remember across re-mounts (sticky view)
+    renderTaskGallery(tasksStore.get(taskId));   // immediate first paint
+    unsubscribe = tasksStore.on(taskId, scheduleRender);
   }
 
-  // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
-  // window.__app._pendingTaskId is set by navigate({taskId}) — consume +
-  // clear so subsequent re-mounts go back to "latest" behavior.
+  // Which task to show on mount, in priority order:
+  //   1. eye-icon deep-link from Tasks Manager (explicit)
+  //   2. the task the user was last viewing (sticky — don't auto-jump)
+  //   3. the newest task of this kind (first ever open)
   const pending = window.__app && window.__app._pendingTaskId;
   if (pending != null && tasksStore.get(pending)) {
     attachToTask(pending);
     window.__app._pendingTaskId = null;
+  } else if (_lastViewedTaskId != null && tasksStore.get(_lastViewedTaskId)) {
+    attachToTask(_lastViewedTaskId);
   } else {
     const latest = tasksStore.latestByKind('content');
     if (latest) attachToTask(latest.id);
   }
 
+  // `root` is the PERSISTENT #page-container, so document.body.contains(root) is
+  // always true and never tore the subscription down — each visit leaked a live
+  // tasksStore.on() that repainted #cnt-results with its own task on any item
+  // event (the "view jumps to another task" bug). Detect unmount via our marker.
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    if (!root.querySelector('#cnt-results')) {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+      if (_mediaObs) { _mediaObs.disconnect(); _mediaObs = null; }
       obs.disconnect();
     }
   });

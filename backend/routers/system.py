@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from ..config import APP_NAME, APP_VERSION, GITHUB_REPO, IS_FROZEN, OUTPUT_DIR, DATA_DIR
+from ..config import APP_NAME, APP_VERSION, GITHUB_REPO, IS_FROZEN, OUTPUT_DIR, DATA_DIR, FEEDBACK_FORM_URL
 from ..services.updater import (
     check_for_update,
     download_update,
@@ -30,6 +30,7 @@ async def info():
         "frozen": IS_FROZEN,
         "github_repo": GITHUB_REPO,
         "github_url": f"https://github.com/{GITHUB_REPO}",
+        "feedback_url": FEEDBACK_FORM_URL,
         "data_dir": str(DATA_DIR),
         "output_dir": str(OUTPUT_DIR),
         "can_auto_install": IS_FROZEN,

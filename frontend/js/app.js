@@ -272,6 +272,89 @@ function setupAuthUI() {
 }
 
 
+// ── GitHub help links (guide + feedback) ─────────────────────────────
+// The repo is single-sourced in backend config. Seed with the known URL so
+// the buttons work even before the fetch resolves, then refresh from
+// /api/system/info (a repo rename only needs a backend change).
+const _GH_FALLBACK = 'https://github.com/kiennt-bit/RedOne-Creative-tool';
+let GH = {
+  guide: `${_GH_FALLBACK}/blob/main/docs/HUONG_DAN_SU_DUNG.md`,
+  feedback: `${_GH_FALLBACK}/issues`,   // → Google Form khi FEEDBACK_FORM_URL được set
+};
+async function loadGithubLinks() {
+  try {
+    const info = await api.system.info();
+    const base = (info && info.github_url) || _GH_FALLBACK;
+    GH = {
+      guide: `${base}/blob/main/docs/HUONG_DAN_SU_DUNG.md`,
+      // Feedback ưu tiên Google Form (cấu hình ở backend); fallback GitHub Issues.
+      feedback: (info && info.feedback_url) ? info.feedback_url : `${base}/issues`,
+    };
+  } catch (e) { /* keep fallback */ }
+}
+function setupHelpLinks() {
+  const help = $('#help-btn');
+  if (help) help.addEventListener('click', () => window.open(GH.guide, '_blank', 'noopener'));
+  const fb = $('#feedback-btn');
+  if (fb) fb.addEventListener('click', () => window.open(GH.feedback, '_blank', 'noopener'));
+}
+
+// First-run / no-extension reminder. The tool can't generate anything until
+// the "RedOne Auth Helper" Chrome extension is installed — its background
+// worker polls /sync/* which is what flips extension_live true. If the bridge
+// reports no live extension shortly after load, pop a guide link. Self-
+// resolving: once the extension connects, it never shows again.
+async function maybeShowExtensionReminder() {
+  // Give the extension a few seconds to poll after a fresh load before we
+  // decide it's missing (avoids a false alarm on a slow start).
+  await new Promise(r => setTimeout(r, 4000));
+  let live = false;
+  try {
+    const st = await fetch('/sync/state').then(r => r.json());
+    live = !!(st && st.extension_live);
+  } catch (e) { /* treat as not live */ }
+  if (live) return;
+  const { modal } = await import('./ui.js');
+  // Inline monospace pill for the literal terms users must type/click.
+  const codeSpan = (t) => el('code', {
+    style: {
+      fontFamily: 'var(--font-mono)', background: 'var(--brand-soft)',
+      color: 'var(--brand-2)', padding: '1px 6px', borderRadius: '5px', fontSize: '12px',
+    },
+  }, t);
+  modal({
+    title: 'Cần cài Extension để dùng tool',
+    body: el('div', null,
+      el('p', { style: { margin: '0 0 12px' } },
+        'Chưa phát hiện extension "RedOne Auth Helper". RedOne Creative cần extension này '
+        + '(chạy trong Chrome của bạn) để tạo ảnh / video.'),
+      // Highlighted, step-by-step quick-install box.
+      el('div', {
+        style: {
+          background: 'var(--brand-tint)', borderLeft: '3px solid var(--brand)',
+          borderRadius: 'var(--r-sm)', padding: '12px 16px',
+        },
+      },
+        el('div', {
+          style: { fontWeight: '700', color: 'var(--brand)', marginBottom: '10px', fontSize: '13.5px' },
+        }, '⚡ Cài nhanh extension'),
+        el('ol', { style: { margin: '0', paddingLeft: '20px', lineHeight: '1.9', fontSize: '13px' } },
+          el('li', null, 'Mở ', codeSpan('chrome://extensions')),
+          el('li', null, 'Bật ', el('b', null, 'Chế độ dành cho nhà phát triển'), ' (góc trên bên phải)'),
+          el('li', null, 'Bấm ', el('b', null, 'Tải tiện ích đã giải nén'), ' (Load unpacked)'),
+          el('li', null, 'Chọn thư mục ', codeSpan('extension/'), ' trong thư mục cài tool'),
+          el('li', null, 'Mở một tab ', codeSpan('labs.google'), ' và đăng nhập Google'),
+        ),
+      ),
+    ),
+    actions: [
+      { label: 'Mở hướng dẫn sử dụng', class: 'btn-primary',
+        onclick: () => { window.open(GH.guide, '_blank', 'noopener'); } },
+      { label: 'Đóng' },
+    ],
+  });
+}
+
 function setupShutdown() {
   const btn = $('#shutdown-btn');
   if (!btn) return;
@@ -654,6 +737,8 @@ async function init() {
 
   setupTheme();
   setupShutdown();
+  setupHelpLinks();
+  loadGithubLinks();   // fire-and-forget; buttons have a fallback URL meanwhile
   setupAuthUI();
   setupSidebar();
   setupWS();
@@ -686,6 +771,10 @@ async function init() {
 
   // Non-blocking update check
   checkForUpdate();
+
+  // First-run nudge: if no Chrome extension is connected, point the user to
+  // the GitHub guide. Fire-and-forget (waits a few seconds internally).
+  maybeShowExtensionReminder();
 }
 
 if (document.readyState === 'loading') {

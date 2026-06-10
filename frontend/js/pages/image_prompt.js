@@ -1,13 +1,20 @@
 // Image-to-Prompt page
-import { el, clear, toast, setLoading, icon } from '../ui.js';
+import { el, clear, toast, setLoading, icon, geminiKeyNotice } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → the generated prompt survives SPA tab navigation.
-const state = { output: '', instruction: '' };
+const state = { output: '', instruction: '', loading: false };
+
+// Current mount's renderer — an in-flight request (started before navigating
+// away) calls this on resolve so the prompt lands on the page now shown.
+let _liveRender = () => {};
 
 export function renderImagePrompt(root) {
   let selectedFile = null;
 
+  // Nhắc nhập Gemini API key nếu chưa có (tab này cần Gemini).
+  const _gkn = geminiKeyNotice();
+  if (_gkn) root.appendChild(_gkn);
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('image', 28)),
     el('div', { class: 'hero-text' },
@@ -79,25 +86,48 @@ export function renderImagePrompt(root) {
     preview.appendChild(el('img', { src: URL.createObjectURL(selectedFile), class: 'thumb', style: { maxHeight: '300px', objectFit: 'contain' } }));
   }
 
+  // Render current state (prompt + loading) into THIS mount. Wired to the
+  // module `_liveRender` so an in-flight request updates the live page even if
+  // it was started from a previous mount (switch tab mid-generation → back).
+  function renderState() {
+    if (!root.isConnected) return;
+    const out = root.querySelector('#ip-output');
+    const copy = root.querySelector('#ip-copy');
+    const go = root.querySelector('#ip-go');
+    if (go) go.disabled = !!state.loading;
+    if (state.loading) {
+      if (out) { out.value = ''; out.placeholder = 'Đang sinh prompt…'; }
+      if (copy) copy.disabled = true;
+      return;
+    }
+    if (out) { out.value = state.output || ''; out.placeholder = 'Prompt được sinh sẽ hiện ở đây...'; }
+    if (copy) copy.disabled = !state.output;
+  }
+  _liveRender = renderState;
+
   // Generate
   const goBtn = root.querySelector('#ip-go');
   const output = root.querySelector('#ip-output');
   const copyBtn = root.querySelector('#ip-copy');
   goBtn.addEventListener('click', async () => {
     if (!selectedFile) return toast('Cần chọn ảnh', 'warning');
-    setLoading(goBtn, true);
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    fd.append('instruction', root.querySelector('#ip-inst').value);
+    state.instruction = root.querySelector('#ip-inst').value;
+    state.loading = true;
+    _liveRender();
     try {
-      const fd = new FormData();
-      fd.append('file', selectedFile);
-      fd.append('instruction', root.querySelector('#ip-inst').value);
       const r = await api.analyzer.imageToPrompt(fd);
-      output.value = r.prompt || '';
-      state.output = output.value;
-      state.instruction = root.querySelector('#ip-inst').value;
-      copyBtn.disabled = false;
+      state.output = r.prompt || '';
+      state.loading = false;
+      _liveRender();
       toast('Đã sinh prompt', 'success');
-    } catch (e) { toast(e.message, 'error'); }
-    finally { setLoading(goBtn, false); }
+    } catch (e) {
+      state.loading = false;
+      _liveRender();
+      toast(e.message, 'error');
+    }
   });
   copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(output.value);
@@ -110,9 +140,8 @@ export function renderImagePrompt(root) {
   });
 
   // Restore the generated prompt + instruction after returning to this tab.
+  // renderState() also shows the "đang sinh" state if a request is still
+  // running (started before navigating away).
   if (state.instruction) root.querySelector('#ip-inst').value = state.instruction;
-  if (state.output) {
-    output.value = state.output;
-    copyBtn.disabled = false;
-  }
+  renderState();
 }

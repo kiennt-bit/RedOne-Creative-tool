@@ -84,9 +84,90 @@ from ..config import GEMINI_MODELS_CHAIN
 from ..database import db
 
 
+class GeminiAllKeysExhaustedError(RuntimeError):
+    """Every configured Gemini API key is out of quota or unusable.
+
+    Raised by generate_text() after it has rotated through ALL keys and each
+    one hit a quota / dead-key error. Carries a clear, user-facing message so
+    the calling endpoint can surface it as-is."""
+
+
+# ── Error classification (drives key-rotation vs model-fallback) ─────
+# A failed generate_content can mean three different things, each handled
+# differently:
+#   • "quota"            → this key is rate/quota limited → rotate to next KEY
+#   • "key_dead"         → this key is invalid/expired/unauthenticated → rotate
+#   • "model_transient"  → model unavailable / 5xx / bad model id → next MODEL
+#                          (same key — rotating keys won't fix a model issue)
+#   • "hard"             → anything else (real bug, bad request) → raise now
+_QUOTA_MARKERS = (
+    "quota", "429", "resource_exhausted", "resource exhausted", "exhausted",
+    "rate limit", "rate_limit", "ratelimit", "too many requests", "billing",
+)
+_KEY_DEAD_MARKERS = (
+    "api key not valid", "api_key_invalid", "invalid api key", "api key expired",
+    "expired api key", "unauthenticated", "401",
+)
+_MODEL_TRANSIENT_MARKERS = (
+    "503", "500", "502", "unavailable", "overload", "internal", "deadline",
+    "timeout", "not_found", "not found", "404", "invalid_argument",
+    "permission", "403",
+)
+
+
+def _classify_gemini_error(err_str: str) -> str:
+    low = (err_str or "").lower()
+    if any(k in low for k in _QUOTA_MARKERS):
+        return "quota"
+    if any(k in low for k in _KEY_DEAD_MARKERS):
+        return "key_dead"
+    if any(k in low for k in _MODEL_TRANSIENT_MARKERS):
+        return "model_transient"
+    return "hard"
+
+
+class _KeyExhausted(Exception):
+    """Internal: a single key failed its whole model chain on quota/dead-key
+    errors → the caller should rotate to the next key. Carries the last raw
+    error for the final user message."""
+    def __init__(self, last_err):
+        self.last_err = last_err
+        super().__init__(str(last_err))
+
+
+def get_api_keys() -> list[str]:
+    """All usable Gemini API keys, in rotation order, de-duplicated.
+
+    Sources (merged): the multi-key list `gemini_api_keys` (settings) → the
+    legacy single `gemini_api_key` (settings) → the GEMINI_API_KEY env var.
+    Lets old single-key installs keep working while enabling the new
+    multi-key rotation."""
+    keys: list[str] = []
+
+    def _add(v):
+        if isinstance(v, str):
+            v = v.strip()
+            if v and v not in keys:
+                keys.append(v)
+
+    multi = db.get_setting("gemini_api_keys")
+    if isinstance(multi, list):
+        for k in multi:
+            _add(k)
+    elif isinstance(multi, str):
+        # tolerate a newline/comma-separated string
+        import re as _re
+        for k in _re.split(r"[\n,]", multi):
+            _add(k)
+    _add(db.get_setting("gemini_api_key"))
+    _add(os.environ.get("GEMINI_API_KEY"))
+    return keys
+
+
 def get_api_key() -> Optional[str]:
-    """Read Gemini API key from settings or env."""
-    return db.get_setting("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+    """First usable Gemini API key (back-compat for any single-key caller)."""
+    keys = get_api_keys()
+    return keys[0] if keys else None
 
 
 def _client() -> Optional["genai.Client"]:
@@ -162,37 +243,21 @@ async def _build_media_part(client, img):
     return gtypes.Part.from_bytes(data=path.read_bytes(), mime_type=mime)
 
 
-async def generate_text(
-    prompt: str,
-    *,
-    images: Optional[list[Path | bytes]] = None,
-    response_schema: Optional[dict] = None,
-    response_mime_type: Optional[str] = None,
-    model_chain: Optional[list[str]] = None,
-    system_instruction: Optional[str] = None,
+async def _run_model_chain(
+    client, chain, parts, *, response_mime_type, response_schema,
+    system_instruction, fallback_log,
 ) -> dict:
-    """Generate with model fallback chain. Returns {text, model_used, fallback_log}.
+    """Try each model in `chain` with one client/key. Returns the result dict
+    on the first success.
 
-    `system_instruction` (the "persona" — e.g. a ported Gemini Gem) is passed
-    via GenerateContentConfig for Gemini models. Gemma models don't support a
-    system_instruction field, so for those we prepend it to the prompt text.
+    Raises:
+      • _KeyExhausted — every model failed and ≥1 failure was a quota/dead-key
+        error → the caller should rotate to the NEXT API key.
+      • the underlying exception — a hard error (raised immediately) or an
+        all-models-transient failure (rotating keys wouldn't help).
     """
-    if not HAS_GENAI:
-        raise RuntimeError(_missing_lib_msg())
-    client = _client()
-    if not client:
-        raise RuntimeError("Gemini API key not configured. Set in Settings → API Keys.")
-
-    chain = model_chain or GEMINI_MODELS_CHAIN
-    parts: list[Any] = [prompt]
-    if images:
-        for img in images:
-            part = await _build_media_part(client, img)
-            if part is not None:
-                parts.append(part)
-
-    fallback_log = []
     last_err: Optional[Exception] = None
+    saw_rotate_signal = False
     for model in chain:
         try:
             is_gemma = "gemma" in model.lower()
@@ -226,28 +291,101 @@ async def generate_text(
             err_str = str(e)
             fallback_log.append({"model": model, "error": err_str[:200]})
             last_err = e
-            low = err_str.lower()
-            # Fall back to next model in chain on:
-            #   - Quota / rate-limit errors (existing): quota, rate, 429,
-            #     permission, key, billing, exhausted
-            #   - Server-side transient errors (new): 503/500/502,
-            #     unavailable, overload, internal, deadline
-            #   - Model-specific errors (new): not_found, not found,
-            #     invalid_argument (model name typo / deprecated model
-            #     like gemini-3-flash-preview being removed)
-            transient_keys = (
-                "quota", "rate", "429", "permission", "key", "billing", "exhausted",
-                "503", "500", "502", "unavailable", "overload", "internal",
-                "deadline", "timeout",
-                "not_found", "not found", "404", "invalid_argument",
-            )
-            if any(k in low for k in transient_keys):
-                log.warning(
-                    f"Gemini {model} failed ({err_str[:100]}), trying next model..."
-                )
+            kind = _classify_gemini_error(err_str)
+            if kind in ("quota", "key_dead"):
+                saw_rotate_signal = True
+                log.warning(f"Gemini {model}: key-limited ({err_str[:90]}) → next model/key")
                 continue
-            raise
-    raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
+            if kind == "model_transient":
+                log.warning(f"Gemini {model}: transient ({err_str[:90]}) → next model")
+                continue
+            raise  # hard error — surface immediately
+    # Whole chain failed for this key.
+    if saw_rotate_signal:
+        raise _KeyExhausted(last_err)
+    raise last_err if last_err else RuntimeError("All Gemini models failed")
+
+
+async def generate_text(
+    prompt: str,
+    *,
+    images: Optional[list[Path | bytes]] = None,
+    response_schema: Optional[dict] = None,
+    response_mime_type: Optional[str] = None,
+    model_chain: Optional[list[str]] = None,
+    system_instruction: Optional[str] = None,
+) -> dict:
+    """Generate text, rotating across API keys + falling back across models.
+
+    Returns {text, model_used, fallback_log, key_index}.
+
+    Two nested loops:
+      • OUTER over every configured API key (get_api_keys). When a key's whole
+        model chain fails on quota / dead-key, rotate to the next key.
+      • INNER over the model chain (_run_model_chain) for the current key.
+
+    When ALL keys are quota-exhausted, raises GeminiAllKeysExhaustedError with a
+    precise Vietnamese message so the user knows to add a key or wait for reset.
+    `system_instruction` (a ported Gemini Gem persona) goes via the dedicated
+    Gemini config field; Gemma models get it prepended to the prompt instead.
+    """
+    if not HAS_GENAI:
+        raise RuntimeError(_missing_lib_msg())
+    keys = get_api_keys()
+    if not keys:
+        raise RuntimeError(
+            "Chưa cấu hình Gemini API key. Vào Cài đặt → API Keys để thêm "
+            "(có thể thêm nhiều key để tự xoay vòng khi hết quota)."
+        )
+
+    chain = model_chain or GEMINI_MODELS_CHAIN
+    fallback_log: list = []
+    last_rotate_err: Optional[Exception] = None
+    n = len(keys)
+
+    for ki, key in enumerate(keys):
+        try:
+            client = genai.Client(api_key=key)
+        except Exception as e:
+            last_rotate_err = e
+            fallback_log.append({"key_index": ki, "error": f"client init: {str(e)[:120]}"})
+            log.warning(f"Gemini key #{ki + 1}/{n}: client init failed ({str(e)[:90]})")
+            continue
+
+        # Media parts are key-scoped (Files API uploads live in the key's
+        # project) → rebuild per key. Cheap for the common no-image / inline
+        # case; only re-uploads on an actual key rotation.
+        parts: list[Any] = [prompt]
+        if images:
+            for img in images:
+                part = await _build_media_part(client, img)
+                if part is not None:
+                    parts.append(part)
+
+        try:
+            result = await _run_model_chain(
+                client, chain, parts,
+                response_mime_type=response_mime_type,
+                response_schema=response_schema,
+                system_instruction=system_instruction,
+                fallback_log=fallback_log,
+            )
+            result["key_index"] = ki
+            return result
+        except _KeyExhausted as ke:
+            last_rotate_err = ke.last_err
+            if n > 1:
+                log.warning(f"Gemini API key #{ki + 1}/{n} hết quota → chuyển key kế tiếp")
+            continue
+        # Any other exception (hard error / all-transient) propagates as-is.
+
+    # Reached only when EVERY key rotated out on quota / dead-key.
+    prefix = f"Tất cả {n} Gemini API key" if n > 1 else "Gemini API key"
+    raise GeminiAllKeysExhaustedError(
+        f"{prefix} đều đã hết hạn mức (quota) hoặc không dùng được. "
+        f"→ Vào Cài đặt thêm API key mới, hoặc đợi Google reset quota "
+        f"(bản free reset theo ngày). Lỗi cuối: {str(last_rotate_err)[:200]}"
+    )
 
 
 async def describe_image(image_path: str | Path, instruction: Optional[str] = None) -> str:

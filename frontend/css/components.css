@@ -55,6 +55,11 @@
   color: white;
   border-color: var(--accent-orange);
 }
+.btn-warm:hover {
+  background: #ea6a0c;
+  border-color: #ea6a0c;
+  color: white;
+}
 
 .btn-danger {
   background: var(--bg-1);

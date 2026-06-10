@@ -118,7 +118,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,                    # add 'icon.ico' here if you have one
+    icon='redone.ico',            # red capital "R" — matches the extension icon
 )
 
 coll = COLLECT(

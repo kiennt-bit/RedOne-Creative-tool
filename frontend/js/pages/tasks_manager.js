@@ -3,6 +3,7 @@
 import { el, clear, toast, setLoading, icon, confirm } from '../ui.js';
 import { api } from '../api.js';
 import { ws } from '../ws.js';
+import { tasksStore } from '../tasks_store.js';
 
 const KIND_LABEL = {
   image: 'Tạo Ảnh',
@@ -82,8 +83,12 @@ export function renderTasksManager(root) {
     const countEl = root.querySelector('#tm-count');
     if (!countEl) return;
     const activeOnly = root.querySelector('#tm-active-only')?.checked;
+    // Upscale chạy NGOÀI queue → backend vẫn để task = COMPLETED khi upscale.
+    // Coi task đang upscale là "đang hoạt động" để nó không bị ẩn khỏi filter.
+    const ub = tasksStore.getUpscaleBatch();
+    const upscalingId = ub.active ? ub.taskId : null;
     const tasks = activeOnly
-      ? allTasks.filter(t => ['PENDING', 'RUNNING', 'PAUSED'].includes(t.status))
+      ? allTasks.filter(t => ['PENDING', 'RUNNING', 'PAUSED'].includes(t.status) || t.id === upscalingId)
       : allTasks;
     countEl.textContent = `${tasks.length} task`;
     renderStats(allTasks);
@@ -92,7 +97,10 @@ export function renderTasksManager(root) {
 
   function renderStats(tasks) {
     clear(stats);
-    const running = tasks.filter(t => t.status === 'RUNNING').length;
+    const ub = tasksStore.getUpscaleBatch();
+    const upscalingId = ub.active ? ub.taskId : null;
+    // Task đang upscale (gen đã COMPLETED) vẫn tính là "đang chạy".
+    const running = tasks.filter(t => t.status === 'RUNNING' || t.id === upscalingId).length;
     const queued = tasks.filter(t => t.status === 'PENDING' && t.queue_position > 0).length;
     const done = tasks.filter(t => t.status === 'COMPLETED').length;
     const err = tasks.filter(t => t.status === 'ERROR').length;
@@ -140,7 +148,13 @@ export function renderTasksManager(root) {
   function renderRow(t) {
     const kindLabel = KIND_LABEL[t.mode] || t.mode || '—';
     const navTarget = KIND_NAV[t.mode];
-    const stat = STATUS_CHIP[t.status] || { cls: '', label: t.status };
+    // Khi ảnh của task đang được upscale (chạy ngoài queue), hiện "Đang upscale"
+    // thay cho "Hoàn tất" — đọc trạng thái upscale từ store (frontend-only).
+    const ub = tasksStore.getUpscaleBatch();
+    const isUpscaling = ub.active && ub.taskId === t.id;
+    const stat = isUpscaling
+      ? { cls: 'chip-blue', label: `Đang upscale ${(ub.resolution || '').toUpperCase()}${ub.total ? ` ${ub.done}/${ub.total}` : ''}` }
+      : (STATUS_CHIP[t.status] || { cls: '', label: t.status });
 
     // Position badge for queued
     let posBadge = null;
@@ -256,6 +270,18 @@ export function renderTasksManager(root) {
       window._tmReloadTimer = setTimeout(reload, 250);
     }));
   }
+  // Upscale chạy ngoài queue → danh sách task từ backend KHÔNG đổi. Chỉ cần
+  // re-render (không reload) để chip "Đang upscale" cập nhật theo store.
+  const upscaleEvents = [
+    'upscale_batch_started', 'upscale_started', 'upscale_completed',
+    'upscale_error', 'upscale_batch_done',
+  ];
+  for (const ev of upscaleEvents) {
+    offs.push(ws.on(ev, () => {
+      clearTimeout(window._tmUpscaleTimer);
+      window._tmUpscaleTimer = setTimeout(render, 120);
+    }));
+  }
 
   const obs = new MutationObserver(() => {
     // #page-container is persistent (navigate() only swaps its children), so
@@ -266,6 +292,7 @@ export function renderTasksManager(root) {
     if (!root.querySelector('#tm-count')) {
       offs.forEach(o => o());
       clearTimeout(window._tmReloadTimer);
+      clearTimeout(window._tmUpscaleTimer);
       obs.disconnect();
     }
   });

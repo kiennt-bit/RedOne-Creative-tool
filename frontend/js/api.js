@@ -82,6 +82,7 @@ export const api = {
     cancel: (taskId) => request('POST', `/api/shakker/cancel/${taskId}`),
     retryItem: (itemId) => request('POST', `/api/shakker/item/${itemId}/retry`),
     retryFailed: (taskId) => request('POST', `/api/shakker/${taskId}/retry-failed`),
+    retryItems: (taskId, itemIds) => request('POST', `/api/shakker/${taskId}/retry-items`, { body: { item_ids: itemIds } }),
     uploadRef: (file) => {
       const fd = new FormData();
       fd.append('file', file);
@@ -156,6 +157,8 @@ export const api = {
     retryFailed: (id) => request('POST', `/api/tasks/${id}/retry-failed`),
     // Regenerate a SINGLE item by its id — works mid-task too.
     retryItem: (itemId) => request('POST', `/api/tasks/item/${itemId}/retry`),
+    // Regenerate a SPECIFIC LIST of items (gallery "Gen lại" over ticked cards).
+    retryItems: (taskId, itemIds) => request('POST', `/api/tasks/${taskId}/retry-items`, { body: { item_ids: itemIds } }),
     queue: () => request('GET', '/api/tasks/_/queue'),
     openFolder: (id) => request('POST', `/api/tasks/${id}/open-folder`),
   },

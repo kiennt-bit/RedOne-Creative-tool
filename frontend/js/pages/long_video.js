@@ -1,5 +1,5 @@
 // Long video page — N scenes + extend + concat. State survives navigation.
-import { el, clear, toast, setLoading, icon } from '../ui.js';
+import { el, clear, toast, setLoading, icon, ensureFlowAccountOrWarn } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeRetryFailedButton } from '../gallery_actions.js';
@@ -274,6 +274,7 @@ export function renderLongVideo(root) {
   startBtn.addEventListener('click', async () => {
     const prompts = form.prompts.map(p => (p || '').trim()).filter(Boolean);
     if (prompts.length < 2) return toast('Cần ít nhất 2 cảnh', 'warning');
+    if (!(await ensureFlowAccountOrWarn())) return;
     form.quality = root.querySelector('#lv-quality').value;
     form.aspect = root.querySelector('#lv-aspect').value;
     form.duration = parseInt(root.querySelector('#lv-duration').value || '8', 10);
@@ -419,8 +420,11 @@ export function renderLongVideo(root) {
     if (latest) attachToTask(latest.id);
   }
 
+  // `root` is the PERSISTENT #page-container so document.body.contains(root) is
+  // always true — detect unmount via our own marker, else the subscription
+  // leaks and the progress view jumps tasks on item events.
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    if (!root.querySelector('#lv-progress')) {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       obs.disconnect();
     }

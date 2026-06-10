@@ -175,13 +175,17 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     quality = task["quality"]
     aspect = task["aspect_ratio"]
 
-    # Small jitter so concurrent items don't hit Google at the exact same ms.
-    await asyncio.sleep(_rng.uniform(0.0, 1.5))
+    # Mark GENERATING in the DB *before* the jitter sleep. A regen-from-done
+    # flips this item COMPLETED→GENERATING; writing the status first (rather
+    # than after sleeping) closes the window where a sibling item finishing
+    # could trip _maybe_finalize into broadcasting task_completed prematurely.
+    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
     await hub.broadcast("item_status", {
         "task_id": task_id, "item_id": item_id,
         "status": ItemStatus.GENERATING.value,
     })
-    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
+    # Small jitter so concurrent items don't hit Google at the exact same ms.
+    await asyncio.sleep(_rng.uniform(0.0, 1.5))
     try:
         ref_image_path = None
         loop = False
@@ -290,6 +294,9 @@ async def _process_task(task_id: int):
     items = db.get_task_items(task_id)
     if not task or not items:
         return
+    # Normal generation = bridge priority class 2 (below regen=0, upscale=1).
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+    set_gen_priority(2, next_gen_seq())
     db.update_task(task_id, status=TaskStatus.RUNNING.value, started_at=str(time.time()))
     await hub.broadcast("task_started", {"task_id": task_id})
 

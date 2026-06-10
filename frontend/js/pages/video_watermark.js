@@ -283,8 +283,11 @@ export function renderVideoWatermark(root) {
     }),
   ];
 
+  // `root` is the PERSISTENT #page-container so document.body.contains(root) is
+  // always true — detect unmount via our own marker, else the watermark WS
+  // subscriptions leak and accumulate across re-visits.
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    if (!root.querySelector('#vwm-go')) {
       for (const u of unsubs) try { u(); } catch (e) { /* ignore */ }
       obs.disconnect();
     }

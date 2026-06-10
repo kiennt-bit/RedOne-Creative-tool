@@ -173,6 +173,7 @@ async def start_storyboard(
     )
     return {
         "task_id": task_id,
+        "name": name,
         "prompts": prompts,
         "model_used": result["model_used"],
         "fallback_log": result["fallback_log"],

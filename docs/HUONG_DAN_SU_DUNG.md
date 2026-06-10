@@ -4,7 +4,7 @@
 > **Google Flow** (Veo 3.1 + Nano Banana) và **Shakker.ai** (Stable Diffusion + LoRA),
 > kèm **Tạo Storyboard** và **Ý Tưởng → Prompt** chạy bằng Gemini.
 >
-> **Phiên bản:** v1.3.0 · **Hệ điều hành:** Windows 10/11
+> **Phiên bản:** v1.3.3 · **Hệ điều hành:** Windows 10/11
 
 ---
 
@@ -22,6 +22,7 @@
 8. [Khi gặp lỗi: thông báo & Gen lại](#8-khi-gặp-lỗi-thông-báo--gen-lại)
 9. [Quản lý task & tải file](#9-quản-lý-task--tải-file)
 10. [Cài đặt](#10-cài-đặt)
+    - 🔑 Gemini API Key — lấy & nhập nhiều key (tự xoay vòng khi hết quota)
 11. [Cập nhật tool](#11-cập-nhật-tool)
 12. [Lỗi thường gặp](#12-lỗi-thường-gặp)
 13. [Liên hệ / Báo lỗi](#13-liên-hệ--báo-lỗi)
@@ -194,7 +195,7 @@ Mỗi video ~30–90 giây. Xong có **player ngay trong card** + nút **Tải**
 
 Tab **Tạo Storyboard** (sidebar → SÁNG TẠO): từ **một ý tưởng** + (tùy chọn) **ảnh tham chiếu**, AI tự **chia thành nhiều phân cảnh**, viết prompt cho từng cảnh rồi **gen ảnh hàng loạt** — ra một bộ storyboard hoàn chỉnh.
 
-> 🔑 Cần **Gemini API Key** (Cài đặt → API Keys) + đã cài extension & đăng nhập labs.google trong Chrome (mục 3).
+> 🔑 Cần **Gemini API Key** (nên nhập nhiều key — xem **mục 10.1**) + đã cài extension & đăng nhập labs.google trong Chrome (mục 3).
 
 **Cấu hình (panel trái):**
 
@@ -209,9 +210,10 @@ Tab **Tạo Storyboard** (sidebar → SÁNG TẠO): từ **một ý tưởng** +
 
 **Sử dụng:** bấm **Tạo Storyboard** → AI viết prompt từng cảnh → gen ảnh dần. Mỗi card = **SCENE N** (ảnh + prompt), có nút **Tải** + **Copy prompt**.
 
-**Upscale & gửi sang Tạo Video:**
-- Tick các cảnh → toolbar **Nâng cấp 2K / 4K** (giống tab Tạo Ảnh).
-- Nút **"Gửi tất cả N cảnh sang Tạo Video (I2V)"** → chuyển toàn bộ cảnh sang tab Tạo Video ở chế độ Image→Video (mỗi ảnh = khung đầu của 1 video). **Cảnh nào đã upscale thì gửi bản đã upscale.**
+**Upscale, Gen lại & gửi sang Tạo Video:**
+- Tick các cảnh → thanh chọn hiện **Nâng cấp 2K / 4K**, **🔄 Gen lại** (tạo lại cảnh đã chọn), và **▶ Gửi sang Video (I2V)**.
+- **Gửi sang Video (I2V)** → chuyển các cảnh **đã chọn** sang tab Tạo Video ở chế độ Image→Video (mỗi ảnh = khung đầu của 1 video). **Cảnh nào đã upscale thì gửi bản đã upscale.**
+- Cảnh lỗi: dùng nút **"Gen lại N lỗi"** ở đầu khu kết quả.
 
 ---
 
@@ -223,7 +225,7 @@ Tab **Ý Tưởng → Prompt** (đổi tên từ "Ý Tưởng → Video"): dán 
 - Chế độ **Ảnh**: upload được **ảnh tham chiếu** (chủ thể / bối cảnh / style) + chọn số lượng prompt.
 - Mỗi prompt (và "tất cả") gửi được sang **Tạo Video** *hoặc* **Tạo Ảnh**.
 
-> 🔑 Cần **Gemini API Key**. Dùng Gemini 3.5 Flash (model Pro cần API key đã bật billing).
+> 🔑 Cần **Gemini API Key** (nên nhập nhiều key — xem **mục 10.1**). Dùng Gemini 3.5 Flash (model Pro cần API key đã bật billing).
 
 ---
 
@@ -254,11 +256,13 @@ Card lỗi hiện **thông báo tiếng Việt dễ hiểu** (rê chuột để 
 | **(Shakker)** "Hết power" | Tài khoản Shakker hết tín dụng | Nạp power tại shakker.ai hoặc đổi account Shakker |
 | **(Shakker)** "Phiên Shakker hết hạn" | Token Shakker hết | Mở shakker.ai trong Chrome đăng nhập lại |
 
-### 8.2. Gen lại
+### 8.2. Gen lại (có ưu tiên)
 
-- **Gen lại 1 prompt**: card lỗi có nút **🔄 Gen lại**.
-- **Gen lại tất cả lỗi**: nút **"Gen lại N lỗi"** ở đầu khu Kết quả.
-- ✅ Cả hai **hoạt động ngay cả khi task chưa chạy xong**. Các prompt đã thành công được giữ nguyên. (Áp dụng cho cả Flow lẫn Shakker.)
+- **Gen lại các mục đã chọn**: tick checkbox các card **đã xong** → trên **thanh chọn** bấm **🔄 Gen lại** → tạo lại **đè tại chỗ**, ngay trong task đang mở (không tạo task mới trên hàng chờ). Áp dụng cho **Tạo Ảnh, Tạo Video, Tạo Storyboard, Ảnh Shakker**.
+- **Gen lại tất cả lỗi**: nút **"Gen lại N lỗi"** ở đầu khu Kết quả (gen lại mọi prompt đang lỗi).
+- **⚡ Ưu tiên**: lệnh Gen lại **chen lên trước** hàng gen thường — kể cả khi bấm sau khi 1 task khác đã chạy. Thứ tự: **Gen lại › Upscale 2K/4K › Gen thường**.
+- Card **đang upscale** thì tạm thời **không Gen lại được** (tự bỏ qua, tránh xung đột).
+- ✅ Tất cả **hoạt động ngay cả khi task chưa chạy xong**; prompt đã thành công được giữ nguyên (Flow lẫn Shakker).
 
 ---
 
@@ -274,7 +278,13 @@ Bảng liệt kê mọi task (Ảnh / Video / Shakker): tên, loại, trạng th
 
 ### 9.2. Đa-chọn trên gallery
 
-Tick checkbox góc các card → toolbar hiện: **Tải về đã chọn** (zip nếu >1), **Bỏ khỏi danh sách** (file vẫn còn trên đĩa), và (tab Video) **Xóa watermark**.
+Tick checkbox góc các card (đã xong) → thanh chọn hiện:
+- **🔄 Gen lại** — tạo lại các mục đã chọn (đè tại chỗ, ưu tiên — xem mục 8.2)
+- **▶ Gửi sang Video (I2V)** — (Tạo Ảnh / Storyboard) đẩy ảnh đã chọn sang tab Tạo Video làm khung đầu; cảnh nào đã upscale thì gửi bản đã upscale
+- **Tải về đã chọn** (zip nếu chọn >1 file)
+- **Nâng cấp 2K / 4K** — (ảnh) upscale các ảnh đã chọn
+- **Bỏ khỏi danh sách** (file gốc vẫn còn trên đĩa)
+- (tab Video) **Xóa watermark**
 
 ### 9.3. Xóa danh sách
 
@@ -286,9 +296,36 @@ Nút **Xóa danh sách** xóa các task khỏi giao diện (file trong `outputs\
 
 Sidebar → **Hệ Thống → Cài Đặt**.
 
+### 10.1. 🔑 Gemini API Key (lấy & nhập nhiều key)
+
+Các tính năng **tạo prompt bằng AI** — **Tạo Storyboard**, **Ý Tưởng → Prompt**, và phân tích **YouTube / kịch bản / ảnh** — chạy bằng **Google Gemini**, nên cần **API key** (miễn phí).
+
+**Bước 1 — Lấy API key:**
+
+1. Vào **https://aistudio.google.com/apikey** → đăng nhập **một tài khoản Google bất kỳ** (không cần `@redone.vn`).
+2. Bấm **"Create API key"** (Tạo khóa API) → chọn project có sẵn hoặc tạo mới.
+3. Copy chuỗi key dạng **`AIza...`**.
+
+**Bước 2 — Nhập vào tool:**
+
+1. Cài Đặt → ô **"Gemini API Keys"**.
+2. Dán key vào — **mỗi key một dòng** → bấm **Lưu**.
+3. Bấm **Test Gemini** để kiểm tra key chạy được. Nút **👁** để hiện/ẩn key.
+
+**💡 Nhập NHIỀU key để không lo hết lượt:**
+
+Gemini bản free có **giới hạn lượt dùng mỗi ngày**. Nhập nhiều key (mỗi dòng 1 key) → khi **1 key hết hạn mức, tool tự chuyển sang key kế tiếp**, gen tiếp không gián đoạn. Khi **hết tất cả** key, tool báo lỗi rõ ràng: *"Tất cả N Gemini API key đều đã hết hạn mức (quota)… → thêm key mới hoặc đợi reset"*.
+
+> ⚠️ **QUAN TRỌNG: mỗi key nên lấy từ một TÀI KHOẢN GOOGLE KHÁC NHAU.**
+> Nhiều key tạo trên **cùng một tài khoản** Google dùng **chung một hạn mức** → xoay vòng sẽ **vô nghĩa** (key nào cũng hết cùng lúc).
+> 👉 Tạo vài tài khoản Google riêng, mỗi tài khoản lấy 1 key, rồi dán hết vào (mỗi dòng 1 key).
+
+> 🔄 Quota free thường **reset theo ngày** — hôm sau các key dùng lại được bình thường.
+
+### 10.2. Các cài đặt khác
+
 | Setting | Tác dụng |
 |---|---|
-| **Gemini API Key** | Dùng cho phân tích YouTube / script / ảnh (lấy ở https://aistudio.google.com/apikey) |
 | **Chế độ kết nối** | Cố định **Chrome Extension Bridge** — hiển thị trạng thái extension đã kết nối hay chưa |
 | **Khoảng nghỉ giữa các đợt gen** | Random min–max giây (mặc định 5–10s) — tăng lên nếu hay bị 429 |
 | **Tỉ lệ / Chất lượng mặc định** | Áp dụng khi mở trang tạo mới |
@@ -319,6 +356,8 @@ Sidebar → **Hệ Thống → Cài Đặt**.
 | "Hết lượt tạo hôm nay" (429) | Đổi account Google khác / chờ sang mai |
 | "…người nổi tiếng…" | Bỏ tên/ảnh người nổi tiếng khỏi prompt |
 | Shakker báo "hết power" | Nạp power tại shakker.ai hoặc đổi account Shakker |
+| Storyboard / Ý Tưởng→Prompt báo "tất cả API key hết hạn mức" | Hết quota Gemini ngày → thêm key (từ **tài khoản Google khác**) ở Cài đặt **mục 10.1**, hoặc đợi sang mai |
+| "Chưa cấu hình Gemini API key" | Chưa nhập key → Cài đặt **mục 10.1** dán key (mỗi dòng 1 key) → Lưu |
 | Banner cập nhật không hiện | Đợi 5 phút (cache) hoặc bấm "Kiểm tra cập nhật" |
 | Port 8000 đang bận | Có instance khác đang chạy → tắt qua Task Manager (`RedOne Creative.exe`) |
 | Ảnh cũ hiện lỗi/404 trong gallery | Bấm **Xóa danh sách** (file gốc không bị xóa) |

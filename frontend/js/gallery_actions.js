@@ -30,7 +30,7 @@ import { tasksStore } from './tasks_store.js';
  *          file paths. Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onRegen }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
   // Live overall upscale progress ("Đang upscale 2/5"). Hidden until the
   // page calls toolbar._setUpscaleProgress() with an active batch.
@@ -62,17 +62,6 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     } catch (e) { toast(`Tải lỗi: ${e.message}`, 'error'); }
   }, 'btn-primary');
 
-  const btnSave = iconBtn('plus', 'Lưu vào outputs', async () => {
-    const paths = selectedCards().map(pathOf).filter(Boolean);
-    const pending = paths.filter(p => p.replace(/\\/g, '/').includes('outputs/_pending/'));
-    if (!pending.length) return toast('Chỉ áp dụng cho file tạm (outputs/_pending)', 'info');
-    try {
-      const r = await api.files.moveToOutputs(pending);
-      toast(`Đã chuyển ${r.moved} file sang outputs/`, 'success');
-      if (onChange) onChange();
-    } catch (e) { toast(e.message, 'error'); }
-  });
-
   const btnClear = iconBtn('x', 'Bỏ khỏi danh sách', () => {
     const paths = selectedCards().map(pathOf).filter(Boolean);
     if (!paths.length) return;
@@ -85,9 +74,11 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
   const upscaleEnabled = !!(itemOf && onUpscale);
 
   function selectedUpscalable() {
+    // itemOf may return a live store item (media_id) or a lightweight dataset
+    // shape (mediaId) — accept either.
     return selectedCards()
       .map(itemOf)
-      .filter(x => x && x.id != null && x.mediaId);
+      .filter(x => x && x.id != null && (x.media_id || x.mediaId));
   }
 
   async function runUpscale(res) {
@@ -140,16 +131,45 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     }
   }, 'btn-warm') : null;
 
+  // Send the SELECTED items to the Tạo Video tab as I2V (each image becomes a
+  // video's first frame). Provided by the image + storyboard pages; passes the
+  // selected item ids so the page resolves prompt + (upscaled) path itself.
+  const i2vEnabled = !!(itemOf && onSendToI2V);
+  const btnI2V = i2vEnabled ? iconBtn('play', 'Gửi sang Video (I2V)', async () => {
+    const ids = selectedCards().map(itemOf).filter(x => x && x.id != null).map(x => x.id);
+    if (!ids.length) return;
+    try { await onSendToI2V(ids); } catch (e) { toast(`Gửi I2V lỗi: ${e.message}`, 'error'); }
+  }, 'btn-primary') : null;
+
+  // Regenerate the SELECTED items (overwrite in place, priority over normal
+  // gen). Items currently upscaling are skipped — you can't regen a card that's
+  // mid-upscale. Provided by every gallery page (Flow + Shakker pass their own
+  // handler that calls the right retry-items endpoint).
+  const regenEnabled = !!(itemOf && onRegen);
+  const btnRegen = regenEnabled ? iconBtn('refresh', 'Gen lại', async () => {
+    const items = selectedCards().map(itemOf).filter(x => x && x.id != null);
+    if (!items.length) return;
+    const isUpscaling = (x) => x.upscale_status === 'queued' || x.upscale_status === 'running';
+    const skipped = items.filter(isUpscaling).length;
+    const ids = items.filter(x => !isUpscaling(x)).map(x => x.id);
+    if (!ids.length) {
+      return toast('Các mục đã chọn đang upscale — không thể gen lại lúc này', 'warning');
+    }
+    if (skipped > 0) toast(`Bỏ qua ${skipped} ảnh đang upscale`, 'info');
+    try { await onRegen(ids); } catch (e) { toast(`Gen lại lỗi: ${e.message}`, 'error'); }
+  }, 'btn-warm') : null;
+
   // Hide selection actions by default
-  const selectionButtons = [btnDownload, btn2k, btn4k, btnWm, btnSave, btnClear].filter(Boolean);
+  const selectionButtons = [btnRegen, btnI2V, btnDownload, btn2k, btn4k, btnWm, btnClear].filter(Boolean);
   for (const b of selectionButtons) b.style.display = 'none';
 
   function refreshCounter() {
     const n = selectedCards().length;
     counterEl.textContent = `${n} đã chọn`;
     const show = n > 0;
+    if (btnRegen) btnRegen.style.display = show ? '' : 'none';
+    if (btnI2V) btnI2V.style.display = show ? '' : 'none';
     btnDownload.style.display = show ? '' : 'none';
-    btnSave.style.display = show ? '' : 'none';
     btnClear.style.display = (show && onClearSelected) ? '' : 'none';
     if (btn2k) btn2k.style.display = show ? '' : 'none';
     if (btn4k) btn4k.style.display = show ? '' : 'none';
@@ -186,11 +206,12 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     counterEl,
     upscaleProgressEl,
     el('div', { style: { flex: 1 } }),
+    ...(btnRegen ? [btnRegen] : []),
+    ...(btnI2V ? [btnI2V] : []),
     btnDownload,
     ...(btn2k ? [btn2k] : []),
     ...(btn4k ? [btn4k] : []),
     ...(btnWm ? [btnWm] : []),
-    btnSave,
     btnClear,
   );
 
@@ -203,8 +224,11 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
       trash: '<path d="M6 7v13h12V7H6z M9 4h6v2H9z" fill="none" stroke="currentColor" stroke-width="2"/>',
       // 4 arrows pointing outward — universal "upscale" / "expand" glyph
       upscale: '<path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" stroke="currentColor" stroke-width="2" fill="none"/>',
+      play: '<path d="M8 5v14l11-7z" fill="currentColor"/>',
       // Eraser glyph for watermark removal
       eraser: '<path d="M3 17l8-8 6 6-8 8H3v-6zM14 6l4-4 6 6-4 4-6-6z" stroke="currentColor" stroke-width="1.6" fill="none"/>',
+      // Circular arrows — "regenerate"
+      refresh: '<path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3" stroke="currentColor" stroke-width="2" fill="none"/><path d="M18 3v4h-4M6 21v-4h4" stroke="currentColor" stroke-width="2" fill="none"/>',
     };
     const wrap = document.createElement('span');
     wrap.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14">${icons[name] || ''}</svg>`;

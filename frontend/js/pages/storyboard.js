@@ -3,10 +3,10 @@
 // reusing the image task pipeline (batch concurrency "số luồng song song" +
 // cooldown + WebSocket streaming). Output scenes can be sent in bulk to the
 // "Tạo Video" tab as I2V (each scene image becomes the reference frame).
-import { el, clear, toast, setLoading, icon, makeThumbnail } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
 
 const IMAGE_MODELS = [
   { key: 'nano_banana_pro', label: '🍌 Nano Banana Pro' },
@@ -22,6 +22,8 @@ const form = {
 };
 let _taskId = null;
 let _unsub = null;
+let _generating = false;        // Gemini is writing scene prompts (before the task exists)
+let _liveRenderSB = () => {};   // current mount's renderer (for async resolves)
 
 function ratioToStyle(r) {
   return ({ '1:1': '1/1', '16:9': '16/9', '9:16': '9/16', '4:3': '4/3', '3:4': '3/4' })[r] || '16/9';
@@ -65,6 +67,9 @@ async function runBatchUpscale(itemIds, resolution) {
 }
 
 export function renderStoryboard(root) {
+  // Nhắc nhập Gemini API key nếu chưa có (tab này cần Gemini).
+  const _gkn = geminiKeyNotice();
+  if (_gkn) root.appendChild(_gkn);
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('image', 28)),
     el('div', { class: 'hero-text' },
@@ -158,7 +163,7 @@ export function renderStoryboard(root) {
   const right = el('div', { class: 'gen-results' },
     el('div', { class: 'card' },
       el('div', { class: 'card-header' },
-        el('h3', { class: 'card-title' }, 'Storyboard'),
+        el('h3', { class: 'card-title', id: 'sb2-results-title' }, 'Storyboard'),
         el('div', { class: 'card-subtitle', id: 'sb2-status' }, 'Chưa tạo'),
       ),
       el('div', { id: 'sb2-actions', style: { marginBottom: '12px' } }),
@@ -182,51 +187,98 @@ export function renderStoryboard(root) {
   async function generate() {
     const idea = (form.idea || '').trim();
     if (!idea && form.refs.length === 0) return toast('Cần nhập ý tưởng hoặc thêm ảnh tham chiếu', 'warning');
-    const btn = root.querySelector('#sb2-go');
-    setLoading(btn, true);
-    root.querySelector('#sb2-status').textContent = 'Đang viết kịch bản (Gemini)...';
+    if (!(await ensureFlowAccountOrWarn())) return;
+    // Build the request synchronously (capture inputs) before awaiting.
+    const fd = new FormData();
+    fd.append('idea', idea);
+    fd.append('count', String(form.count));
+    fd.append('model', form.model);
+    fd.append('aspect_ratio', form.aspect);
+    fd.append('concurrent', String(form.concurrent));
+    form.refs.forEach(r => fd.append('refs', r.file));
+    _generating = true;
+    _liveRenderSB();   // show "đang viết kịch bản" spinner on the current page
     try {
-      const fd = new FormData();
-      fd.append('idea', idea);
-      fd.append('count', String(form.count));
-      fd.append('model', form.model);
-      fd.append('aspect_ratio', form.aspect);
-      fd.append('concurrent', String(form.concurrent));
-      form.refs.forEach(r => fd.append('refs', r.file));
       const res = await api.storyboard.start(fd);
-      // Register so WS image events (item_status/item_completed, now carrying
-      // the prompt) drive the scene cards.
-      tasksStore.register(res.task_id, 'storyboard', { items: res.prompts, aspect: form.aspect });
-      attachToTask(res.task_id);
+      _generating = false;
+      // Register so WS image events (carrying the prompt) drive the scene cards.
+      tasksStore.register(res.task_id, 'storyboard', { items: res.prompts, aspect: form.aspect, name: res.name || '' });
+      _taskId = res.task_id;
+      _liveRenderSB();   // attach + render on whichever page is shown now
       toast(`Đã tạo ${res.prompts.length} phân cảnh — đang gen ảnh (${res.model_used})`, 'success');
     } catch (e) {
+      _generating = false;
+      _liveRenderSB();
       toast(e.message, 'error');
-      root.querySelector('#sb2-status').textContent = 'Lỗi';
-    } finally { setLoading(btn, false); }
+    }
   }
 
+  // Coalesce the WS-event render storm to ~1 rebuild per frame (perf for
+  // many-scene tasks). Per-mount closure so it captures THIS mount's
+  // renderGallery + root; the isConnected guard makes a post-navigation flush
+  // a harmless no-op.
+  let _rafId = 0;
+  function scheduleRender() {
+    if (_rafId) return;
+    _rafId = requestAnimationFrame(() => {
+      _rafId = 0;
+      if (!root.isConnected) return;
+      renderGallery(tasksStore.get(_taskId));
+    });
+  }
   function attachToTask(taskId) {
     if (_unsub) { _unsub(); _unsub = null; }
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
     _taskId = taskId;
-    renderGallery(tasksStore.get(taskId));
-    _unsub = tasksStore.on(taskId, (s) => renderGallery(s));
+    renderGallery(tasksStore.get(taskId));        // immediate first paint
+    _unsub = tasksStore.on(taskId, scheduleRender);
   }
 
-  function sendAllToI2V(items) {
-    const scenes = items
-      .filter(it => it.status === 'done' && it.output_path)
-      .map(it => {
-        // Prefer the upscaled image when a 2K/4K upscale finished for this scene.
-        const up = it.upscale_status === 'done' && it.upscale_path;
-        return {
-          prompt: it.prompt || '',
-          path: up ? it.upscale_path : it.output_path,
-          url: up ? it.upscale_url : it.output_url,
-          name: 'scene',
-        };
-      });
-    if (!scenes.length) return toast('Chưa có cảnh nào hoàn thành để gửi', 'warning');
-    const upN = items.filter(it => it.upscale_status === 'done' && it.upscale_path).length;
+  // Render the current gen state into THIS mount: the Gemini "đang viết kịch
+  // bản" spinner, or the task gallery, or empty. Wired to `_liveRenderSB` so an
+  // in-flight /storyboard/start resolve lands on the page now shown (fixes
+  // switch-tab-mid-generation → blank).
+  function liveRender() {
+    if (!root.isConnected) return;
+    const btn = root.querySelector('#sb2-go');
+    if (_generating) {
+      if (btn) btn.disabled = true;
+      const wrap = root.querySelector('#sb2-results');
+      const actions = root.querySelector('#sb2-actions');
+      const statusEl = root.querySelector('#sb2-status');
+      if (actions) clear(actions);
+      clear(wrap);
+      wrap.appendChild(el('div', { class: 'empty' },
+        el('div', { class: 'spinner' }),
+        el('div', { style: { marginTop: '10px' } }, 'Đang viết kịch bản (Gemini)…'),
+      ));
+      if (statusEl) statusEl.textContent = 'Đang tạo kịch bản…';
+      return;
+    }
+    if (btn) btn.disabled = false;
+    if (_taskId && tasksStore.get(_taskId)) attachToTask(_taskId);
+    else renderGallery(null);
+  }
+  _liveRenderSB = liveRender;
+
+  // Send the SELECTED scenes (by item id) to the Tạo Video tab as I2V.
+  function sendSelectedToI2V(idList) {
+    const t = _taskId ? tasksStore.get(_taskId) : null;
+    if (!t) return;
+    const byId = new Map(t.items.map(it => [it.id, it]));
+    const chosen = idList.map(id => byId.get(id)).filter(it => it && it.status === 'done' && it.output_path);
+    const scenes = chosen.map(it => {
+      // Prefer the upscaled image when a 2K/4K upscale finished for this scene.
+      const up = it.upscale_status === 'done' && it.upscale_path;
+      return {
+        prompt: it.prompt || '',
+        path: up ? it.upscale_path : it.output_path,
+        url: up ? it.upscale_url : it.output_url,
+        name: 'scene',
+      };
+    });
+    if (!scenes.length) return toast('Chọn cảnh đã hoàn thành để gửi', 'warning');
+    const upN = chosen.filter(it => it.upscale_status === 'done' && it.upscale_path).length;
     sessionStorage.setItem('inject_i2v', JSON.stringify(scenes));
     window.__app.navigate('content');
     toast(`Đã gửi ${scenes.length} cảnh sang Tạo Video (I2V)${upN ? ` (${upN} ảnh đã upscale)` : ''}`, 'success');
@@ -239,6 +291,14 @@ export function renderStoryboard(root) {
     const statusEl = root.querySelector('#sb2-status');
     if (!wrap) return;
     clear(wrap); clear(actions);
+
+    // Show WHICH storyboard task these scenes belong to (task name).
+    const titleEl = root.querySelector('#sb2-results-title');
+    if (titleEl) {
+      titleEl.textContent = state
+        ? `Storyboard — ${state.name || ('Task #' + state.id)}`
+        : 'Storyboard';
+    }
 
     if (!state) {
       wrap.appendChild(el('div', { class: 'empty' },
@@ -263,18 +323,41 @@ export function renderStoryboard(root) {
     const doneScenes = items.filter(it => it.status === 'done' && it.output_path);
     let toolbar = null;
     if (doneScenes.length) {
-      actions.appendChild(el('button', { class: 'btn btn-primary', style: { marginBottom: '8px' }, onclick: () => sendAllToI2V(items) },
-        icon('play', 14), `Gửi tất cả ${doneScenes.length} cảnh sang Tạo Video (I2V)`));
       toolbar = makeSelectionToolbar({
         getCards: () => [...grid.querySelectorAll('.scene-card[data-path]')],
         pathOf: (card) => card.dataset.path,
+        // Live store item → toolbar sees media_id + upscale_status (regen skips
+        // scenes mid-upscale). Falls back to a dataset shape.
         itemOf: (card) => {
           const id = parseInt(card.dataset.itemId || '0', 10);
-          return id ? { id, mediaId: card.dataset.mediaId || null } : null;
+          if (!id) return null;
+          const t = tasksStore.get(state.id);
+          return (t && t.items.find(x => x.id === id))
+            || { id, mediaId: card.dataset.mediaId || null };
         },
         onUpscale: async (ids, res) => { await runBatchUpscale(ids, res); },
+        onSendToI2V: async (ids) => sendSelectedToI2V(ids),
+        onRegen: async (ids) => {
+          await api.tasks.retryItems(state.id, ids);
+          ids.forEach(iid => tasksStore.retryItemUI(state.id, iid));
+        },
       });
       actions.appendChild(toolbar);
+    }
+
+    // "Gen lại N lỗi" — regen ALL failed scenes at once. Error scenes have no
+    // file → can't be ticked in the toolbar, so this covers them (done scenes
+    // use the toolbar's "Gen lại"). Rebuilt each render alongside the toolbar.
+    if (items.some(it => it.status === 'error')) {
+      const retryBtn = makeRetryFailedButton({
+        getTaskState: () => {
+          const t = state && state.id ? tasksStore.get(state.id) : null;
+          return t ? { taskId: state.id, errorCount: t.error || 0, status: t.status } : null;
+        },
+        onResetUI: (id) => tasksStore.resetErrorItems(id),
+      });
+      retryBtn.refresh(state);
+      actions.appendChild(retryBtn);
     }
 
     const aspectStyle = ratioToStyle(state.aspect || form.aspect);
@@ -284,7 +367,7 @@ export function renderStoryboard(root) {
         el('div', { class: 'scene-number' }, `SCENE ${i + 1}`),
       );
       if (it.status === 'done' && it.output_url) {
-        const img = el('img', { src: it.output_url, style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
+        const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
         img.addEventListener('click', () => window.open(it.output_url, '_blank'));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
@@ -319,6 +402,8 @@ export function renderStoryboard(root) {
           class: 'btn btn-sm btn-ghost', style: { marginLeft: 'auto' }, title: 'Tải ảnh đã upscale',
         }, icon('download', 14), `Tải ${(it.upscale_resolution || '').toUpperCase()}`));
       }
+      // (Per-scene "Gen lại" removed — regen is on the selection toolbar:
+      //  tick scenes → "Gen lại". Keeps the card from overflowing.)
 
       card.appendChild(el('div', { class: 'scene-info' },
         el('div', { class: 'scene-prompt', style: { WebkitLineClamp: 4 } }, it.prompt || 'Đang viết kịch bản...'),
@@ -346,13 +431,27 @@ export function renderStoryboard(root) {
       : `Đang gen ${(state.done || 0) + (state.error || 0)}/${total}`;
   }
 
-  // Re-attach to an in-flight/last task when returning to this tab, or via the
-  // Tasks Manager eye deep-link.
+  // On mount: Tasks Manager eye deep-link takes priority; otherwise liveRender
+  // shows the in-flight Gemini spinner (if a generation is still running) or
+  // re-attaches to the last task.
   const pending = window.__app && window.__app._pendingTaskId;
   if (pending != null && tasksStore.get(pending)) {
-    attachToTask(pending);
+    _taskId = pending;
     window.__app._pendingTaskId = null;
-  } else if (_taskId && tasksStore.get(_taskId)) {
-    attachToTask(_taskId);
   }
+  liveRender();
+
+  // Cleanup when navigated away. `root` is the PERSISTENT #page-container
+  // (navigate() only swaps its children), so we detect unmount via our own
+  // marker (#sb2-results). Without this the tasksStore.on() subscription leaks
+  // and keeps repainting the gallery with its task on item events (the gallery
+  // "jumps to another task" bug). `_taskId` stays module-level for sticky view.
+  const _sbObs = new MutationObserver(() => {
+    if (!root.querySelector('#sb2-results')) {
+      if (_unsub) { _unsub(); _unsub = null; }
+      if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+      _sbObs.disconnect();
+    }
+  });
+  _sbObs.observe(document.body, { childList: true, subtree: true });
 }

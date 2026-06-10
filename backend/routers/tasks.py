@@ -8,6 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ..database import db
 from ..queue_manager import queue, shakker_queue
@@ -158,22 +159,38 @@ async def retry_task(task_id: int):
 # (see content/image `_broadcast_progress`) keep the totals consistent
 # across both writers.
 
-async def _retry_items_runner(task: dict, item_ids: list[int]) -> None:
+async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = False) -> None:
     """Background: regenerate `item_ids` for `task` using a fresh client.
 
-    Items already COMPLETED are skipped. Picks the image vs video single-item
-    generator based on task.mode. Runs in batches of task.concurrent. On a
-    dead session it disables the account and stops. Always finalizes the task
-    (flip to COMPLETED if nothing is left pending/generating) and closes the
-    client.
+    With `force=False` items already COMPLETED are skipped (retry-failed
+    semantics). With `force=True` (user clicked "Gen lại" on a specific card)
+    COMPLETED items ARE regenerated and overwritten in place — only items no
+    longer in the DB are dropped.
+
+    Runs at bridge priority class 0 (regen jumps ahead of normal gen=2 and
+    upscale=1 in the bridge queue; in-flight fetches are not preempted, so a
+    regen waits for the next free slot then runs first).
+
+    Picks the image vs video single-item generator based on task.mode. Runs in
+    batches of task.concurrent. On a dead session it disables the account and
+    stops. Always finalizes the task (flip to COMPLETED if nothing is left
+    pending/generating) and closes the client.
     """
     from . import content as content_mod, image as image_mod
     from ..services import flow_client as fc_mod
     from ..services.flow_factory import make_flow_client, get_page_for_account
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+
+    # Regen = highest bridge priority (class 0). Earlier-clicked regens get a
+    # smaller seq so they run before later-clicked ones.
+    set_gen_priority(0, next_gen_seq())
 
     task_id = task["id"]
     mode = (task.get("mode") or "").lower()
-    if mode == "image":
+    # Storyboard tasks generate IMAGES (one per scene) → use the image
+    # generator. Without this they'd fall through to the video branch and
+    # KeyError on task["quality"] / write a .mp4 for an image scene.
+    if mode in ("image", "storyboard"):
         gen_fn = image_mod.generate_image_item
         finalize = image_mod._maybe_finalize
         pick = image_mod._pick_account
@@ -210,12 +227,17 @@ async def _retry_items_runner(task: dict, item_ids: list[int]) -> None:
             })
             return
 
-        # Re-fetch each item fresh; skip any that are already done.
+        # Re-fetch each item fresh. With force=False skip ones already done
+        # (retry-failed). With force=True regenerate even COMPLETED items
+        # (explicit "Gen lại" → overwrite in place).
         targets = []
         for iid in item_ids:
             it = db.get_item(iid)
-            if it and it.get("status") != ItemStatus.COMPLETED.value:
-                targets.append(it)
+            if not it:
+                continue
+            if not force and it.get("status") == ItemStatus.COMPLETED.value:
+                continue
+            targets.append(it)
         if not targets:
             await finalize(task_id)
             return
@@ -253,14 +275,13 @@ async def _retry_items_runner(task: dict, item_ids: list[int]) -> None:
 
 @router.post("/item/{item_id}/retry")
 async def retry_item(item_id: int):
-    """Regenerate a SINGLE failed/pending item — even while the parent task is
-    still generating other items. Returns immediately; progress streams over
-    WebSocket (item_status → item_completed/item_error)."""
+    """Regenerate a SINGLE item — even while the parent task is still
+    generating others. Works on ERROR/PENDING items AND already-COMPLETED ones
+    (explicit "Gen lại" → overwrite in place). Returns immediately; progress
+    streams over WebSocket (item_status → item_completed/item_error)."""
     item = db.get_item(item_id)
     if not item:
         raise HTTPException(404, "Không tìm thấy item")
-    if item.get("status") == ItemStatus.COMPLETED.value:
-        raise HTTPException(400, "Item đã hoàn thành — không cần gen lại")
     task = db.get_task(item["task_id"])
     if not task:
         raise HTTPException(404, "Không tìm thấy task của item")
@@ -272,7 +293,7 @@ async def retry_item(item_id: int):
         db.update_task(task["id"], status=TaskStatus.RUNNING.value, finished_at=None)
         await hub.broadcast("task_started", {"task_id": task["id"], "retried": True})
 
-    asyncio.create_task(_retry_items_runner(task, [item_id]))
+    asyncio.create_task(_retry_items_runner(task, [item_id], force=True))
     return {"ok": True, "item_id": item_id}
 
 
@@ -296,6 +317,34 @@ async def retry_failed(task_id: int):
 
     asyncio.create_task(_retry_items_runner(task, failed_ids))
     return {"ok": True, "retried": len(failed_ids)}
+
+
+class RetryItemsRequest(BaseModel):
+    item_ids: list[int]
+
+
+@router.post("/{task_id}/retry-items")
+async def retry_items(task_id: int, body: RetryItemsRequest):
+    """Regenerate a SPECIFIC LIST of items (the gallery's "Gen lại" toolbar
+    button over the ticked cards). Runs ONE detached runner that batches the
+    list by task.concurrent — far cheaper than firing N single-item retries
+    (which would spin up N flow clients). force=True → overwrite COMPLETED in
+    place. Returns immediately; progress streams over WebSocket."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    ids = [iid for iid in (body.item_ids or []) if db.get_item(iid)]
+    if not ids:
+        return {"ok": True, "retried": 0}
+
+    if task.get("status") in (
+        TaskStatus.COMPLETED.value, TaskStatus.ERROR.value, TaskStatus.CANCELLED.value,
+    ):
+        db.update_task(task_id, status=TaskStatus.RUNNING.value, finished_at=None)
+    await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
+
+    asyncio.create_task(_retry_items_runner(task, ids, force=True))
+    return {"ok": True, "retried": len(ids)}
 
 
 @router.get("/_/queue")

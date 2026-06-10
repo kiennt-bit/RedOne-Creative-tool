@@ -8,7 +8,7 @@ import { tasksStore } from '../tasks_store.js';
 import { ws } from '../ws.js';
 import {
   makeSelectionToolbar, attachCardCheckbox,
-  makeRetryFailedButton, makeItemRetryButton,
+  makeRetryFailedButton,
 } from '../gallery_actions.js';
 
 const FLUX_BASE_TYPE = 19;
@@ -639,6 +639,16 @@ export function renderShakker(root) {
       toolbar = makeSelectionToolbar({
         getCards: () => [...grid.querySelectorAll('.scene-card[data-path]')],
         pathOf: (card) => card.dataset.path,
+        itemOf: (card) => {
+          const id = parseInt(card.dataset.itemId || '0', 10);
+          if (!id) return null;
+          const t = tasksStore.get(taskState.id);
+          return (t && t.items.find(x => x.id === id)) || { id };
+        },
+        onRegen: async (ids) => {
+          await api.shakker.retryItems(taskState.id, ids);
+          ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid));
+        },
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {
           tasksStore.removeItemsByPath(taskState.id, paths);
@@ -653,7 +663,7 @@ export function renderShakker(root) {
       const thumb = el('div', { class: `scene-thumb ${aspectCls}` },
         el('div', { class: 'scene-number' }, `#${i + 1}`));
       if (it.status === 'done' && it.output_url) {
-        const img = el('img', { src: it.output_url, style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
+        const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
         img.addEventListener('click', () => window.open(it.output_url, '_blank'));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
@@ -680,10 +690,8 @@ export function renderShakker(root) {
             navigator.clipboard.writeText(p); toast('Đã copy prompt', 'success');
           } }, icon('copy', 14))));
       }
-      if (it.status === 'error' && it.id != null) {
-        info.appendChild(el('div', { class: 'scene-actions' },
-          makeItemRetryButton(taskState.id, it.id, (iid) => api.shakker.retryItem(iid))));
-      }
+      // (Per-card "Gen lại" removed — regen is on the selection toolbar:
+      //  tick cards → "Gen lại".)
       card.appendChild(info);
       if (it.status === 'done' && it.output_path) {
         if (it.id != null) card.dataset.itemId = String(it.id);
@@ -715,12 +723,22 @@ export function renderShakker(root) {
   // ── live subscription ──
   let unsubscribe = null;
   let _currentTaskId = null;
+  let _rafId = 0;           // coalesce re-renders to ~1 per frame (perf)
   function currentTaskId() { return _currentTaskId; }
+  function scheduleRender() {
+    if (_rafId) return;
+    _rafId = requestAnimationFrame(() => {
+      _rafId = 0;
+      if (!root.isConnected) return;
+      renderTaskGallery(tasksStore.get(currentTaskId()));
+    });
+  }
   function attachToTask(taskId) {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
     _currentTaskId = taskId;
-    renderTaskGallery(tasksStore.get(taskId));
-    unsubscribe = tasksStore.on(taskId, (state) => renderTaskGallery(state));
+    renderTaskGallery(tasksStore.get(taskId));       // immediate first paint
+    unsubscribe = tasksStore.on(taskId, scheduleRender);
   }
 
   const pending = window.__app && window.__app._pendingTaskId;
@@ -739,10 +757,13 @@ export function renderShakker(root) {
   });
   const offAcctUpdate = ws.on('shakker_account_updated', () => refreshAccount());
 
-  // cleanup on navigation
+  // cleanup on navigation. `root` is the PERSISTENT #page-container so
+  // document.body.contains(root) is always true — detect unmount via our own
+  // marker instead, else the subscription leaks and the gallery jumps tasks.
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    if (!root.querySelector('#shk-results')) {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
       if (offTokenExpired) offTokenExpired();
       if (offAcctUpdate) offAcctUpdate();
       obs.disconnect();

@@ -156,6 +156,32 @@ export function makeThumbnail(file, maxSide = 320, quality = 0.8) {
   });
 }
 
+/**
+ * Lazy-load <video> elements as they scroll into view, so a gallery with 100+
+ * videos doesn't fire 100 metadata fetches at once (the main >100-item lag
+ * cause). Build each card's <video preload="none"> with a `data-src` (NOT
+ * `src`); call observer.observe(videoEl) for each. On intersection we set
+ * preload='metadata' + src so the FIRST FRAME shows (preview preserved) only
+ * for videos near the viewport; off-screen ones stay cheap placeholders.
+ *
+ * Caller owns the lifecycle: create ONE observer per gallery, disconnect()
+ * the previous one before each full rebuild + on unmount (avoids leaking
+ * observers across re-renders).
+ */
+export function makeLazyVideoObserver(root, { rootMargin = '300px' } = {}) {
+  return new IntersectionObserver((entries, obs) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const v = e.target;
+      if (v.dataset.src && !v.getAttribute('src')) {
+        v.preload = 'metadata';
+        v.setAttribute('src', v.dataset.src);
+      }
+      obs.unobserve(v);
+    }
+  }, { root: root || null, rootMargin });
+}
+
 // Icon helper (returns SVG element)
 export function icon(name, size = 16) {
   const paths = {
@@ -179,4 +205,76 @@ export function icon(name, size = 16) {
   const wrapper = document.createElement('span');
   wrapper.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${paths[name] || paths.play}</svg>`;
   return wrapper.firstChild;
+}
+
+// ── Flow-account guard ───────────────────────────────────────────────
+// Chặn việc gen bằng Google Flow khi chưa có tài khoản Flow khả dụng, bằng một
+// popup hướng dẫn rõ ràng — thay cho lỗi "Không có account khả dụng" chỉ hiện
+// SAU khi task đã chạy. Async: nếu cache báo không có account thì fetch lại 1
+// lần trước khi chặn (tránh chặn nhầm khi account vừa được sync). Trả về true
+// nếu được phép tạo, false nếu bị chặn (đã hiện popup). KHÔNG dùng cho Shakker
+// (Shakker có tài khoản riêng).
+export async function ensureFlowAccountOrWarn() {
+  const read = () =>
+    (window.__app && window.__app.store && window.__app.store.accounts) || [];
+  if (read().some(a => a.enabled)) return true;   // fast path: cache nói OK
+  // Cache báo không có → fetch tươi 1 lần trước khi chặn.
+  try {
+    if (window.__app && window.__app.refreshAccounts) await window.__app.refreshAccounts();
+  } catch (e) { /* dùng cache */ }
+  if (read().some(a => a.enabled)) return true;
+
+  const hasAny = read().length > 0;
+  modal({
+    title: 'Chưa có tài khoản Google Flow',
+    body: el('div', null,
+      el('p', { style: { margin: '0 0 10px' } },
+        hasAny
+          ? 'Tài khoản Google Flow đang bị tắt hoặc đã hết phiên đăng nhập. '
+            + 'Hãy đăng nhập lại trước khi tạo.'
+          : 'Bạn chưa có tài khoản Google Flow nào. Cần đăng nhập Google Flow để tạo ảnh / video.'),
+      el('p', { style: { margin: '0', color: 'var(--text-muted)', fontSize: '12.5px' } },
+        'Vào tab "Tài Khoản" → mở labs.google trong Chrome → đăng nhập Google. '
+        + '(Cần cài Extension "RedOne Auth Helper" nếu chưa có.)'),
+    ),
+    actions: [
+      { label: 'Mở tab Tài Khoản', class: 'btn-primary',
+        onclick: (close) => {
+          close();
+          if (window.__app && window.__app.navigate) window.__app.navigate('accounts');
+        } },
+      { label: 'Đóng' },
+    ],
+  });
+  return false;
+}
+
+// Banner nhắc nhập Gemini API key — gọi ở đầu render của các tab cần Gemini
+// (YouTube / Ý Tưởng / Ảnh → Prompt, Storyboard). Trả về phần tử banner nếu CHƯA
+// có key (caller tự appendChild), hoặc null nếu đã có. Không chặn thao tác — chỉ
+// nhắc + nút lấy/nhập key. Tự biến mất khi đã nhập key (trang re-render khi quay lại).
+export function geminiKeyNotice() {
+  const keys = (window.__app && window.__app.store && window.__app.store.settings
+    && window.__app.store.settings.gemini_api_keys) || [];
+  if (Array.isArray(keys) && keys.length > 0) return null;
+  return el('div', {
+    style: {
+      display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+      background: 'var(--brand-tint)', border: '1px solid var(--brand)',
+      borderRadius: 'var(--r-md)', padding: '12px 16px', marginBottom: '16px',
+    },
+  },
+    el('div', { style: { flex: '1', minWidth: '220px', fontSize: '13.5px', lineHeight: '1.5' } },
+      el('b', { style: { color: 'var(--brand)' } }, '⚠ Cần Gemini API key (miễn phí) '),
+      el('span', null, '— tính năng này dùng AI Gemini để viết prompt. Hãy nhập key để dùng được.'),
+    ),
+    el('button', {
+      class: 'btn btn-sm btn-primary',
+      onclick: () => window.open('https://aistudio.google.com/apikey', '_blank', 'noopener'),
+    }, 'Lấy key tại AI Studio'),
+    el('button', {
+      class: 'btn btn-sm',
+      onclick: () => { if (window.__app && window.__app.navigate) window.__app.navigate('settings'); },
+    }, 'Nhập key trong Cài đặt'),
+  );
 }

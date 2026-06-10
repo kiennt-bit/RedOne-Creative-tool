@@ -336,7 +336,12 @@ async def _process_shakker_task(task_id: int):
 
 # ── Detached retry runner (works WHILE task still running) ────────────
 
-async def _retry_shakker_items_runner(task: dict, item_ids: list[int]) -> None:
+async def _retry_shakker_items_runner(task: dict, item_ids: list[int], force: bool = False) -> None:
+    # Shakker does NOT go through the Chrome bridge (direct httpx, self-limited
+    # to ~1 submit/1.2s + server concurrency=1), so there is no bridge priority
+    # to set — a regen just runs detached as soon as the spacing lock frees.
+    # With force=True, already-COMPLETED items are regenerated (overwrite in
+    # place); with force=False only non-completed items run (retry-failed).
     task_id = task["id"]
     acc = _pick_shakker_account()
     if not acc:
@@ -350,8 +355,11 @@ async def _retry_shakker_items_runner(task: dict, item_ids: list[int]) -> None:
         targets = []
         for iid in item_ids:
             it = db.get_item(iid)
-            if it and it.get("status") != ItemStatus.COMPLETED.value:
-                targets.append(it)
+            if not it:
+                continue
+            if not force and it.get("status") == ItemStatus.COMPLETED.value:
+                continue
+            targets.append(it)
         if not targets:
             await _maybe_finalize(task_id)
             return
@@ -461,11 +469,11 @@ async def cancel_shakker(task_id: int):
 
 @router.post("/item/{item_id}/retry")
 async def retry_shakker_item(item_id: int):
+    """Regenerate a SINGLE shakker item — ERROR/PENDING or already-COMPLETED
+    (explicit "Gen lại" → overwrite in place)."""
     item = db.get_item(item_id)
     if not item:
         raise HTTPException(404, "Không tìm thấy item")
-    if item.get("status") == ItemStatus.COMPLETED.value:
-        raise HTTPException(400, "Item đã hoàn thành")
     task = db.get_task(item["task_id"])
     if not task:
         raise HTTPException(404, "Không tìm thấy task")
@@ -473,7 +481,7 @@ async def retry_shakker_item(item_id: int):
                               TaskStatus.CANCELLED.value):
         db.update_task(task["id"], status=TaskStatus.RUNNING.value, finished_at=None)
         await hub.broadcast("task_started", {"task_id": task["id"], "retried": True, "kind": "shakker"})
-    asyncio.create_task(_retry_shakker_items_runner(task, [item_id]))
+    asyncio.create_task(_retry_shakker_items_runner(task, [item_id], force=True))
     return {"ok": True, "item_id": item_id}
 
 
@@ -492,6 +500,28 @@ async def retry_shakker_failed(task_id: int):
     await hub.broadcast("task_started", {"task_id": task_id, "retried": True, "kind": "shakker"})
     asyncio.create_task(_retry_shakker_items_runner(task, failed_ids))
     return {"ok": True, "retried": len(failed_ids)}
+
+
+class ShakkerRetryItemsRequest(BaseModel):
+    item_ids: list[int]
+
+
+@router.post("/{task_id}/retry-items")
+async def retry_shakker_items(task_id: int, body: ShakkerRetryItemsRequest):
+    """Regenerate a SPECIFIC LIST of shakker items (gallery "Gen lại" toolbar
+    over the ticked cards). force=True → overwrite COMPLETED in place."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    ids = [iid for iid in (body.item_ids or []) if db.get_item(iid)]
+    if not ids:
+        return {"ok": True, "retried": 0}
+    if task.get("status") in (TaskStatus.COMPLETED.value, TaskStatus.ERROR.value,
+                              TaskStatus.CANCELLED.value):
+        db.update_task(task_id, status=TaskStatus.RUNNING.value, finished_at=None)
+    await hub.broadcast("task_started", {"task_id": task_id, "retried": True, "kind": "shakker"})
+    asyncio.create_task(_retry_shakker_items_runner(task, ids, force=True))
+    return {"ok": True, "retried": len(ids)}
 
 
 # ── Endpoints: catalog + account ─────────────────────────────────────

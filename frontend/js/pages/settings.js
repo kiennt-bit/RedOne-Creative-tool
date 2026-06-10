@@ -10,17 +10,26 @@ export function renderSettings(root) {
   const apiCard = el('div', { class: 'card' },
     el('h3', { class: 'card-title' }, 'API Keys'),
     el('p', { class: 'card-subtitle', style: { marginBottom: '16px' } },
-      'Gemini API key dùng cho phân tích YouTube/script/image. Lấy ở https://aistudio.google.com/apikey'),
+      'Gemini API key dùng cho tạo prompt (Ý tưởng/YouTube/Ảnh) + Storyboard. Lấy ở https://aistudio.google.com/apikey'),
     el('div', { class: 'field-group' },
-      el('label', { class: 'field-label' }, 'Gemini API Key'),
-      el('div', { style: { display: 'flex', gap: '8px' } },
-        el('input', { type: 'password', class: 'input', id: 'st-gemini', placeholder: 'AIza...' }),
-        el('button', { class: 'btn', id: 'st-toggle', onclick: () => {
+      el('label', { class: 'field-label' }, 'Gemini API Keys (mỗi dòng 1 key)'),
+      el('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start' } },
+        el('textarea', {
+          class: 'textarea', id: 'st-gemini', rows: 4,
+          placeholder: 'AIza...\nAIza...\nAIza...',
+          style: { webkitTextSecurity: 'disc', fontFamily: 'monospace', fontSize: '12px' },
+        }),
+        el('button', { class: 'btn', id: 'st-toggle', title: 'Hiện/ẩn key', onclick: () => {
           const inp = root.querySelector('#st-gemini');
-          inp.type = inp.type === 'password' ? 'text' : 'password';
+          inp.style.webkitTextSecurity = inp.style.webkitTextSecurity === 'disc' ? 'none' : 'disc';
         } }, icon('eye', 14)),
       ),
-      el('div', { class: 'field-help' }, 'Đã lưu sẽ hiện dạng AIza•••XXX'),
+      el('div', { class: 'field-help' },
+        'Nhập nhiều key (mỗi dòng 1 key). Khi 1 key hết hạn mức (quota free), '
+        + 'tool tự chuyển sang key kế tiếp. Hết tất cả → báo lỗi rõ ràng.'),
+      el('div', { class: 'field-help', style: { color: 'var(--accent-orange)', marginTop: '4px' } },
+        '⚠️ Lưu ý: mỗi key nên lấy từ một TÀI KHOẢN GOOGLE KHÁC NHAU. '
+        + 'Các key cùng một tài khoản dùng chung quota → xoay vòng sẽ vô nghĩa.'),
     ),
     el('div', { style: { display: 'flex', gap: '8px' } },
       el('button', { class: 'btn btn-primary', id: 'st-save' }, icon('check'), 'Lưu'),
@@ -129,9 +138,11 @@ export function renderSettings(root) {
     try {
       const r = await api.settings.get();
       const s = r.settings || {};
-      if (s.gemini_api_key_masked) {
-        root.querySelector('#st-gemini').placeholder = s.gemini_api_key_masked;
-      }
+      // Fill the textarea with the saved keys (one per line) so the list is
+      // directly editable. Masked-by-default via CSS; toggle with the eye icon.
+      const gkeys = Array.isArray(s.gemini_api_keys) ? s.gemini_api_keys : [];
+      const gta = root.querySelector('#st-gemini');
+      if (gta) gta.value = gkeys.join('\n');
       root.querySelector('#st-folder').value = r.app.output_dir || '';
       root.querySelector('#st-aspect').value = s.default_aspect || '16:9';
       root.querySelector('#st-quality').value = s.default_quality || 'lite_lp';
@@ -193,14 +204,14 @@ export function renderSettings(root) {
   }
 
   root.querySelector('#st-save').addEventListener('click', async () => {
-    const key = root.querySelector('#st-gemini').value.trim();
-    if (!key) return toast('Nhập key trước', 'warning');
+    const raw = root.querySelector('#st-gemini').value || '';
+    const keys = raw.split('\n').map(k => k.trim()).filter(Boolean);
+    if (!keys.length) return toast('Nhập ít nhất 1 key', 'warning');
     try {
-      await api.settings.update({ gemini_api_key: key });
-      toast('Đã lưu API key', 'success');
-      root.querySelector('#st-gemini').value = '';
+      await api.settings.update({ gemini_api_keys: keys });
+      toast(`Đã lưu ${keys.length} API key`, 'success');
       await syncStoreSettings();
-      await load();
+      await load();   // refills the textarea from the server (trimmed/deduped)
     } catch (e) { toast(e.message, 'error'); }
   });
   root.querySelector('#st-test').addEventListener('click', async () => {

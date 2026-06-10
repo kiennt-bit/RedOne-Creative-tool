@@ -36,7 +36,7 @@ const kindSubscribers = new Map();
 let upscaleBatch = { active: false, total: 0, done: 0, running: 0, resolution: '', taskId: null };
 
 // ── Persistence ────────────────────────────────────────────
-function persist() {
+function persistNow() {
   try {
     // Convert Map → array, drop oldest beyond MAX
     const arr = [...tasks.values()]
@@ -47,6 +47,26 @@ function persist() {
     console.warn('[tasks_store] persist failed', e);
   }
 }
+
+// Trailing-debounced persist. notify() fires on EVERY WS event (hundreds
+// during a 100-item task); a synchronous JSON.stringify(all tasks) + localStorage
+// write per event saturates the main thread. Coalesce writes to ~once/500ms.
+// Subscribers still fire synchronously (see notify) — only the write is delayed.
+let _persistTimer = 0;
+function persist() {
+  if (_persistTimer) return;
+  _persistTimer = setTimeout(() => { _persistTimer = 0; persistNow(); }, 500);
+}
+// Flush pending write immediately (tab close / hide / structural deletes) so
+// no state is lost on reload. Backend doesn't replay events on reconnect.
+function persistFlush() {
+  if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = 0; }
+  persistNow();
+}
+window.addEventListener('pagehide', persistFlush);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') persistFlush();
+});
 
 function restore() {
   try {
@@ -83,6 +103,7 @@ export const tasksStore = {
     const t = {
       id: taskId,
       kind,
+      name: meta.name || '',
       status: 'running',
       aspect: meta.aspect || '1:1',
       model: meta.model || '',
@@ -142,7 +163,7 @@ export const tasksStore = {
   remove(taskId) {
     tasks.delete(taskId);
     subscribers.delete(taskId);
-    persist();
+    persistFlush();   // structural change → write now (don't wait for debounce)
   },
 
   /**
@@ -161,7 +182,7 @@ export const tasksStore = {
     if (t.items.length === 0) {
       tasks.delete(taskId);
       subscribers.delete(taskId);
-      persist();
+      persistFlush();
       return;
     }
     notify(taskId);
@@ -170,7 +191,7 @@ export const tasksStore = {
   clear() {
     tasks.clear();
     subscribers.clear();
-    persist();
+    persistFlush();
   },
 
   /**
@@ -272,10 +293,22 @@ export const tasksStore = {
     if (!t) return false;
     const it = t.items.find(x => x.id === itemId);
     if (!it) return false;
+    // Decrement whichever terminal counter this item was contributing to so
+    // the task progress (done/error of total) stays consistent while it
+    // regenerates. Regen-from-done overwrites in place → drop the old output.
     if (it.status === 'error') t.error = Math.max(0, t.error - 1);
+    else if (it.status === 'done') t.done = Math.max(0, t.done - 1);
     it.status = 'generating';
     it.error = null;
     it.error_detail = null;
+    it.output_url = null;
+    it.output_path = null;
+    // A prior upscale (if any) is invalidated by regenerating the base image —
+    // clear it so the card stops offering "Tải 2K/4K" for a stale file.
+    it.upscale_status = null;
+    it.upscale_path = null;
+    it.upscale_url = null;
+    it.upscale_resolution = null;
     t.status = 'running';
     t.error_message = null;
     notify(taskId);
@@ -352,7 +385,10 @@ ws.on('item_completed', (d) => {
   // Only bump counter when transitioning to done
   if (it.status !== 'done') t.done += 1;
   it.status = 'done';
-  it.output_url = pathToUrl(d.output_path);
+  // Cache-bust the URL: a regen-from-done overwrites the file at the SAME
+  // path, so without a unique query the browser would show the cached old
+  // image. /files/ StaticFiles ignores the query string.
+  it.output_url = pathToUrl(d.output_path) + (d.output_path ? `?v=${Date.now()}` : '');
   it.output_path = d.output_path;
   // Carry media_id through so the gallery's upscale button (2K/4K) can
   // pass it to the backend without an extra DB lookup.

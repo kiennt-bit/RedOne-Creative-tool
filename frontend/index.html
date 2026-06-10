@@ -4,10 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>RedOne Creative — AI Video Studio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='2' y='2' width='60' height='60' rx='14' fill='%23dc2626'/%3E%3Cpath d='M22 18 L46 32 L22 46 Z' fill='white'/%3E%3C/svg%3E" />
+<link rel="icon" type="image/png" href="/static/assets/logo.png?b=__BUILD_ID__" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<!-- Load Google Fonts NON-render-blocking: a local desktop tool must never
+     hang on an external CDN. `media=print` makes it a non-blocking fetch; the
+     onload swaps it to `all`. If Google Fonts is slow/unreachable, the app
+     still renders instantly with the system-font fallback below. -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet" media="print" onload="this.media='all'" />
+<noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" /></noscript>
 <link rel="stylesheet" href="/static/css/theme.css?b=__BUILD_ID__" />
 <link rel="stylesheet" href="/static/css/layout.css?b=__BUILD_ID__" />
 <link rel="stylesheet" href="/static/css/components.css?b=__BUILD_ID__" />
@@ -26,10 +32,8 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
         <div class="brand-logo">
-          <svg viewBox="0 0 64 64" width="32" height="32">
-            <rect x="2" y="2" width="60" height="60" rx="14" fill="#dc2626"/>
-            <path d="M22 18 L46 32 L22 46 Z" fill="white"/>
-          </svg>
+          <img src="/static/assets/logo.png?b=__BUILD_ID__" alt="RedOne"
+               style="width:100%;height:100%;object-fit:contain;" />
         </div>
         <div class="brand-text">
           <div class="brand-name">RedOne</div>
@@ -183,6 +187,12 @@
                sidebar so they don't get pushed off-screen when the sidebar
                nav grows. Sun/moon swap based on current data-theme. -->
           <div class="topbar-actions">
+            <button class="icon-btn" id="help-btn" title="Hướng dẫn sử dụng (mở GitHub)">
+              <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.2 9.2a2.8 2.8 0 1 1 4.3 2.6c-.9.6-1.5 1.1-1.5 2.2M12 17h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <button class="icon-btn" id="feedback-btn" title="Góp ý / Báo lỗi (gửi phản hồi)">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 11.5a8.5 8.5 0 0 1-12.6 7.4L3 21l2.1-5.4A8.5 8.5 0 1 1 21 11.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            </button>
             <button class="icon-btn" id="theme-toggle" title="Đổi giao diện sáng / tối">
               <span class="theme-icon-light">
                 <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>

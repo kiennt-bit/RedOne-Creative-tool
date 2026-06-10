@@ -1,5 +1,5 @@
 // Script-to-Prompt page — one-shot Gemini storyboard
-import { el, clear, toast, setLoading, icon, modal } from '../ui.js';
+import { el, clear, toast, setLoading, icon, modal, geminiKeyNotice } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → survives SPA tab navigation (restored on re-render).
@@ -8,12 +8,22 @@ import { api } from '../api.js';
 // SPA nav, cleared on full F5 like other ref-image flows).
 const state = {
   scenes: [], script: '', modelUsed: null, lastData: null, inputs: {},
-  mode: 'video', imagePrompts: [],
+  mode: 'video', imagePrompts: [], loading: false,
   refs: { subject: null, background: null, style: null },
 };
 
+// Points at the CURRENT mount's render function. An in-flight Gemini request
+// (started by an earlier mount) calls this on resolve so the result lands on
+// the page that's currently shown — fixes "switch tab mid-generation → come
+// back → blank". If the page is unmounted it no-ops; the next mount renders
+// from `state`.
+let _liveRender = () => {};
+
 export function renderScript(root) {
 
+  // Nhắc nhập Gemini API key nếu chưa có (tab này cần Gemini).
+  const _gkn = geminiKeyNotice();
+  if (_gkn) root.appendChild(_gkn);
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('sparkles', 28)),
     el('div', { class: 'hero-text' },
@@ -148,10 +158,39 @@ export function renderScript(root) {
     segImage.className = `btn btn-sm ${isImg ? 'btn-primary' : 'btn-ghost'}`;
     const lbl = root.querySelector('#sc-go-label');
     if (lbl) lbl.textContent = isImg ? 'Tạo prompt ảnh' : 'Phân tích kịch bản';
-    // Show this mode's last results, or the empty hint.
-    if (isImg) { state.imagePrompts.length ? renderImagePrompts(state.imagePrompts) : clearResults(); }
-    else { state.scenes.length ? renderScenes(state.scenes) : clearResults(); }
+    renderResults();   // loading spinner / this mode's results / empty hint
   }
+
+  // Render the current `state` into THIS mount's DOM (banner + loading + results
+  // + status + button). Assigned to the module `_liveRender` so async resolves
+  // target the live page.
+  function renderResults() {
+    if (!root.isConnected) return;
+    const statusEl = root.querySelector('#sc-status');
+    const wrap = root.querySelector('#sc-results');
+    const banner = root.querySelector('#sc-banner');
+    const btn = root.querySelector('#sc-go');
+    if (btn) btn.disabled = !!state.loading;
+    if (state.loading) {
+      if (banner) banner.innerHTML = '';
+      clear(wrap);
+      wrap.appendChild(el('div', { class: 'empty' },
+        el('div', { class: 'spinner' }),
+        el('div', { style: { marginTop: '10px' } }, state.mode === 'image' ? 'Đang tạo prompt ảnh…' : 'Đang phân tích kịch bản…'),
+      ));
+      if (statusEl) statusEl.textContent = 'Đang tạo…';
+      return;
+    }
+    if (state.lastData) renderBanner(state.lastData); else if (banner) banner.innerHTML = '';
+    if (state.mode === 'image') {
+      if (state.imagePrompts.length) renderImagePrompts(state.imagePrompts); else clearResults();
+      if (statusEl) statusEl.textContent = state.imagePrompts.length ? `${state.imagePrompts.length} prompt` : 'Chưa tạo';
+    } else {
+      if (state.scenes.length) renderScenes(state.scenes); else clearResults();
+      if (statusEl) statusEl.textContent = state.scenes.length ? `${state.scenes.length} cảnh` : 'Chưa phân tích';
+    }
+  }
+  _liveRender = renderResults;
   segVideo.addEventListener('click', () => setMode('video'));
   segImage.addEventListener('click', () => setMode('image'));
 
@@ -186,32 +225,31 @@ export function renderScript(root) {
     const script = root.querySelector('#sc-script').value.trim();
     if (!script) return toast('Cần kịch bản', 'warning');
     state.script = script;
-    const btn = root.querySelector('#sc-go');
-    setLoading(btn, true);
-    root.querySelector('#sc-banner').innerHTML = '';
-    root.querySelector('#sc-status').textContent = 'Đang phân tích...';
+    const payload = {
+      script,
+      num_scenes: parseInt(root.querySelector('#sc-num').value, 10),
+      auto_detect_scenes: root.querySelector('#sc-auto').checked,
+      style_preset: root.querySelector('#sc-style').value,
+      style_lock: root.querySelector('#sc-stylelock').value || null,
+      global_context: root.querySelector('#sc-ctx').value || null,
+      voice_gender: root.querySelector('#sc-voice').value,
+    };
+    _saveInputs();
+    state.loading = true; state.lastData = null;
+    _liveRender();
     try {
-      const data = await api.analyzer.script({
-        script,
-        num_scenes: parseInt(root.querySelector('#sc-num').value, 10),
-        auto_detect_scenes: root.querySelector('#sc-auto').checked,
-        style_preset: root.querySelector('#sc-style').value,
-        style_lock: root.querySelector('#sc-stylelock').value || null,
-        global_context: root.querySelector('#sc-ctx').value || null,
-        voice_gender: root.querySelector('#sc-voice').value,
-      });
+      const data = await api.analyzer.script(payload);
       state.scenes = data.scenes || [];
       state.modelUsed = data.model_used;
       state.lastData = data;
-      _saveInputs();
-      renderBanner(data);
-      renderScenes(state.scenes);
-      root.querySelector('#sc-status').textContent = `${state.scenes.length} cảnh`;
-      toast(`Đã sinh ${state.scenes.length} cảnh`, 'success');
+      state.loading = false;
+      _liveRender();
+      toast(`Đã sinh ${(data.scenes || []).length} cảnh`, 'success');
     } catch (e) {
+      state.loading = false;
+      _liveRender();
       toast(e.message, 'error');
-      root.querySelector('#sc-status').textContent = 'Lỗi';
-    } finally { setLoading(btn, false); }
+    }
   });
 
   function renderBanner(data) {
@@ -313,30 +351,28 @@ export function renderScript(root) {
     if (!idea) return toast('Cần nhập ý tưởng', 'warning');
     state.script = idea;
     const count = Math.max(1, parseInt(root.querySelector('#sc-img-count').value, 10) || 10);
-    const btn = root.querySelector('#sc-go');
-    setLoading(btn, true);
-    root.querySelector('#sc-banner').innerHTML = '';
-    root.querySelector('#sc-status').textContent = 'Đang tạo prompt ảnh...';
+    const fd = new FormData();
+    fd.append('idea', idea);
+    fd.append('count', String(count));
+    if (state.refs.subject) fd.append('subject', state.refs.subject.file);
+    if (state.refs.background) fd.append('background', state.refs.background.file);
+    if (state.refs.style) fd.append('style', state.refs.style.file);
+    _saveInputs();
+    state.loading = true; state.lastData = null;
+    _liveRender();
     try {
-      const fd = new FormData();
-      fd.append('idea', idea);
-      fd.append('count', String(count));
-      if (state.refs.subject) fd.append('subject', state.refs.subject.file);
-      if (state.refs.background) fd.append('background', state.refs.background.file);
-      if (state.refs.style) fd.append('style', state.refs.style.file);
       const data = await api.analyzer.ideaImagePrompts(fd);
       state.imagePrompts = data.prompts || [];
       state.modelUsed = data.model_used;
       state.lastData = data;
-      _saveInputs();
-      renderBanner(data);
-      renderImagePrompts(state.imagePrompts);
-      root.querySelector('#sc-status').textContent = `${state.imagePrompts.length} prompt`;
-      toast(`Đã tạo ${state.imagePrompts.length} prompt ảnh`, 'success');
+      state.loading = false;
+      _liveRender();
+      toast(`Đã tạo ${(data.prompts || []).length} prompt ảnh`, 'success');
     } catch (e) {
+      state.loading = false;
+      _liveRender();
       toast(e.message, 'error');
-      root.querySelector('#sc-status').textContent = 'Lỗi';
-    } finally { setLoading(btn, false); }
+    }
   }
 
   function renderImagePrompts(prompts) {
@@ -407,13 +443,8 @@ export function renderScript(root) {
     set('#sc-img-count', inp.imgCount);
     const a = root.querySelector('#sc-auto');
     if (a && typeof inp.auto === 'boolean') a.checked = inp.auto;
-    if (state.lastData) renderBanner(state.lastData);
-    // setMode shows the right fields + re-renders this mode's last results.
+    // setMode → renderResults(): shows the loading spinner if a generation is
+    // still running (started before navigating away), else this mode's results.
     setMode(state.mode);
-    const st = root.querySelector('#sc-status');
-    if (st) {
-      if (state.mode === 'image' && state.imagePrompts.length) st.textContent = `${state.imagePrompts.length} prompt`;
-      else if (state.mode === 'video' && state.scenes.length) st.textContent = `${state.scenes.length} cảnh`;
-    }
   })();
 }

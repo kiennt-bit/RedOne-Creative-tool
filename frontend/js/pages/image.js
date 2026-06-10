@@ -1,9 +1,9 @@
 // Image generation page (Imagen / Nano Banana via Google Labs)
 // State is persisted in tasksStore so the gallery survives page navigation.
-import { el, clear, toast, setLoading, icon, makeThumbnail } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makeItemRetryButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
 
 // ── Per-form state that survives navigation (singleton, module-level) ──
 const form = {
@@ -16,6 +16,13 @@ const form = {
   refImagePaths: [],
   refImagePreviews: [],   // [{ name, url }]  — preserved across re-renders
 };
+
+// Last task the user was actually viewing on this page (survives SPA
+// navigation since it's module-level). On re-mount we restore THIS task
+// instead of jumping to the newest one — prevents the view auto-switching to
+// a different task (e.g. one being upscaled/regenerated) when you leave and
+// come back. Only explicit actions (new task / eye-icon) change it.
+let _lastViewedTaskId = null;
 
 function defaultTaskName() {
   const d = new Date();
@@ -58,6 +65,28 @@ function _upscaleBadge(it) {
     default:
       return el('span');
   }
+}
+
+// Send selected generated images to the Tạo Video tab as I2V (each image =
+// a video's first frame, its gen prompt becomes the video prompt). Prefers
+// the upscaled file when a 2K/4K upscale finished.
+function sendImagesToI2V(taskState, idList) {
+  const byId = new Map(taskState.items.map(it => [it.id, it]));
+  const chosen = idList.map(id => byId.get(id)).filter(it => it && it.status === 'done' && it.output_path);
+  const scenes = chosen.map(it => {
+    const up = it.upscale_status === 'done' && it.upscale_path;
+    return {
+      prompt: it.prompt || '',
+      path: up ? it.upscale_path : it.output_path,
+      url: up ? it.upscale_url : it.output_url,
+      name: 'image',
+    };
+  });
+  if (!scenes.length) return toast('Chọn ảnh đã xong để gửi', 'warning');
+  const upN = chosen.filter(it => it.upscale_status === 'done' && it.upscale_path).length;
+  sessionStorage.setItem('inject_i2v', JSON.stringify(scenes));
+  window.__app.navigate('content');
+  toast(`Đã gửi ${scenes.length} ảnh sang Tạo Video (I2V)${upN ? ` (${upN} ảnh đã upscale)` : ''}`, 'success');
 }
 
 export function renderImage(root) {
@@ -227,7 +256,7 @@ export function renderImage(root) {
   const resultsCard = el('div', { class: 'card' },
     el('div', { class: 'card-header' },
       el('div', null,
-        el('h3', { class: 'card-title' }, 'Ảnh kết quả'),
+        el('h3', { class: 'card-title', id: 'img-results-title' }, 'Ảnh kết quả'),
         el('div', { class: 'card-subtitle', id: 'img-status' }, 'Chưa có job'),
       ),
       el('div', { id: 'img-header-actions', style: { display: 'flex', gap: '8px' } },
@@ -506,6 +535,7 @@ export function renderImage(root) {
   startBtn.addEventListener('click', async () => {
     const prompts = form.prompts.map(p => (p || '').trim()).filter(Boolean);
     if (prompts.length === 0) return toast('Cần ít nhất 1 prompt', 'warning');
+    if (!(await ensureFlowAccountOrWarn())) return;
     form.model = root.querySelector('#img-model').value;
     form.aspect = root.querySelector('#img-aspect').value;
     form.countPerPrompt = parseInt(root.querySelector('#img-count').value || '1', 10);
@@ -517,6 +547,7 @@ export function renderImage(root) {
       for (let k = 0; k < form.countPerPrompt; k++) expanded.push(p);
     }
 
+    const taskName = form.taskName || defaultTaskName();
     setLoading(startBtn, true);
     try {
       const res = await api.image.start({
@@ -526,13 +557,14 @@ export function renderImage(root) {
         count_per_prompt: form.countPerPrompt,
         concurrent: form.concurrent,
         reference_image_paths: form.refImagePaths.length ? form.refImagePaths : null,
-        task_name: form.taskName || defaultTaskName(),
+        task_name: taskName,
       });
       // Register the task in the global store so it survives navigation
       tasksStore.register(res.task_id, 'image', {
         items: expanded,
         aspect: form.aspect,
         model: form.model,
+        name: taskName,
       });
       attachToTask(res.task_id);
       toast(`Task #${res.task_id} (${res.items} ảnh)`, 'success');
@@ -566,6 +598,15 @@ export function renderImage(root) {
     const wrap = root.querySelector('#img-results');
     if (!wrap) return;
     clear(wrap);
+
+    // Show WHICH task these cards belong to (task name) so the user always
+    // knows the current task — and notices if it ever changes.
+    const titleEl = root.querySelector('#img-results-title');
+    if (titleEl) {
+      titleEl.textContent = taskState
+        ? `Ảnh kết quả — ${taskState.name || ('Task #' + taskState.id)}`
+        : 'Ảnh kết quả';
+    }
 
     const clearBtn = root.querySelector('#img-clear-all');
     if (clearBtn) {
@@ -604,12 +645,22 @@ export function renderImage(root) {
       toolbar = makeSelectionToolbar({
         getCards: () => [...grid.querySelectorAll('.scene-card[data-path]')],
         pathOf: (card) => card.dataset.path,
+        // Return the LIVE store item so the toolbar sees media_id + upscale_status
+        // (regen must skip cards mid-upscale). Falls back to a dataset shape.
         itemOf: (card) => {
           const id = parseInt(card.dataset.itemId || '0', 10);
-          return id ? { id, mediaId: card.dataset.mediaId || null } : null;
+          if (!id) return null;
+          const t = tasksStore.get(taskState.id);
+          return (t && t.items.find(x => x.id === id))
+            || { id, mediaId: card.dataset.mediaId || null };
         },
         onUpscale: async (itemIds, resolution) => {
           await runBatchUpscale(itemIds, resolution);
+        },
+        onSendToI2V: async (ids) => sendImagesToI2V(taskState, ids),
+        onRegen: async (ids) => {
+          await api.tasks.retryItems(taskState.id, ids);
+          ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid));
         },
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {
@@ -636,7 +687,7 @@ export function renderImage(root) {
       );
 
       if (it.status === 'done' && it.output_url) {
-        const img = el('img', { src: it.output_url, style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
+        const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
         img.addEventListener('click', () => window.open(it.output_url, '_blank'));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
@@ -703,12 +754,8 @@ export function renderImage(root) {
         }
         info.appendChild(actions);
       }
-      // Per-item "Gen lại" button for failed images — retries just this
-      // prompt, even while the rest of the task is still generating.
-      if (it.status === 'error' && it.id != null) {
-        info.appendChild(el('div', { class: 'scene-actions' },
-          makeItemRetryButton(taskState.id, it.id)));
-      }
+      // (Per-card "Gen lại" removed — regen is now on the selection toolbar:
+      //  tick cards → "Gen lại". Keeps cards clean + avoids layout overflow.)
       card.appendChild(info);
       // Attach checkbox only if file exists server-side
       if (it.status === 'done' && it.output_path) {
@@ -769,30 +816,54 @@ export function renderImage(root) {
   // ── Live subscription ────────────────────────────────
   let unsubscribe = null;
   let _currentTaskId = null;
+  let _rafId = 0;           // coalesce re-renders to ~1 per frame (perf)
   function currentTaskId() { return _currentTaskId; }
+  // Collapse the WS-event render storm (100+ items → hundreds of notifies)
+  // into ONE rebuild per frame, reading the LATEST store state.
+  function scheduleRender() {
+    if (_rafId) return;
+    _rafId = requestAnimationFrame(() => {
+      _rafId = 0;
+      if (!root.isConnected) return;
+      renderTaskGallery(tasksStore.get(currentTaskId()));
+    });
+  }
 
   function attachToTask(taskId) {
     if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
     _currentTaskId = taskId;
+    _lastViewedTaskId = taskId;   // remember across re-mounts (sticky view)
     const t = tasksStore.get(taskId);
-    renderTaskGallery(t);
-    unsubscribe = tasksStore.on(taskId, (state) => renderTaskGallery(state));
+    renderTaskGallery(t);                          // immediate first paint
+    unsubscribe = tasksStore.on(taskId, scheduleRender);
   }
 
-  // Deep-link from Tasks Manager (eye icon) takes priority over "latest".
+  // Which task to show on mount, in priority order:
+  //   1. eye-icon deep-link from Tasks Manager (explicit)
+  //   2. the task the user was last viewing (sticky — don't auto-jump)
+  //   3. the newest task of this kind (first ever open)
   const pending = window.__app && window.__app._pendingTaskId;
   if (pending != null && tasksStore.get(pending)) {
     attachToTask(pending);
     window.__app._pendingTaskId = null;
+  } else if (_lastViewedTaskId != null && tasksStore.get(_lastViewedTaskId)) {
+    attachToTask(_lastViewedTaskId);
   } else {
     const latest = tasksStore.latestByKind('image');
     if (latest) attachToTask(latest.id);
   }
 
-  // Cleanup when navigated away
+  // Cleanup when navigated away. NOTE: `root` is the PERSISTENT #page-container
+  // (navigate() only swaps its children), so `document.body.contains(root)` is
+  // ALWAYS true — that guard never fired, so each visit leaked a live
+  // tasksStore.on() subscription. A leaked mount's scheduleRender then kept
+  // repainting #img-results with ITS task whenever that task got an item event
+  // → the gallery "jumped" to another task. Detect unmount via our own marker.
   const obs = new MutationObserver(() => {
-    if (!document.body.contains(root)) {
+    if (!root.querySelector('#img-results')) {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
       obs.disconnect();
     }
   });

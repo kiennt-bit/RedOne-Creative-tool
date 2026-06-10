@@ -15,6 +15,10 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 class SettingsUpdate(BaseModel):
     gemini_api_key: str | None = None
+    # Multiple Gemini API keys for automatic rotation: when one hits its
+    # free-tier quota, generate_text() falls through to the next. Saving this
+    # supersedes (and migrates away from) the single gemini_api_key.
+    gemini_api_keys: list[str] | None = None
     output_folder: str | None = None
     default_quality: str | None = None
     default_aspect: str | None = None
@@ -42,6 +46,10 @@ class SettingsUpdate(BaseModel):
     batch_cooldown_max_seconds: int | None = None
 
 
+def _mask_key(v: str) -> str:
+    return (v[:4] + "•••" + v[-4:]) if isinstance(v, str) and len(v) > 8 else "•••"
+
+
 @router.get("")
 async def get_settings():
     s = db.all_settings()
@@ -51,6 +59,18 @@ async def get_settings():
             s["gemini_api_key_masked"] = v[:4] + "•••" + v[-4:]
         else:
             s["gemini_api_key_masked"] = "•••"
+
+    # Multi-key list for the rotation UI. Synthesize from the stored list, or
+    # fall back to the legacy single key so old installs still show a key. The
+    # raw list is returned so the settings textarea is editable (localhost,
+    # single trusted user — same trust model as the existing single key).
+    gkeys = s.get("gemini_api_keys")
+    if not isinstance(gkeys, list):
+        single = s.get("gemini_api_key")
+        gkeys = [single] if isinstance(single, str) and single.strip() else []
+    gkeys = [k for k in gkeys if isinstance(k, str) and k.strip()]
+    s["gemini_api_keys"] = gkeys
+    s["gemini_api_keys_masked"] = [_mask_key(k) for k in gkeys]
     # Same masking for Vertex AI API key — don't leak the secret in
     # plain text over the wire.
     if "vertex_api_key" in s:
@@ -104,10 +124,20 @@ async def get_settings():
 @router.post("")
 async def update_settings(body: SettingsUpdate):
     payload = body.model_dump(exclude_unset=True)
+    updated = list(payload.keys())
+    # Multi-key list: trim + drop blanks, persist as the single source of
+    # truth, and clear the legacy single key (folded into the list) so
+    # get_api_keys() doesn't append a stale duplicate.
+    if payload.get("gemini_api_keys") is not None:
+        clean = [k.strip() for k in payload["gemini_api_keys"]
+                 if isinstance(k, str) and k.strip()]
+        db.set_setting("gemini_api_keys", clean)
+        db.set_setting("gemini_api_key", "")
+        payload.pop("gemini_api_keys", None)
     for k, v in payload.items():
         if v is not None:
             db.set_setting(k, v)
-    return {"ok": True, "updated": list(payload.keys())}
+    return {"ok": True, "updated": updated}
 
 
 @router.get("/cloak-status")

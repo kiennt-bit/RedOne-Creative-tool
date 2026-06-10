@@ -1,13 +1,20 @@
 // YouTube / TikTok analyzer page
-import { el, clear, toast, setLoading, icon } from '../ui.js';
+import { el, clear, toast, setLoading, icon, geminiKeyNotice } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → survives SPA tab navigation. renderYoutube() restores
 // the storyboard + inputs from here, so switching tabs no longer wipes results.
-const state = { mode: 'url', scenes: [], modelUsed: null, lastData: null, inputs: {} };
+const state = { mode: 'url', scenes: [], modelUsed: null, lastData: null, inputs: {}, loading: false };
+
+// Current mount's renderer — an in-flight analysis (started before navigating
+// away) calls this on resolve so the result lands on the page now shown.
+let _liveRender = () => {};
 
 export function renderYoutube(root) {
 
+  // Nhắc nhập Gemini API key nếu chưa có (tab này cần Gemini).
+  const _gkn = geminiKeyNotice();
+  if (_gkn) root.appendChild(_gkn);
   root.appendChild(el('div', { class: 'page-hero' },
     el('div', { class: 'hero-icon' }, icon('sparkles', 28)),
     el('div', { class: 'hero-text' },
@@ -101,6 +108,41 @@ export function renderYoutube(root) {
     root.querySelector('#yt-upload-block').style.display = mode === 'upload' ? 'block' : 'none';
   }
 
+  // Render current `state` (banner + loading spinner + scenes + status) into
+  // THIS mount. Wired to the module `_liveRender` so async resolves update the
+  // live page even if started from a previous mount.
+  function renderResults() {
+    if (!root.isConnected) return;
+    const statusEl = root.querySelector('#yt-status');
+    const banner = root.querySelector('#yt-banner');
+    const wrap = root.querySelector('#yt-results');
+    const btn = root.querySelector('#yt-analyze');
+    if (btn) btn.disabled = !!state.loading;
+    if (state.loading) {
+      if (banner) banner.innerHTML = '';
+      clear(wrap);
+      wrap.appendChild(el('div', { class: 'empty' },
+        el('div', { class: 'spinner' }),
+        el('div', { style: { marginTop: '10px' } }, 'Đang phân tích video…'),
+      ));
+      if (statusEl) statusEl.textContent = 'Đang phân tích…';
+      return;
+    }
+    if (state.lastData) renderBanner(state.lastData); else if (banner) banner.innerHTML = '';
+    if (state.scenes.length) {
+      renderScenes(state.scenes);
+      if (statusEl) statusEl.textContent = `Đã sinh ${state.scenes.length} cảnh`;
+    } else {
+      clear(wrap);
+      wrap.appendChild(el('div', { class: 'empty' },
+        el('div', { class: 'empty-icon' }, icon('sparkles', 32)),
+        el('div', null, 'Nhập URL / upload video rồi bấm Phân tích'),
+      ));
+      if (statusEl) statusEl.textContent = 'Chưa phân tích';
+    }
+  }
+  _liveRender = renderResults;
+
   // Dropzone
   const dz = root.querySelector('#yt-dropzone');
   const fi = root.querySelector('#yt-file');
@@ -113,44 +155,43 @@ export function renderYoutube(root) {
 
   // Analyze
   root.querySelector('#yt-analyze').addEventListener('click', async () => {
-    const btn = root.querySelector('#yt-analyze');
-    setLoading(btn, true);
-    root.querySelector('#yt-banner').innerHTML = '';
-    root.querySelector('#yt-status').textContent = 'Đang phân tích...';
+    // Build the request (capturing inputs) BEFORE awaiting, so navigating away
+    // mid-analysis can't lose them.
+    let req;
+    if (state.mode === 'url') {
+      const url = root.querySelector('#yt-url').value.trim();
+      if (!url) return toast('Cần URL', 'warning');
+      req = api.analyzer.youtube({
+        url,
+        style_preset: root.querySelector('#yt-style').value,
+        style_lock: root.querySelector('#yt-stylelock').value || null,
+        quick_mode: root.querySelector('#yt-quick').checked,
+        max_scenes: parseInt(root.querySelector('#yt-max').value, 10),
+      });
+    } else {
+      const file = fi.files[0];
+      if (!file) return toast('Cần chọn video', 'warning');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('style_preset', root.querySelector('#yt-style').value);
+      fd.append('max_scenes', String(root.querySelector('#yt-max').value));
+      req = api.analyzer.youtubeUpload(fd);
+    }
+    _saveInputs();
+    state.loading = true; state.lastData = null;
+    _liveRender();
     try {
-      let data;
-      if (state.mode === 'url') {
-        const url = root.querySelector('#yt-url').value.trim();
-        if (!url) throw new Error('Cần URL');
-        data = await api.analyzer.youtube({
-          url,
-          style_preset: root.querySelector('#yt-style').value,
-          style_lock: root.querySelector('#yt-stylelock').value || null,
-          quick_mode: root.querySelector('#yt-quick').checked,
-          max_scenes: parseInt(root.querySelector('#yt-max').value, 10),
-        });
-      } else {
-        const file = fi.files[0];
-        if (!file) throw new Error('Cần chọn video');
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('style_preset', root.querySelector('#yt-style').value);
-        fd.append('max_scenes', String(root.querySelector('#yt-max').value));
-        data = await api.analyzer.youtubeUpload(fd);
-      }
+      const data = await req;
       state.scenes = data.scenes || [];
       state.modelUsed = data.model_used;
       state.lastData = data;
-      _saveInputs();
-      renderBanner(data);
-      renderScenes(state.scenes);
-      root.querySelector('#yt-status').textContent = `Đã sinh ${state.scenes.length} cảnh`;
-      toast(`Phân tích xong (${state.scenes.length} cảnh)`, 'success');
+      state.loading = false;
+      _liveRender();
+      toast(`Phân tích xong (${(data.scenes || []).length} cảnh)`, 'success');
     } catch (e) {
-      root.querySelector('#yt-status').textContent = 'Lỗi';
+      state.loading = false;
+      _liveRender();
       toast(`Lỗi: ${e.message}`, 'error');
-    } finally {
-      setLoading(btn, false);
     }
   });
 
@@ -288,11 +329,7 @@ export function renderYoutube(root) {
       root.querySelector('#yt-url-block').style.display = 'none';
       root.querySelector('#yt-upload-block').style.display = 'block';
     }
-    if (state.lastData) renderBanner(state.lastData);
-    if (state.scenes && state.scenes.length) {
-      renderScenes(state.scenes);
-      const st = root.querySelector('#yt-status');
-      if (st) st.textContent = `Đã sinh ${state.scenes.length} cảnh`;
-    }
+    // Shows the loading spinner if an analysis is still running, else results.
+    renderResults();
   })();
 }

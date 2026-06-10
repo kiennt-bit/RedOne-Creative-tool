@@ -67,6 +67,25 @@ def resize_image(
     return str(dst)
 
 
+def crop_cover_inplace(path: str | Path, *, width: int, height: int) -> bool:
+    """Center-crop + resize an image to exactly width×height (cover mode),
+    overwriting the file in place. Reuses the same resize_image(mode="cover")
+    that the batch-resize feature uses (ImageOps.fit = crop 2 sides + resize).
+
+    Skips work (returns False) if the image is already the target size, so a
+    correctly-sized image is never needlessly re-encoded. Returns True if a
+    crop was applied. Raises if Pillow is missing only via resize_image; the
+    no-PIL guard here returns False so callers degrade gracefully.
+    """
+    if not HAS_PIL:
+        return False
+    with Image.open(path) as im:
+        if im.size == (width, height):
+            return False
+    resize_image(path, path, width=width, height=height, mode="cover")
+    return True
+
+
 def fill_background(src: str | Path, dst: str | Path, color: str = "#FFFFFF") -> str:
     """Replace transparent background with solid color."""
     if not HAS_PIL:

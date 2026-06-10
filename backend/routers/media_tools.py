@@ -15,7 +15,10 @@ from pydantic import BaseModel
 from ..config import OUTPUT_DIR
 from ..services.gemini import generate_text
 from ..services.image_utils import resize_image, fill_background, PRESETS
-from ..services.ffmpeg_utils import merge_audio, burn_subtitles, run_ffmpeg
+from ..services.ffmpeg_utils import (
+    merge_audio, burn_subtitles, run_ffmpeg,
+    find_ffmpeg, subprocess_no_window_kwargs,
+)
 
 log = logging.getLogger("navtools.media")
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -431,6 +434,41 @@ async def audio_merge_endpoint(
 
 # ─────────────────────── Subtitle Generate ───────────────────────
 
+def _whisper_load_audio(path: str, sr: int = 16000):
+    """Decode an audio/video file to a 16kHz mono float32 numpy array using the
+    bundled ffmpeg.
+
+    Replicates `whisper.audio.load_audio` but resolves the binary via
+    `find_ffmpeg()` instead of spawning a bare `ffmpeg` from PATH. Whisper
+    hardcodes the command name `ffmpeg`, which raises WinError 2 on machines
+    that only have imageio-ffmpeg's versioned binary (ffmpeg-win-*.exe) and no
+    system ffmpeg. We then hand the resulting array to `model.transcribe()`,
+    so Whisper never shells out to ffmpeg itself.
+    """
+    import numpy as np
+    import subprocess
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise HTTPException(
+            500,
+            "Không tìm thấy ffmpeg để xử lý audio. Cài 'imageio-ffmpeg' "
+            "(pip install imageio-ffmpeg) hoặc cài ffmpeg vào PATH rồi thử lại.",
+        )
+    cmd = [
+        ffmpeg, "-nostdin", "-threads", "0", "-i", path,
+        "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le", "-ar", str(sr), "-",
+    ]
+    try:
+        out = subprocess.run(
+            cmd, capture_output=True, check=True,
+            **subprocess_no_window_kwargs(),
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode("utf-8", "replace")[-500:]
+        raise HTTPException(500, f"ffmpeg giải mã audio thất bại: {err}")
+    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+
+
 @router.post("/subtitle")
 async def subtitle_endpoint(
     file: UploadFile = File(...),
@@ -449,13 +487,21 @@ async def subtitle_endpoint(
             raise HTTPException(500, "whisper not installed. Run: pip install openai-whisper")
 
         def _transcribe():
+            # Decode with the bundled ffmpeg and feed Whisper a numpy array, so
+            # Whisper's own load_audio() (bare `ffmpeg` on PATH) is never hit.
+            audio = _whisper_load_audio(str(src))
             model = whisper.load_model(model_size)
             kwargs = {}
             if language and language != "auto":
                 kwargs["language"] = language
-            return model.transcribe(str(src), **kwargs)
+            return model.transcribe(audio, **kwargs)
 
-        result = await asyncio.to_thread(_transcribe)
+        try:
+            result = await asyncio.to_thread(_transcribe)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, f"Tạo phụ đề thất bại: {e}")
         lines = []
         for i, seg in enumerate(result.get("segments", []), 1):
             start = seg["start"]

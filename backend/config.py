@@ -6,10 +6,15 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.5"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
+
+# Google Form cho nút "Góp ý / Báo lỗi" trong tool. Tạo form bằng
+# tools/create_feedback_form.gs (Apps Script) rồi dán "PUBLISHED URL" vào đây.
+# Để rỗng "" → nút feedback tự fallback về GitHub Issues.
+FEEDBACK_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfANsadZft38RZnMDmjNYik9urxauHHJ-qpxcqHzyWBP6OEmw/viewform"
 
 # ── Path resolution: dev vs PyInstaller frozen ─────────────
 # In dev:    BASE_DIR = project root (where backend/ frontend/ live)

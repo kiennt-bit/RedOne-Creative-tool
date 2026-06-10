@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
+import itertools
 import logging
 import time
 import uuid
@@ -51,6 +53,47 @@ TASK_TTL_S = 120.0
 EXT_LIVE_THRESHOLD_S = 60.0
 
 
+# ── Bridge dispatch priority ────────────────────────────────────────
+# Every queued bridge task carries a sort_key = (klass, seq, enq); the
+# PriorityQueue pops the SMALLEST first. Lower klass = runs earlier.
+#
+#   klass 0 = regen  (user clicked "Gen lại" — jump the line)
+#   klass 1 = upscale 2K/4K
+#   klass 2 = gen thường (normal image/video generation)
+#   klass 3 = misc / standalone (default — e.g. credit checks)
+#
+# Priority is threaded into the gen call stack via a ContextVar (no
+# function-signature changes). A runner/endpoint calls set_gen_priority()
+# at its top; every proxy_fetch it (and its gathered coroutines) issue
+# inherits that class. `seq` orders calls within the same class by which
+# runner started first; `enq` is a global put-counter giving FIFO tiebreak
+# AND guaranteeing the 3-tuple is unique so PriorityQueue never compares
+# down to the _BridgeTask body.
+#
+# NOTE: priority only reorders the WAITING queue. In-flight fetches are
+# never preempted — a regen waits for one of the running slots to free,
+# then jumps ahead of everything still queued.
+_seq_counter = itertools.count()
+_enq_counter = itertools.count()
+_gen_priority: contextvars.ContextVar[tuple] = contextvars.ContextVar(
+    "redone_gen_priority", default=(3, 0)
+)
+
+
+def next_gen_seq() -> int:
+    """Allocate the next monotonic sequence number for a gen runner."""
+    return next(_seq_counter)
+
+
+def set_gen_priority(klass: int, seq: int) -> None:
+    """Set the bridge dispatch priority for the current context.
+
+    Call at the top of a runner/endpoint body. All proxy_fetch calls made
+    within this context (including coroutines scheduled with the copied
+    context, e.g. via asyncio.gather) inherit (klass, seq)."""
+    _gen_priority.set((klass, seq))
+
+
 class BridgeTimeoutError(Exception):
     """Raised when a task times out waiting for the extension."""
 
@@ -60,19 +103,29 @@ class BridgeExtensionOfflineError(Exception):
     polled recently — fail fast rather than wait the full TTL."""
 
 
-@dataclass
+@dataclass(order=True)
 class _BridgeTask:
     """One outstanding task waiting on the extension.
 
     The `future` resolves with the result dict once the extension
     posts back via /sync/task-result. If TASK_TTL_S elapses first, the
     awaiter gets BridgeTimeoutError instead.
+
+    `sort_key` (klass, seq, enq) is the ONLY comparison field — it drives
+    the PriorityQueue ordering. Every other field has compare=False so the
+    queue never tries to order two tasks by their dict/future bodies (which
+    would raise TypeError). The 3-tuple is always unique (enq is a global
+    counter) so ties never fall through to a body comparison.
     """
-    id: str
-    kind: str  # "recaptcha" | "proxy_fetch"
-    payload: dict
-    created_at: float = field(default_factory=time.time)
-    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    sort_key: tuple = field(compare=True)
+    id: str = field(compare=False)
+    kind: str = field(compare=False)  # "recaptcha" | "proxy_fetch"
+    payload: dict = field(compare=False)
+    created_at: float = field(default_factory=time.time, compare=False)
+    future: asyncio.Future = field(
+        default_factory=lambda: asyncio.get_event_loop().create_future(),
+        compare=False,
+    )
 
     def is_expired(self) -> bool:
         return (time.time() - self.created_at) > TASK_TTL_S
@@ -88,8 +141,10 @@ class BrowserBridge:
     """
 
     def __init__(self):
-        # Pending = waiting for extension to claim.
-        self._pending: asyncio.Queue[_BridgeTask] = asyncio.Queue()
+        # Pending = waiting for extension to claim. PriorityQueue pops the
+        # task with the smallest sort_key first (regen < upscale < gen <
+        # misc); ties break FIFO via the per-put `enq` counter.
+        self._pending: asyncio.PriorityQueue[_BridgeTask] = asyncio.PriorityQueue()
         # In-flight = claimed by extension, awaiting result.
         self._in_flight: dict[str, _BridgeTask] = {}
         # Extension liveness tracking
@@ -212,7 +267,14 @@ class BrowserBridge:
                 "Trong Chrome (profile có 'RedOne Auth Helper'): mở tab "
                 "https://labs.google/fx/tools/flow, đăng nhập, ghim tab, rồi gen lại."
             )
-        task = _BridgeTask(id=uuid.uuid4().hex, kind=kind, payload=payload)
+        klass, seq = _gen_priority.get()
+        enq = next(_enq_counter)
+        task = _BridgeTask(
+            sort_key=(klass, seq, enq),
+            id=uuid.uuid4().hex,
+            kind=kind,
+            payload=payload,
+        )
         await self._pending.put(task)
         try:
             return await asyncio.wait_for(task.future, timeout=TASK_TTL_S)
