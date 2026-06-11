@@ -218,7 +218,7 @@ export function renderAdmin(root) {
     quotaCard.appendChild(el('div', { class: 'hub-sec', style: { marginTop: '14px' } }, 'Điều chỉnh credit'));
     const gEmail = el('input', { class: 'hub-in', placeholder: 'email@redone.vn', style: { maxWidth: '240px' } });
     let gPool = 'flow';
-    const gDelta = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '110px' }, title: '+ trả lại / − trừ thêm' });
+    const gDelta = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '110px' }, title: '+ cấp thêm / − giảm hạn mức' });
     const gReason = el('input', { class: 'hub-in', placeholder: 'lý do', style: { maxWidth: '180px' } });
     const gBtn = el('button', { class: 'btn' }, 'Điều chỉnh');
     gBtn.addEventListener('click', async () => {
@@ -226,8 +226,9 @@ export function renderAdmin(root) {
       const delta = parseInt(gDelta.value, 10);
       if (!email.includes('@') || !delta) { toast('Nhập email + số ≠ 0', 'error'); return; }
       try {
-        await api.hub.grant({ email, pool: gPool, delta, reason: gReason.value || 'điều chỉnh thủ công' });
-        toast(`Đã điều chỉnh ${gPool} cho ${email}`, 'success');
+        const r = await api.hub.grant({ email, pool: gPool, delta, reason: gReason.value || 'điều chỉnh thủ công' });
+        toast(`Đã điều chỉnh ${gPool} cho ${email} → hạn mức ${r && r.limit != null ? r.limit : '?'}`, 'success');
+        gDelta.value = '0';
         load();
       } catch (e) { toast(hubErr(e), 'error'); }
     });

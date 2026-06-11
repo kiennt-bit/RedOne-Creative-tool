@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .. import credit
 from ..db import get_db
-from ..models import Quota, Team, User
+from ..models import CreditLedger, Quota, Team, User
 from ..schemas import GrantIn, QuotaIn, TeamIn, TeamOut, UserIn, UserOut
 from ..security import require_roles
 
@@ -152,14 +152,18 @@ def set_quota(body: QuotaIn, _: User = Depends(admin_dep), db: Session = Depends
 
 @router.post("/grant")
 def grant(body: GrantIn, _: User = Depends(admin_dep), db: Session = Depends(get_db)):
-    """Adjust a user's usage. delta>0 returns credit (lowers used), delta<0
-    deducts (raises used). To give *more than the cap*, raise limit via /quota."""
+    """Adjust a pool's LIMIT by delta (relative top-up): +N adds allowance,
+    -N reduces it (clamped at 0). Use /quota to set an absolute value."""
     q = credit.get_or_create_quota(db, body.email)
     cat = "shakker" if (body.pool or "flow").strip().lower() == "shakker" else "flow"
-    if body.delta >= 0:
-        credit.refund(db, q, cat, body.delta, reason=body.reason)
+    cur = q.flow_limit if cat == "flow" else q.shakker_limit
+    new = max(0, (0 if cur is None else cur) + int(body.delta))
+    if cat == "flow":
+        q.flow_limit = new
     else:
-        credit.charge(db, q, cat, -body.delta, reason=body.reason)
-    snap = {"email": q.email, "pool": cat, "remaining": credit.remaining(q, cat)}
+        q.shakker_limit = new
+    db.add(q)
+    db.add(CreditLedger(email=q.email, delta=0, reason=f"limit-adj:{cat}:{int(body.delta):+d}:{body.reason}"))
+    snap = {"email": q.email, "pool": cat, "limit": new, "remaining": credit.remaining(q, cat)}
     db.commit()
     return snap

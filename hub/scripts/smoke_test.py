@@ -151,6 +151,14 @@ def main() -> None:
                    json={"email": "carol@redone.vn", "role": "member", "team_id": tid})
         check(r.status_code == 200 and r.json()["email"] == "carol@redone.vn", "admin create user carol")
 
+        # grant adjusts the LIMIT (relative top-up), visible in the list
+        r = c.post("/admin/grant", headers=auth("kiennt@redone.vn"),
+                   json={"email": "carol@redone.vn", "pool": "flow", "delta": 50, "reason": "test"})
+        check(r.status_code == 200 and r.json().get("limit") == 50, "grant flow +50 -> limit 50")
+        r = c.get("/admin/users", headers=auth("kiennt@redone.vn"))
+        carol = next((u for u in r.json() if u["email"] == "carol@redone.vn"), {})
+        check(carol.get("flow_limit") == 50, "user list reflects new flow limit (50)")
+
         r = c.post("/admin/users", headers=auth("alice@redone.vn"), json={"email": "x@redone.vn"})
         check(r.status_code == 403, "member blocked from /admin (403)")
 
