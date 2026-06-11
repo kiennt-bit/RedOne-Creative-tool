@@ -1,0 +1,61 @@
+# RedOne Hub — full stack (API + Postgres) for an external trial box.
+# Same stack runs later on the company server (just move the data — see DEPLOY.md).
+#
+#   cd hub && cp .env.example .env   # fill in secrets, then:
+#   docker compose up -d --build
+#
+# Reads hub/.env for the ${...} values below.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: redone_hub
+    volumes:
+      - hub_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub -d redone_hub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hub:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # DATABASE_URL is built from the bundled Postgres — overrides any value
+      # in .env. To use a MANAGED/company DB instead, replace this line.
+      DATABASE_URL: postgresql+psycopg2://hub:${POSTGRES_PASSWORD:-changeme}@db:5432/redone_hub
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
+      ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-redone.vn}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL}
+      HUB_JWT_SECRET: ${HUB_JWT_SECRET}
+      HUB_TOKEN_DAYS: ${HUB_TOKEN_DAYS:-30}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      MEDIA_DIR: /app/media
+      SIGNED_URL_TTL: ${SIGNED_URL_TTL:-86400}
+      DEFAULT_QUOTA_LIMIT: ${DEFAULT_QUOTA_LIMIT:--1}
+      DEFAULT_QUOTA_PERIOD: ${DEFAULT_QUOTA_PERIOD:-monthly}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # S3 / R2 (only used when STORAGE_BACKEND=s3)
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
+    ports:
+      - "8800:8800"
+    volumes:
+      - hub_media:/app/media
+
+volumes:
+  hub_pgdata:
+  hub_media:

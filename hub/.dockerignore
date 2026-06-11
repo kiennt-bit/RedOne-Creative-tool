@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+media/
+.env
+scripts/
+README.md
+DEPLOY.md
+run_dev.bat
