@@ -25,6 +25,7 @@ from .routers import (
     shakker_accounts as shakker_accounts_router,
     shakker as shakker_router,
     storyboard as storyboard_router,
+    hub as hub_router,
 )
 from .queue_manager import queue as task_queue, shakker_queue
 
@@ -185,6 +186,7 @@ app.include_router(tasks_router.router)
 app.include_router(system_router.router)
 app.include_router(sync_router.router)
 app.include_router(auth_router.router)
+app.include_router(hub_router.router)
 
 
 @app.get("/api/health")

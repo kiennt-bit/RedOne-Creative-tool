@@ -120,6 +120,32 @@ async def get_me() -> Optional[dict]:
     return None
 
 
+async def api_request(method: str, path: str, params: Optional[dict] = None,
+                      json: Optional[dict] = None) -> tuple[int, Optional[object]]:
+    """Generic authenticated proxy to the Hub. Returns (status_code, data|None).
+    (0, None) = Hub disabled / not linked / unreachable. Used by the local
+    /api/hub/* proxy router so the tool frontend can reach the Hub."""
+    if not is_enabled():
+        return (0, None)
+    h = _auth_headers()
+    if not h:
+        return (0, None)
+    try:
+        async with httpx.AsyncClient(timeout=HUB_TIMEOUT_S) as c:
+            r = await c.request(method, f"{HUB_BASE_URL}{path}", headers=h, params=params, json=json)
+        data: Optional[object] = None
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+        if r.status_code == 401:
+            clear()
+        return (r.status_code, data)
+    except Exception as e:
+        log.debug("hub: api_request %s %s failed: %s", method, path, e)
+        return (0, None)
+
+
 # ── Credit lifecycle ───────────────────────────────────────────────────
 async def reserve(kind: str, model: str = "", credit_cost: int = 1, prompt: str = "") -> dict:
     """Reserve credit before a gen. Returns one of:

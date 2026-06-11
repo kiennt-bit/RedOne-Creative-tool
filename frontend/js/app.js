@@ -31,6 +31,8 @@ import { renderSubtitle } from './pages/subtitle.js';
 import { renderAccounts } from './pages/accounts.js';
 import { renderSettings } from './pages/settings.js';
 import { renderTasksManager } from './pages/tasks_manager.js';
+import { renderTeam } from './pages/team.js';
+import { renderAdmin } from './pages/admin.js';
 
 // Build-id banner so you can verify which build is loaded
 try {
@@ -57,6 +59,8 @@ const PAGES = {
   'tasks':         { title: 'Quản lý Task',      subtitle: 'Theo dõi tiến độ + hàng đợi tất cả tác vụ',              render: renderTasksManager },
   'accounts':      { title: 'Tài Khoản',         subtitle: 'Quản lý Google account & credits',                       render: renderAccounts },
   'settings':      { title: 'Cài Đặt',           subtitle: 'API keys, thư mục, tùy chọn',                            render: renderSettings },
+  'team':          { title: 'Team',              subtitle: 'Theo dõi task & credit của thành viên dưới quyền',       render: renderTeam },
+  'admin':         { title: 'Quản trị',          subtitle: 'Người dùng, nhóm, hạn mức credit nội bộ (Hub)',          render: renderAdmin },
 };
 
 export const store = {
@@ -112,6 +116,33 @@ export function navigate(pageId, opts = {}) {
       });
     }
   }
+}
+
+// ── RedOne Hub (multi-user) — role + nav gating ──────────────────────
+// Fetch the user's Hub role/quota (via the local proxy). Reveals the
+// "Quản lý" nav group only for lead/admin. When the Hub is disabled
+// (HUB_BASE_URL empty) /status returns {enabled:false} instantly → tabs
+// stay hidden and a standalone build looks exactly as before.
+async function refreshHubStatus() {
+  window.__app = window.__app || {};
+  try {
+    window.__app.hub = (await api.hub.status()) || { enabled: false };
+  } catch {
+    window.__app.hub = { enabled: false };
+  }
+  applyHubNav();
+  return window.__app.hub;
+}
+
+function applyHubNav() {
+  const role = (window.__app && window.__app.hub && window.__app.hub.role) || null;
+  const group = document.getElementById('nav-group-hub');
+  const isManager = role === 'lead' || role === 'admin';
+  if (group) group.style.display = isManager ? '' : 'none';
+  $$('#nav-group-hub [data-role]').forEach(item => {
+    const allowed = (item.dataset.role || '').split(/\s+/).filter(Boolean);
+    item.style.display = (role && allowed.includes(role)) ? '' : 'none';
+  });
 }
 
 async function refreshAccounts() {
@@ -758,6 +789,10 @@ async function init() {
 
   await Promise.all([refreshAccounts(), loadSettings(), refreshShakkerPower()]);
 
+  // Reveal Team/Quản trị tabs if this user is a Hub lead/admin (no-op when
+  // the Hub is disabled). Fire-and-forget so a slow Hub never blocks boot.
+  refreshHubStatus();
+
   // After an update, remind the user to reload the Chrome extension (Chrome
   // doesn't hot-reload unpacked extensions — new manifest needs a manual ↻).
   maybeShowUpdateNotice();
@@ -783,4 +818,4 @@ if (document.readyState === 'loading') {
   init();
 }
 
-window.__app = { store, navigate, refreshAccounts, refreshShakkerPower };
+window.__app = { store, navigate, refreshAccounts, refreshShakkerPower, refreshHubStatus };

@@ -148,6 +148,21 @@ export const api = {
     setupRun: () => request('POST', '/api/system/setup-run'),
   },
 
+  // RedOne Hub (multi-user) — proxied through the local backend.
+  hub: {
+    status: () => request('GET', '/api/hub/status'),
+    teamTasks: (params) => request('GET', '/api/hub/team/tasks', { params }),
+    teamUsage: (days = 30) => request('GET', '/api/hub/team/usage', { params: { days } }),
+    users: () => request('GET', '/api/hub/admin/users'),
+    upsertUser: (payload) => request('POST', '/api/hub/admin/users', { body: payload }),
+    delUser: (email) => request('DELETE', `/api/hub/admin/users/${encodeURIComponent(email)}`),
+    teams: () => request('GET', '/api/hub/admin/teams'),
+    upsertTeam: (payload) => request('POST', '/api/hub/admin/teams', { body: payload }),
+    delTeam: (id) => request('DELETE', `/api/hub/admin/teams/${id}`),
+    setQuota: (payload) => request('POST', '/api/hub/admin/quota', { body: payload }),
+    grant: (payload) => request('POST', '/api/hub/admin/grant', { body: payload }),
+  },
+
   tasks: {
     list: (limit = 200) => request('GET', '/api/tasks', { params: { limit } }),
     get: (id) => request('GET', `/api/tasks/${id}`),
