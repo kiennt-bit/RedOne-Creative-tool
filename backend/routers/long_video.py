@@ -55,6 +55,8 @@ async def _run_long_video(task_id: int):
     try:
         from ..services import flow_client as fc_mod
         from ..services.flow_factory import make_flow_client, get_page_for_account
+        from ..services import hub_client
+        from ..config import cost_for_model_key
         page = await get_page_for_account(acc)
         client = make_flow_client(
             page=page,
@@ -73,6 +75,13 @@ async def _run_long_video(task_id: int):
             db.update_item(item["id"], status=ItemStatus.GENERATING.value)
             await hub.broadcast("scene_started", {"task_id": task_id, "scene": idx + 1, "item_id": item["id"]})
             try:
+                # Hub internal-credit reserve per scene (no-op when Hub off/unreachable).
+                _model = extend_key if idx > 0 else video_model_for(quality, "t2v", int(task.get("duration") or 8))
+                _cost = cost_for_model_key(_model)
+                _res = await hub_client.reserve(kind="video", model=_model, credit_cost=_cost, prompt=item.get("prompt", ""))
+                _rid = _res.get("reservation_id")
+                if not _res.get("ok", True):
+                    raise RuntimeError(_res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm.")
                 if idx == 0:
                     extra = json.loads(item.get("extra_json") or "{}")
                     ref_media = None
@@ -130,11 +139,21 @@ async def _run_long_video(task_id: int):
                     "task_id": task_id, "scene": idx + 1, "item_id": item["id"],
                     "output_path": str(clip_path),
                 })
+                await hub_client.commit_result(_rid, "done", kind="video", model=_model,
+                                               credit_cost=_cost, prompt=item.get("prompt", ""),
+                                               path=str(clip_path), is_video=True)
             except Exception as e:
                 db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(e))
                 await hub.broadcast("scene_failed", {
                     "task_id": task_id, "scene": idx + 1, "item_id": item["id"], "error": str(e),
                 })
+                try:
+                    await hub_client.commit_result(locals().get("_rid"), "error", kind="video",
+                                                   model=locals().get("_model", ""),
+                                                   credit_cost=locals().get("_cost", 0),
+                                                   prompt=item.get("prompt", ""))
+                except Exception:
+                    pass
                 raise
 
         # Concat
@@ -169,6 +188,7 @@ async def start_long_video(body: LongVideoRequest):
         raise HTTPException(400, "Tối đa 20 prompts")
     task_name = (body.task_name or "").strip() or f"long_video_{int(time.time())}"
     safe_duration = clamp_duration(body.quality, body.duration)
+    from ..services import hub_client
     task_id = db.create_task(
         name=task_name,
         mode="long_video",
@@ -177,6 +197,7 @@ async def start_long_video(body: LongVideoRequest):
         duration=safe_duration,
         total_count=len(body.prompts),
         status=TaskStatus.PENDING.value,
+        user_email=hub_client.current_user_email(),
     )
     for i, p in enumerate(body.prompts):
         extra = {}

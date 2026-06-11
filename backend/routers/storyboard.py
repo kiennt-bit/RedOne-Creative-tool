@@ -151,6 +151,7 @@ async def start_storyboard(
 
     # ── Step 2: hand the prompts to the existing image pipeline ──
     name = (task_name or "").strip() or f"storyboard_{int(time.time())}"
+    from ..services import hub_client
     task_id = db.create_task(
         name=name,
         mode="storyboard",           # so Tasks Manager's eye opens the Storyboard
@@ -161,6 +162,7 @@ async def start_storyboard(
         concurrent=concurrent,
         total_count=len(prompts),
         status=TaskStatus.PENDING.value,
+        user_email=hub_client.current_user_email(),
     )
     extra_global = {"reference_images": ref_paths} if ref_paths else None
     for p in prompts:

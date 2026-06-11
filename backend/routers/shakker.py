@@ -184,6 +184,20 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
     })
     db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
 
+    # Hub internal-credit reserve (separate from Shakker's own "power"; no-op
+    # when Hub off/unreachable). Only a genuine out-of-credit blocks gen.
+    from ..services import hub_client
+    _model = str(task.get("image_model") or "")
+    _cost = 1
+    _res = await hub_client.reserve(kind="shakker", model=_model, credit_cost=_cost, prompt=item.get("prompt", ""))
+    _rid = _res.get("reservation_id")
+    if not _res.get("ok", True):
+        _msg = _res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm."
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=_msg)
+        await hub.broadcast("item_error", {"task_id": task_id, "item_id": item_id, "error": _msg, "kind": "shakker"})
+        await _broadcast_progress(task_id)
+        return False
+
     try:
         payload = client.build_payload(
             item["prompt"],
@@ -242,6 +256,9 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
             "output_path": str(out_path), "kind": "shakker",
             "power": result.get("power") or 0,
         })
+        await hub_client.commit_result(_rid, "done", kind="shakker", model=_model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""),
+                                       path=str(out_path), is_video=False)
         return True
 
     except ShakkerError as ex:
@@ -252,6 +269,8 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
             "task_id": task_id, "item_id": item_id,
             "error": friendly, "error_detail": raw, "kind": "shakker",
         })
+        await hub_client.commit_result(_rid, "error", kind="shakker", model=_model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
         if _is_token_dead(ex):
             raise  # let caller stop the batch + flag account
         return False
@@ -263,6 +282,8 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
             "task_id": task_id, "item_id": item_id,
             "error": friendly, "error_detail": raw, "kind": "shakker",
         })
+        await hub_client.commit_result(_rid, "error", kind="shakker", model=_model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
         return False
     finally:
         await _broadcast_progress(task_id)
@@ -436,6 +457,7 @@ async def start_shakker_task(body: StartShakkerRequest):
     }
 
     task_name = (body.task_name or "").strip() or f"shakker_{int(time.time())}"
+    from ..services import hub_client
     task_id = db.create_task(
         name=task_name,
         mode="shakker",
@@ -445,6 +467,7 @@ async def start_shakker_task(body: StartShakkerRequest):
         total_count=len(expanded),
         status=TaskStatus.PENDING.value,
         character_images_json=json.dumps(config),
+        user_email=hub_client.current_user_email(),
     )
     for p in expanded:
         db.add_task_item(task_id, p)

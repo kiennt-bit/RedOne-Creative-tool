@@ -230,3 +230,60 @@ def make_image_thumbnail(path, max_side: int = 640) -> Optional[tuple]:
     except Exception as e:
         log.debug("hub: thumbnail failed: %s", e)
         return None
+
+
+def current_user_email() -> Optional[str]:
+    """Email of the user logged into the tool on this machine — used to stamp
+    local task rows. (The Hub itself identifies the user by the Hub token.)"""
+    try:
+        from .oauth_auth import load_session
+        s = load_session()
+        return s.get("email") if s else None
+    except Exception:
+        return None
+
+
+async def _build_thumb(path: str, is_video: bool) -> Optional[tuple]:
+    """(name, bytes, ctype) JPEG thumbnail from an image file, or from a video
+    by extracting one frame first. Best-effort → None on any failure."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    if not is_video:
+        return await loop.run_in_executor(None, make_image_thumbnail, path)
+    import os
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), f"hubthumb_{os.getpid()}_{int(time.time() * 1000)}.jpg")
+    try:
+        from .ffmpeg_utils import extract_thumbnail
+        ok = await extract_thumbnail(path, tmp, at=0.5)
+        if not ok:
+            return None
+        return await loop.run_in_executor(None, make_image_thumbnail, tmp)
+    except Exception as e:
+        log.debug("hub: video thumb failed: %s", e)
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+async def commit_result(reservation_id, status: str, *, kind: str, model: str,
+                        credit_cost: int, prompt: str, path: Optional[str] = None,
+                        is_video: bool = False) -> None:
+    """High-level helper for gen routers: build a thumbnail (on success) and
+    commit the result to the Hub. Best-effort — never raises, never blocks gen."""
+    if not is_enabled():
+        return
+    thumb = None
+    if status == "done" and path:
+        try:
+            thumb = await _build_thumb(path, is_video)
+        except Exception:
+            thumb = None
+    try:
+        await commit(reservation_id=reservation_id, status=status, kind=kind,
+                     model=model, credit_cost=credit_cost, prompt=prompt, thumb=thumb)
+    except Exception as e:
+        log.debug("hub: commit_result failed: %s", e)

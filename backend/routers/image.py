@@ -112,6 +112,7 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
     """
     import random as _rng
     from ..services import flow_client as fc_mod
+    from ..services import hub_client
     from ..services.error_messages import friendly_error
 
     task_id = task["id"]
@@ -135,6 +136,19 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
     })
     # Jitter to avoid hammering Google at the same ms
     await asyncio.sleep(_rng.uniform(0.0, 1.2))
+
+    # Hub internal-credit reserve (no-op when Hub disabled/unreachable). Only a
+    # genuine "out of credit" (Hub reachable) blocks the gen — any Hub problem
+    # degrades to allow, so gen never breaks because of the Hub.
+    _cost = 1
+    _res = await hub_client.reserve(kind="image", model=model, credit_cost=_cost, prompt=item.get("prompt", ""))
+    if not _res.get("ok", True):
+        _msg = _res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm."
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=_msg)
+        await hub.broadcast("item_error", {"task_id": task_id, "item_id": item_id, "error": _msg})
+        await _broadcast_progress_img(task_id)
+        return False
+    _rid = _res.get("reservation_id")
     try:
         extra = json.loads(item.get("extra_json") or "{}")
         ref_paths = extra.get("reference_images") or []
@@ -191,6 +205,9 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             "media_id": result.get("media_id"),
             "prompt": item.get("prompt", ""),
         })
+        await hub_client.commit_result(_rid, "done", kind="image", model=model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""),
+                                       path=str(out_path), is_video=False)
         return True
     except fc_mod.SessionDeadError:
         msg = ("Phiên đăng nhập của tài khoản đã hết hạn — đăng nhập lại ở "
@@ -199,6 +216,8 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
         await hub.broadcast("item_error", {
             "task_id": task_id, "item_id": item_id, "error": msg,
         })
+        await hub_client.commit_result(_rid, "error", kind="image", model=model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
         raise
     except Exception as ex:
         raw = str(ex)
@@ -208,6 +227,8 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             "task_id": task_id, "item_id": item_id,
             "error": friendly, "error_detail": raw,
         })
+        await hub_client.commit_result(_rid, "error", kind="image", model=model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
         return False
     finally:
         await _broadcast_progress_img(task_id)
@@ -337,6 +358,7 @@ async def start_image_task(body: StartImageRequest):
             expanded.append(p)
 
     task_name = (body.task_name or "").strip() or f"image_{int(time.time())}"
+    from ..services import hub_client
     task_id = db.create_task(
         name=task_name,
         mode="image",
@@ -345,6 +367,7 @@ async def start_image_task(body: StartImageRequest):
         concurrent=max(1, min(body.concurrent or 1, 8)),
         total_count=len(expanded),
         status=TaskStatus.PENDING.value,
+        user_email=hub_client.current_user_email(),
     )
     extra_global = {"reference_images": body.reference_image_paths} if body.reference_image_paths else None
     for p in expanded:

@@ -168,6 +168,8 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     """
     import random as _rng
     from ..services import flow_client as fc_mod
+    from ..services import hub_client
+    from ..config import cost_for_model_key
     from ..services.error_messages import friendly_error
 
     task_id = task["id"]
@@ -186,6 +188,9 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
     })
     # Small jitter so concurrent items don't hit Google at the exact same ms.
     await asyncio.sleep(_rng.uniform(0.0, 1.5))
+    _rid = None
+    _cost = 0
+    _reserved = False
     try:
         ref_image_path = None
         loop = False
@@ -217,6 +222,18 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             model_key = interpolation_model_for(eff_quality)
         else:
             model_key = video_model_for(eff_quality, mode, duration_s)
+
+        # Hub internal-credit reserve (cost by model; no-op when Hub off/unreachable).
+        # Only a genuine out-of-credit (Hub reachable) blocks the gen.
+        _cost = cost_for_model_key(model_key)
+        _res = await hub_client.reserve(kind="video", model=model_key, credit_cost=_cost, prompt=item.get("prompt", ""))
+        _reserved = True
+        if not _res.get("ok", True):
+            _msg = _res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm."
+            db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=_msg)
+            await hub.broadcast("item_error", {"task_id": task_id, "item_id": item_id, "error": _msg})
+            return False
+        _rid = _res.get("reservation_id")
 
         done_state = None
         last_err = None
@@ -267,6 +284,10 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             "task_id": task_id, "item_id": item_id,
             "output_path": str(out_path),
         })
+        if _reserved:
+            await hub_client.commit_result(_rid, "done", kind="video", model=model_key,
+                                           credit_cost=_cost, prompt=item.get("prompt", ""),
+                                           path=str(out_path), is_video=True)
         return True
     except fc_mod.SessionDeadError:
         msg = ("Phiên đăng nhập của tài khoản đã hết hạn — đăng nhập lại ở "
@@ -275,6 +296,9 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
         await hub.broadcast("item_error", {
             "task_id": task_id, "item_id": item_id, "error": msg,
         })
+        if _reserved:
+            await hub_client.commit_result(_rid, "error", kind="video", model=model_key,
+                                           credit_cost=_cost, prompt=item.get("prompt", ""))
         raise   # propagate so caller can disable the account
     except Exception as ex:
         raw = str(ex)
@@ -284,6 +308,9 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             "task_id": task_id, "item_id": item_id,
             "error": friendly, "error_detail": raw,
         })
+        if _reserved:
+            await hub_client.commit_result(_rid, "error", kind="video", model=model_key,
+                                           credit_cost=_cost, prompt=item.get("prompt", ""))
         return False
     finally:
         await _broadcast_progress(task_id)
@@ -413,6 +440,7 @@ async def start_content_task(body: StartTaskRequest):
     task_name = (body.task_name or "").strip() or f"video_{int(time.time())}"
     # Clamp duration to what the chosen model actually supports
     safe_duration = clamp_duration(body.quality, body.duration)
+    from ..services import hub_client
     task_id = db.create_task(
         name=task_name,
         mode=body.mode,
@@ -423,6 +451,7 @@ async def start_content_task(body: StartTaskRequest):
         concurrent=body.concurrent,
         total_count=len(body.prompts),
         status=TaskStatus.PENDING.value,
+        user_email=hub_client.current_user_email(),
     )
     for i, p in enumerate(body.prompts):
         extra = {}
