@@ -278,3 +278,75 @@ export function geminiKeyNotice() {
     }, 'Nhập key trong Cài đặt'),
   );
 }
+
+// ── Media lightbox ───────────────────────────────────────────────────
+// Xem ảnh/video ngay trong app (nền mờ đằng sau) thay vì mở tab Chrome mới /
+// play inline. type: 'image' | 'video'. label hiện ở thanh dưới + nút Tải về /
+// Đóng. Đóng bằng: bấm nền, nút Đóng, hoặc phím Esc.
+export function openMediaViewer({ url, type = 'image', label = '', downloadUrl = '' }) {
+  if (!url) return null;
+  const dl = downloadUrl || url;
+  const old = document.getElementById('media-viewer');
+  if (old) old.remove();
+
+  // Media đứng RIÊNG (đúng tỉ lệ thật, không bọc card → không lòi viền đen 2 bên).
+  const media = type === 'video'
+    ? el('video', { src: url, controls: true, autoplay: true, loop: true,
+        style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
+                 borderRadius: 'var(--r-md)', background: '#000', boxShadow: 'var(--sh-lg)' } })
+    : el('img', { src: url, alt: label || 'preview',
+        style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
+                 borderRadius: 'var(--r-md)', boxShadow: 'var(--sh-lg)' } });
+
+  const closeBtn = el('button', {
+    class: 'btn btn-sm',
+    style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+  }, icon('x', 14), 'Đóng');
+
+  // Caption là thanh RIÊNG dưới media — không bọc chung, không đè lên ảnh / thanh
+  // điều khiển video. Label co lại (ellipsis) nên không bao giờ làm khung rộng ra.
+  const caption = el('div', {
+    style: {
+      display: 'flex', alignItems: 'center', gap: '12px',
+      maxWidth: '94vw', padding: '8px 14px', color: '#fff',
+      background: 'rgba(0,0,0,0.62)', borderRadius: 'var(--r-md)',
+    },
+  },
+    el('span', {
+      style: { flex: '1', minWidth: '0', fontSize: '13px', fontWeight: '600',
+               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+    }, label || ''),
+    el('a', {
+      class: 'btn btn-sm', href: dl, download: '',
+      style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+    }, icon('download', 14), 'Tải về'),
+    closeBtn,
+  );
+
+  // Click vào media/caption không đóng; chỉ click vùng nền trống mới đóng.
+  media.addEventListener('click', (e) => e.stopPropagation());
+  caption.addEventListener('click', (e) => e.stopPropagation());
+
+  const backdrop = el('div', {
+    id: 'media-viewer',
+    style: {
+      position: 'fixed', inset: '0', zIndex: '2000',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      gap: '12px', padding: '24px',
+      background: 'rgba(8,8,12,0.82)', backdropFilter: 'blur(4px)',
+      animation: 'fadeIn 0.18s ease both',
+    },
+  }, media, caption);
+
+  function close() {
+    document.removeEventListener('keydown', onKey);
+    backdrop.remove();
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  backdrop.addEventListener('click', close);
+  closeBtn.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(backdrop);
+  return { close };
+}

@@ -126,6 +126,7 @@ async def check_account(account_id: int):
         if page is not None:
             alive = "accounts.google.com" not in (page.url or "")
         credit = None
+        tier = None
         credit_fetch_error: str | None = None
         if alive:
             client = make_flow_client(
@@ -151,6 +152,8 @@ async def check_account(account_id: int):
                     # on success or {"error": "..."} on failure (or None).
                     if isinstance(info, dict) and "remainingCredits" in info:
                         credit = info["remainingCredits"]
+                        if info.get("tier"):
+                            tier = info["tier"]
                     elif isinstance(info, dict) and "error" in info:
                         credit_fetch_error = info["error"]
                         log.warning(
@@ -168,12 +171,16 @@ async def check_account(account_id: int):
         # Only write to DB when we got a real number — including genuine 0.
         if credit is not None and isinstance(credit, (int, float)):
             update_fields["credit"] = int(credit)
+        # Tier detected from the /v1/credits response (ULTRA / PRO / FREE).
+        if tier:
+            update_fields["tier"] = tier
         if update_fields:
             db.update_account(account_id, **update_fields)
 
         await hub.broadcast("account_updated", {
             "id": account_id,
             "credit": credit,
+            "tier": tier,
             "alive": alive,
             "credit_fetch_ok": credit is not None,
             "credit_fetch_error": credit_fetch_error,
@@ -182,6 +189,7 @@ async def check_account(account_id: int):
             "ok": True,
             "alive": alive,
             "credit": credit,
+            "tier": tier,
             "credit_fetch_ok": credit is not None,
             "credit_fetch_error": credit_fetch_error,
         }

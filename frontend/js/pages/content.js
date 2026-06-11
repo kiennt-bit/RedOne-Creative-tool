@@ -1,6 +1,6 @@
 // Content page — T2V / I2V batch generation
 // State persisted via tasksStore + module-level form so navigation doesn't reset.
-import { el, clear, toast, setLoading, icon, makeThumbnail, makeLazyVideoObserver, ensureFlowAccountOrWarn } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, makeLazyVideoObserver, ensureFlowAccountOrWarn, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
@@ -913,7 +913,20 @@ export function renderContent(root) {
         // Lazy: no `src` yet — `data-src` is wired by _mediaObs (below) so only
         // videos near the viewport fetch metadata/first-frame. Prevents 100+
         // simultaneous metadata fetches that lag the page.
-        thumb.appendChild(el('video', { 'data-src': it.output_url, controls: true, preload: 'none', style: { width: '100%', height: '100%' } }));
+        // Poster-only thumbnail (no inline controls); click → lightbox để xem.
+        const vid = el('video', { 'data-src': it.output_url, preload: 'none', muted: true, playsinline: true, style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
+        vid.addEventListener('click', () => openMediaViewer({ type: 'video', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() }));
+        thumb.appendChild(vid);
+        // Icon play ở giữa để user biết đây là video (bấm để xem trong lightbox).
+        // pointer-events:none → click xuyên qua xuống <video> ở trên.
+        thumb.appendChild(el('div', {
+          style: { position: 'absolute', inset: '0', display: 'flex', alignItems: 'center',
+                   justifyContent: 'center', pointerEvents: 'none', zIndex: '2' },
+        }, el('div', {
+          style: { width: '52px', height: '52px', borderRadius: '50%', color: '#fff',
+                   background: 'rgba(0,0,0,0.5)', border: '2px solid rgba(255,255,255,0.9)',
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', paddingLeft: '3px' },
+        }, icon('play', 26))));
       } else if (it.status === 'error') {
         // Show the FULL friendly message (no truncation) so the user knows
         // exactly what happened. Tooltip carries the raw detail for debugging.

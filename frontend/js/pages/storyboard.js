@@ -3,7 +3,7 @@
 // reusing the image task pipeline (batch concurrency "số luồng song song" +
 // cooldown + WebSocket streaming). Output scenes can be sent in bulk to the
 // "Tạo Video" tab as I2V (each scene image becomes the reference frame).
-import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
@@ -368,7 +368,7 @@ export function renderStoryboard(root) {
       );
       if (it.status === 'done' && it.output_url) {
         const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        img.addEventListener('click', () => window.open(it.output_url, '_blank'));
+        img.addEventListener('click', () => openMediaViewer({ type: 'image', url: it.output_url, label: `Scene ${i + 1} ${it.prompt || ''}`.trim() }));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
         thumb.appendChild(el('div', {

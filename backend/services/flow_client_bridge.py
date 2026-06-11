@@ -54,6 +54,33 @@ from .browser_bridge import bridge, BridgeExtensionOfflineError, BridgeTimeoutEr
 log = logging.getLogger("redone.flow_bridge")
 
 
+def _map_flow_tier(paygate: Optional[str], service: Optional[str],
+                   sku: Optional[str]) -> str:
+    """Map Google Flow /v1/credits tier fields → friendly label.
+
+    `userPaygateTier` is the clearest ladder: TIER_TWO = Google AI Ultra,
+    TIER_ONE = Google AI Pro, else (TIER_ZERO/UNSPECIFIED/missing) = Free.
+    Confirmed on a real ULTRA account (2026-06): userPaygateTier=
+    PAYGATE_TIER_TWO, serviceTier=SERVICE_TIER_ADVANCED, sku=G1_TIER2.
+    serviceTier/sku are only used as a fallback when paygate is absent.
+    """
+    pg = (paygate or "").upper()
+    sv = (service or "").upper()
+    sk = (sku or "").upper()
+    if "TIER_TWO" in pg:
+        return "ULTRA"
+    if "TIER_ONE" in pg:
+        return "PRO"
+    if pg:                       # any other explicit paygate value = free
+        return "FREE"
+    # Fallback when userPaygateTier missing — infer from serviceTier / sku.
+    if "ADVANCED" in sv or "TIER2" in sk:
+        return "ULTRA"
+    if "PRO" in sv or "TIER1" in sk:
+        return "PRO"
+    return "FREE"
+
+
 class BridgeFlowClient(FlowClient):
     """FlowClient variant where every Google call goes through the
     Chrome extension bridge. See module docstring for rationale.
@@ -373,7 +400,12 @@ class BridgeFlowClient(FlowClient):
                 if not isinstance(val, (int, float)):
                     val = body.get("credits")
                 if isinstance(val, (int, float)):
-                    return {"remainingCredits": int(val)}
+                    tier = _map_flow_tier(
+                        body.get("userPaygateTier"),
+                        body.get("serviceTier"),
+                        body.get("sku"),
+                    )
+                    return {"remainingCredits": int(val), "tier": tier}
                 log.warning(
                     f"(bridge) check_credits: no credit field in body "
                     f"keys={list(body.keys())}"

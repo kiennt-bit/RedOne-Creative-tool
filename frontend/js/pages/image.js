@@ -1,6 +1,6 @@
 // Image generation page (Imagen / Nano Banana via Google Labs)
 // State is persisted in tasksStore so the gallery survives page navigation.
-import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
@@ -688,7 +688,7 @@ export function renderImage(root) {
 
       if (it.status === 'done' && it.output_url) {
         const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        img.addEventListener('click', () => window.open(it.output_url, '_blank'));
+        img.addEventListener('click', () => openMediaViewer({ type: 'image', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() }));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
         // Full friendly message + tooltip with raw detail (see content.js).

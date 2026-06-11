@@ -2,7 +2,7 @@
 // Mirrors pages/image.js (gallery via tasksStore, survives navigation) but
 // targets the Shakker provider: checkpoint + multi-LoRA + 1 reference image
 // + 7 aspect ratios + bulk prompts.
-import { el, clear, toast, setLoading, icon, modal, makeThumbnail } from '../ui.js';
+import { el, clear, toast, setLoading, icon, modal, makeThumbnail, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { ws } from '../ws.js';
@@ -664,7 +664,7 @@ export function renderShakker(root) {
         el('div', { class: 'scene-number' }, `#${i + 1}`));
       if (it.status === 'done' && it.output_url) {
         const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        img.addEventListener('click', () => window.open(it.output_url, '_blank'));
+        img.addEventListener('click', () => openMediaViewer({ type: 'image', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() }));
         thumb.appendChild(img);
       } else if (it.status === 'error') {
         thumb.appendChild(el('div', { class: 'scene-error', title: it.error_detail || it.error || 'Lỗi',
