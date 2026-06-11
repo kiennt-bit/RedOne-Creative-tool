@@ -41,6 +41,15 @@ OAUTH_CLIENT_SECRET = "GOCSPX-REPLACE_ME"
 ALLOWED_EMAIL_DOMAIN = "redone.vn"
 
 
+# ── RedOne Hub (multi-user management server) ─────────────────────────
+# Leave EMPTY to run the tool standalone (single-user — current behaviour).
+# To connect this build to the company Hub (roles / internal credit / lead
+# monitoring), set the Hub's HTTPS address:
+#     HUB_BASE_URL = "https://hub.redone.vn"
+# Gen still runs locally; if the Hub is unreachable the tool keeps working.
+HUB_BASE_URL = ""
+
+
 # ── Vertex AI commercial API (image gen + video gen) ─────────────────
 # Both Nano Banana (image) and Veo (video) authenticate via a single
 # Service Account.

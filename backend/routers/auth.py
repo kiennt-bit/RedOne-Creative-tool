@@ -101,6 +101,14 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
 
     # All checks passed — persist the session and bounce back to /
     save_session(user)
+    # Best-effort: link this login to the RedOne Hub (multi-user management).
+    # No-op when the Hub is disabled or unreachable → tool works standalone.
+    try:
+        from ..services import hub_client
+        if hub_client.is_enabled():
+            await hub_client.verify_and_store(user.get("id_token", ""))
+    except Exception:
+        log.debug("hub link skipped", exc_info=True)
     return RedirectResponse(url="/", status_code=302)
 
 

@@ -43,6 +43,28 @@ for d in (DATA_DIR, OUTPUT_DIR, COOKIES_DIR, OUTPUT_DIR / "video", OUTPUT_DIR / 
     d.mkdir(parents=True, exist_ok=True)
 
 
+# ── RedOne Hub (multi-user management server) ─────────────────────────
+# Central server for identity / roles / internal credit / team monitoring.
+# Empty = DISABLED → tool runs standalone (single-user, current behaviour).
+# Enable by setting env REDONE_HUB_URL, or HUB_BASE_URL in private_config.py
+# (e.g. "https://hub.redone.vn"). All Hub calls are best-effort: if it is
+# unreachable, gen still works locally.
+def _resolve_hub_url() -> str:
+    url = os.getenv("REDONE_HUB_URL", "").strip()
+    if not url:
+        try:
+            from . import private_config as _pc  # type: ignore
+            url = str(getattr(_pc, "HUB_BASE_URL", "") or "").strip()
+        except Exception:
+            url = ""
+    return url.rstrip("/")
+
+
+HUB_BASE_URL = _resolve_hub_url()
+HUB_TIMEOUT_S = float(os.getenv("REDONE_HUB_TIMEOUT", "6"))
+HUB_SESSION_FILE = DATA_DIR / "hub_session.json"
+
+
 class TaskMode(str, Enum):
     IMAGE = "IMAGE"
     CHAR_IMAGE = "CHAR_IMAGE"

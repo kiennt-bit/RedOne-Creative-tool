@@ -41,6 +41,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
+            user_email TEXT,
             name TEXT,
             mode TEXT,
             quality TEXT,
@@ -100,6 +101,7 @@ class Database:
         self.conn.commit()
         # Idempotent column additions for existing DBs (older schema)
         self._add_column_if_missing("tasks", "duration", "INTEGER DEFAULT 8")
+        self._add_column_if_missing("tasks", "user_email", "TEXT")
         self._add_column_if_missing("shakker_accounts", "webid", "TEXT")
 
     def _add_column_if_missing(self, table: str, column: str, decl: str):

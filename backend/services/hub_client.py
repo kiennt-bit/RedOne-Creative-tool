@@ -1,0 +1,206 @@
+"""Client for the RedOne Hub (multi-user management server).
+
+BEST-EFFORT + GRACEFUL: if the Hub is not configured (config.HUB_BASE_URL
+empty) or unreachable, every call degrades to a safe no-op so the tool keeps
+working exactly like the single-user version. Quota is only enforced while
+the Hub is reachable (offline → allow gen, per the multi-user plan).
+
+Identity bootstrap: the OAuth callback passes the fresh Google id_token to
+verify_and_store(), which exchanges it for a long-lived Hub token cached in
+data/hub_session.json. All later calls authenticate with that Hub token.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime
+from typing import Optional
+
+import httpx
+
+from ..config import HUB_BASE_URL, HUB_SESSION_FILE, HUB_TIMEOUT_S
+
+log = logging.getLogger("redone.hub")
+
+
+def is_enabled() -> bool:
+    return bool(HUB_BASE_URL)
+
+
+# ── Local Hub-session cache (data/hub_session.json) ────────────────────
+def _load() -> Optional[dict]:
+    try:
+        if HUB_SESSION_FILE.exists():
+            rec = json.loads(HUB_SESSION_FILE.read_text(encoding="utf-8"))
+            if isinstance(rec, dict) and rec.get("token") and rec.get("expires_at", 0) > time.time():
+                return rec
+    except Exception as e:
+        log.debug("hub: load session failed: %s", e)
+    return None
+
+
+def _save(rec: dict) -> None:
+    try:
+        HUB_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HUB_SESSION_FILE.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning("hub: save session failed: %s", e)
+
+
+def clear() -> None:
+    try:
+        if HUB_SESSION_FILE.exists():
+            HUB_SESSION_FILE.unlink()
+    except Exception:
+        pass
+
+
+def load_session() -> Optional[dict]:
+    """Cached Hub identity {token,email,role,team_id,expires_at} or None."""
+    return _load()
+
+
+def _auth_headers() -> Optional[dict]:
+    rec = _load()
+    return {"Authorization": f"Bearer {rec['token']}"} if rec else None
+
+
+def _to_epoch(iso: str) -> float:
+    try:
+        return datetime.fromisoformat((iso or "").replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return time.time() + 25 * 86400  # ~25d fallback
+
+
+# ── Identity ───────────────────────────────────────────────────────────
+async def verify_and_store(id_token: str) -> Optional[dict]:
+    """Exchange a fresh Google id_token for a Hub session. Best-effort."""
+    if not is_enabled() or not id_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=HUB_TIMEOUT_S) as c:
+            r = await c.post(f"{HUB_BASE_URL}/auth/verify", json={"id_token": id_token})
+        if r.status_code != 200:
+            log.warning("hub: /auth/verify -> %s %s", r.status_code, r.text[:200])
+            return None
+        d = r.json()
+        rec = {
+            "token": d.get("token"),
+            "email": d.get("email"),
+            "name": d.get("name"),
+            "role": d.get("role"),
+            "team_id": d.get("team_id"),
+            "expires_at": _to_epoch(d.get("expires_at", "")),
+        }
+        _save(rec)
+        log.info("hub: linked %s as %s", rec.get("email"), rec.get("role"))
+        return rec
+    except Exception as e:
+        log.warning("hub: verify failed (offline?): %s", e)
+        return None
+
+
+async def get_me() -> Optional[dict]:
+    """Live role/team/quota from the Hub, or None if disabled/unreachable."""
+    if not is_enabled():
+        return None
+    h = _auth_headers()
+    if not h:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=HUB_TIMEOUT_S) as c:
+            r = await c.get(f"{HUB_BASE_URL}/me", headers=h)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 401:
+            clear()  # token expired → next login re-links
+    except Exception as e:
+        log.debug("hub: /me failed: %s", e)
+    return None
+
+
+# ── Credit lifecycle ───────────────────────────────────────────────────
+async def reserve(kind: str, model: str = "", credit_cost: int = 1, prompt: str = "") -> dict:
+    """Reserve credit before a gen. Returns one of:
+      {ok:True,  reservation_id, remaining}          → reserved, proceed
+      {ok:False, message, remaining}                 → out of credit, BLOCK gen
+      {ok:True,  reservation_id:None, offline:True}  → hub off/unreachable, allow
+    """
+    offline = {"ok": True, "reservation_id": None, "offline": True}
+    if not is_enabled():
+        return offline
+    h = _auth_headers()
+    if not h:
+        return offline
+    try:
+        async with httpx.AsyncClient(timeout=HUB_TIMEOUT_S) as c:
+            r = await c.post(
+                f"{HUB_BASE_URL}/events/reserve",
+                headers=h,
+                json={"type": kind, "model": model, "credit_cost": int(credit_cost), "prompt": prompt[:2000]},
+            )
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 401:
+            clear()
+    except Exception as e:
+        log.debug("hub: reserve failed: %s", e)
+    return offline
+
+
+async def commit(
+    reservation_id: Optional[int],
+    status: str = "done",
+    kind: str = "",
+    model: str = "",
+    credit_cost: int = 1,
+    prompt: str = "",
+    thumb: Optional[tuple] = None,
+) -> Optional[dict]:
+    """Report a finished gen (+ optional thumbnail) to the Hub. Best-effort.
+    `thumb` = (filename, bytes, content_type)."""
+    if not is_enabled():
+        return None
+    h = _auth_headers()
+    if not h:
+        return None
+    data = {
+        "status": status,
+        "type": kind,
+        "model": model,
+        "credit_cost": str(int(credit_cost)),
+        "prompt": prompt[:2000],
+    }
+    if reservation_id:
+        data["reservation_id"] = str(reservation_id)
+    files = {"thumb": thumb} if thumb else None
+    try:
+        async with httpx.AsyncClient(timeout=HUB_TIMEOUT_S * 4) as c:
+            r = await c.post(f"{HUB_BASE_URL}/events/commit", headers=h, data=data, files=files)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 401:
+            clear()
+    except Exception as e:
+        log.debug("hub: commit failed: %s", e)
+    return None
+
+
+# ── Thumbnail helper (CPU-bound; call via executor inside async gen) ────
+def make_image_thumbnail(path, max_side: int = 640) -> Optional[tuple]:
+    """Build a small JPEG thumbnail from an image file → (name, bytes, ctype)."""
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_side, max_side))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=80)
+            return ("thumb.jpg", buf.getvalue(), "image/jpeg")
+    except Exception as e:
+        log.debug("hub: thumbnail failed: %s", e)
+        return None

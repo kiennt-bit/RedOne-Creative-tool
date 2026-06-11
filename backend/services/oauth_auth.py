@@ -200,7 +200,13 @@ async def exchange_code(code: str, redirect_uri: str) -> dict:
         )
         if user_resp.status_code != 200:
             raise RuntimeError(f"Userinfo failed: {user_resp.status_code}")
-        return user_resp.json()
+        user = user_resp.json()
+        # Keep Google's id_token (returned because scope includes `openid`).
+        # Used ONCE at login to link the RedOne Hub (hub_client.verify_and_store);
+        # NOT persisted to disk. Harmless extra key on the userinfo dict.
+        if isinstance(user, dict):
+            user["id_token"] = tokens.get("id_token", "")
+        return user
 
 
 def is_email_allowed(email: str) -> bool:
