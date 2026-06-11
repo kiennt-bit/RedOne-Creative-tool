@@ -58,8 +58,11 @@ class Quota(Base):
 
     email = Column(String(255), primary_key=True)
     period = Column(String(16), default="monthly", nullable=False)  # daily|weekly|monthly|none
-    limit_credits = Column(Integer, nullable=True)  # NULL = unlimited
-    used_credits = Column(Integer, default=0, nullable=False)
+    # Two separate pools. limit: NULL = unlimited, 0 = blocked (DEFAULT), N = cap.
+    flow_limit = Column(Integer, nullable=True, default=0)      # Google Flow / Vertex gens
+    flow_used = Column(Integer, default=0, nullable=False)
+    shakker_limit = Column(Integer, nullable=True, default=0)   # Shakker.ai gens
+    shakker_used = Column(Integer, default=0, nullable=False)
     reset_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 

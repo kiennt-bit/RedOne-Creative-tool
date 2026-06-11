@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .. import credit
 from ..db import get_db
-from ..models import Team, User
+from ..models import Quota, Team, User
 from ..schemas import GrantIn, QuotaIn, TeamIn, TeamOut, UserIn, UserOut
 from ..security import require_roles
 
@@ -25,13 +25,20 @@ admin_dep = require_roles("admin")
 # ── Users ──────────────────────────────────────────────────────────────
 @router.get("/users", response_model=list[UserOut])
 def list_users(_: User = Depends(admin_dep), db: Session = Depends(get_db)):
-    return [
-        UserOut(
+    quotas = {q.email: q for q in db.query(Quota).all()}
+    out: list[UserOut] = []
+    for u in db.query(User).order_by(User.email).all():
+        q = quotas.get(u.email)
+        out.append(UserOut(
             email=u.email, name=u.name or "", role=u.role,
             team_id=u.team_id, active=u.active, created_at=u.created_at,
-        )
-        for u in db.query(User).order_by(User.email).all()
-    ]
+            period=(q.period if q else "monthly"),
+            flow_limit=(q.flow_limit if q else 0),
+            flow_used=(q.flow_used if q else 0),
+            shakker_limit=(q.shakker_limit if q else 0),
+            shakker_used=(q.shakker_used if q else 0),
+        ))
+    return out
 
 
 @router.post("/users", response_model=UserOut)
@@ -129,16 +136,16 @@ def set_quota(body: QuotaIn, _: User = Depends(admin_dep), db: Session = Depends
     q = credit.get_or_create_quota(db, body.email)
     if body.period is not None:
         q.period = body.period.strip().lower()
-    if body.limit_credits is not None:
-        # <0 → unlimited (NULL); >=0 → hard cap
-        q.limit_credits = None if body.limit_credits < 0 else int(body.limit_credits)
+    # <0 → unlimited (NULL); >=0 → hard cap; omitted → unchanged
+    if body.flow_limit is not None:
+        q.flow_limit = None if body.flow_limit < 0 else int(body.flow_limit)
+    if body.shakker_limit is not None:
+        q.shakker_limit = None if body.shakker_limit < 0 else int(body.shakker_limit)
     if body.reset:
         credit.reset_usage(db, q, reason="admin reset")
     db.add(q)
-    snap = {
-        "email": q.email, "period": q.period, "limit_credits": q.limit_credits,
-        "used_credits": q.used_credits, "remaining": credit.remaining(q), "reset_at": q.reset_at,
-    }
+    snap = credit.summary(q)
+    snap["email"] = q.email
     db.commit()
     return snap
 
@@ -148,10 +155,11 @@ def grant(body: GrantIn, _: User = Depends(admin_dep), db: Session = Depends(get
     """Adjust a user's usage. delta>0 returns credit (lowers used), delta<0
     deducts (raises used). To give *more than the cap*, raise limit via /quota."""
     q = credit.get_or_create_quota(db, body.email)
+    cat = "shakker" if (body.pool or "flow").strip().lower() == "shakker" else "flow"
     if body.delta >= 0:
-        credit.refund(db, q, body.delta, reason=body.reason)
+        credit.refund(db, q, cat, body.delta, reason=body.reason)
     else:
-        credit.charge(db, q, -body.delta, reason=body.reason)
-    snap = {"email": q.email, "used_credits": q.used_credits, "remaining": credit.remaining(q)}
+        credit.charge(db, q, cat, -body.delta, reason=body.reason)
+    snap = {"email": q.email, "pool": cat, "remaining": credit.remaining(q, cat)}
     db.commit()
     return snap

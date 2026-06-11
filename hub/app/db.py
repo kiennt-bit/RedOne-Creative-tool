@@ -37,3 +37,26 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register models on Base)
 
     Base.metadata.create_all(bind=engine)
+    _migrate_sqlite_add_columns()
+
+
+def _migrate_sqlite_add_columns() -> None:
+    """Lightweight additive migration for an EXISTING sqlite DB (trial). On a
+    fresh Postgres/MySQL, create_all() already makes the full schema, so this
+    is a no-op there. Adds columns introduced after the first release."""
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        return
+    adds = [
+        ("quotas", "flow_limit", "INTEGER DEFAULT 0"),
+        ("quotas", "flow_used", "INTEGER DEFAULT 0"),
+        ("quotas", "shakker_limit", "INTEGER DEFAULT 0"),
+        ("quotas", "shakker_used", "INTEGER DEFAULT 0"),
+    ]
+    try:
+        with engine.begin() as conn:
+            for table, col, decl in adds:
+                cols = [r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()]
+                if col not in cols:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    except Exception:
+        pass

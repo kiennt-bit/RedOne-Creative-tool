@@ -36,14 +36,15 @@ def reserve(
     q = credit.get_or_create_quota(db, user.email)
     credit.ensure_period(db, q)
     cost = max(0, int(req.credit_cost or 0))
+    cat = credit.category_for(req.type)
 
-    if not credit.can_afford(q, cost):
-        rem = credit.remaining(q)
+    if not credit.can_afford(q, cat, cost):
+        rem = credit.remaining(q, cat)
         db.commit()  # persist any period rollover
+        label = "Flow" if cat == "flow" else "Shakker"
         return ReserveResponse(
-            ok=False,
-            remaining=rem,
-            message=f"Hết credit nội bộ (còn {rem}). Liên hệ lead để được cấp thêm.",
+            ok=False, remaining=rem, pool=cat,
+            message=f"Hết credit {label} (còn {rem}). Liên hệ lead để được cấp thêm.",
         )
 
     ev = TaskEvent(
@@ -57,11 +58,11 @@ def reserve(
     )
     db.add(ev)
     db.flush()  # assign ev.id
-    credit.charge(db, q, cost, reason=f"reserve:{req.type or 'gen'}", task_event_id=ev.id)
-    rem = credit.remaining(q)
+    credit.charge(db, q, cat, cost, reason=f"reserve:{req.type or 'gen'}", task_event_id=ev.id)
+    rem = credit.remaining(q, cat)
     rid = ev.id
     db.commit()
-    return ReserveResponse(ok=True, reservation_id=rid, remaining=rem)
+    return ReserveResponse(ok=True, reservation_id=rid, remaining=rem, pool=cat)
 
 
 @router.post("/commit", response_model=CommitResponse)
@@ -81,6 +82,7 @@ async def commit(
     credit.ensure_period(db, q)
     actual = max(0, int(credit_cost or 0))
     is_done = status == "done"
+    cat = credit.category_for(type)
 
     ev = db.get(TaskEvent, reservation_id) if reservation_id else None
     if ev is not None and ev.email != user.email:
@@ -95,19 +97,19 @@ async def commit(
         db.add(ev)
         db.flush()
         if is_done:
-            credit.charge(db, q, actual, reason=f"commit:{type or 'gen'}", task_event_id=ev.id)
+            credit.charge(db, q, cat, actual, reason=f"commit:{type or 'gen'}", task_event_id=ev.id)
             ev.credit_cost = actual
     else:
         reserved = ev.credit_cost or 0
         if is_done:
             diff = actual - reserved
             if diff > 0:
-                credit.charge(db, q, diff, reason=f"commit-adj:{type or 'gen'}", task_event_id=ev.id)
+                credit.charge(db, q, cat, diff, reason=f"commit-adj:{type or 'gen'}", task_event_id=ev.id)
             elif diff < 0:
-                credit.refund(db, q, -diff, reason=f"commit-adj:{type or 'gen'}", task_event_id=ev.id)
+                credit.refund(db, q, cat, -diff, reason=f"commit-adj:{type or 'gen'}", task_event_id=ev.id)
             ev.credit_cost = actual
         else:
-            credit.refund(db, q, reserved, reason=f"{status}:{type or 'gen'}", task_event_id=ev.id)
+            credit.refund(db, q, cat, reserved, reason=f"{status}:{type or 'gen'}", task_event_id=ev.id)
             ev.credit_cost = 0
         if type:
             ev.type = type
@@ -132,7 +134,7 @@ async def commit(
             thumb_url = storage.url_for(key, base_url=str(request.base_url))
 
     db.add(ev)
-    rem = credit.remaining(q)
+    rem = credit.remaining(q, cat)
     eid = ev.id
     db.commit()
-    return CommitResponse(ok=True, task_event_id=eid, thumb_url=thumb_url, remaining=rem)
+    return CommitResponse(ok=True, task_event_id=eid, thumb_url=thumb_url, remaining=rem, pool=cat)

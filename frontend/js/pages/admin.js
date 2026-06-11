@@ -18,6 +18,10 @@ function hubErr(e) {
   if (e && e.status === 503) return 'Hub không kết nối được.';
   return (e && e.message) || String(e);
 }
+function fmtLim(used, limit) {
+  const u = used || 0;
+  return limit == null ? `${u}/∞` : `${u}/${limit}`;   // limit null = không giới hạn
+}
 function confirmDelete(msg, onYes) {
   modal({
     title: 'Xác nhận xoá',
@@ -104,6 +108,8 @@ export function renderAdmin(root) {
         el('td', null, nameIn),
         el('td', null, roleSel),
         el('td', null, teamSel),
+        el('td', { class: 'hub-muted', title: 'đã dùng / hạn mức Flow' }, fmtLim(u.flow_used, u.flow_limit)),
+        el('td', { class: 'hub-muted', title: 'đã dùng / hạn mức Shakker' }, fmtLim(u.shakker_used, u.shakker_limit)),
         el('td', { style: { textAlign: 'center' } }, activeCb),
         el('td', null, el('div', { style: { display: 'flex', gap: '6px' } }, saveBtn, delBtn)),
       );
@@ -111,7 +117,8 @@ export function renderAdmin(root) {
     usersCard.appendChild(el('table', { class: 'hub-tbl' },
       el('thead', null, el('tr', null,
         el('th', null, 'Email'), el('th', null, 'Tên'), el('th', null, 'Vai trò'),
-        el('th', null, 'Nhóm'), el('th', { style: { textAlign: 'center' } }, 'Hoạt động'), el('th', null, ''))),
+        el('th', null, 'Nhóm'), el('th', null, 'Flow'), el('th', null, 'Shakker'),
+        el('th', { style: { textAlign: 'center' } }, 'Hoạt động'), el('th', null, ''))),
       el('tbody', null, ...rows),
     ));
   }
@@ -177,16 +184,22 @@ export function renderAdmin(root) {
 
     const qEmail = el('input', { class: 'hub-in', placeholder: 'email@redone.vn', style: { maxWidth: '240px' } });
     let qPeriod = 'monthly';
-    const qLimit = el('input', { class: 'hub-in', type: 'number', value: '-1', style: { maxWidth: '120px' } });
+    const qFlow = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '110px' } });
+    const qShakker = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '110px' } });
     const qReset = el('input', { type: 'checkbox' });
     const setBtn = el('button', { class: 'btn btn-primary' }, 'Đặt hạn mức');
     setBtn.addEventListener('click', async () => {
       const email = qEmail.value.trim().toLowerCase();
       if (!email.includes('@')) { toast('Email không hợp lệ', 'error'); return; }
       try {
-        const r = await api.hub.setQuota({ email, period: qPeriod, limit_credits: parseInt(qLimit.value, 10), reset: qReset.checked });
-        const rem = r && r.remaining == null ? 'không giới hạn' : (r ? r.remaining : '?');
-        toast(`Đã đặt hạn mức cho ${email} (còn lại: ${rem})`, 'success');
+        await api.hub.setQuota({
+          email, period: qPeriod,
+          flow_limit: parseInt(qFlow.value, 10),
+          shakker_limit: parseInt(qShakker.value, 10),
+          reset: qReset.checked,
+        });
+        toast(`Đã đặt hạn mức cho ${email}`, 'success');
+        load();
       } catch (e) { toast(hubErr(e), 'error'); }
     });
     quotaCard.appendChild(el('div', { class: 'hub-filters' },
@@ -195,7 +208,8 @@ export function renderAdmin(root) {
         el('select', { class: 'hub-in', onchange: e => qPeriod = e.target.value },
           ...[['monthly', 'Hàng tháng'], ['weekly', 'Hàng tuần'], ['daily', 'Hàng ngày'], ['none', 'Không reset']]
             .map(([v, l]) => el('option', { value: v, selected: v === 'monthly' }, l)))),
-      el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Giới hạn (−1=∞)'), qLimit),
+      el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Flow (−1=∞)'), qFlow),
+      el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Shakker (−1=∞)'), qShakker),
       el('label', { class: 'hub-fld', style: { flexDirection: 'row', alignItems: 'center', gap: '6px' } }, qReset, 'Reset đã dùng'),
       setBtn,
     ));
@@ -203,20 +217,26 @@ export function renderAdmin(root) {
     // grant / adjust
     quotaCard.appendChild(el('div', { class: 'hub-sec', style: { marginTop: '14px' } }, 'Điều chỉnh credit'));
     const gEmail = el('input', { class: 'hub-in', placeholder: 'email@redone.vn', style: { maxWidth: '240px' } });
-    const gDelta = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '120px' }, title: '+ trả lại / − trừ thêm' });
-    const gReason = el('input', { class: 'hub-in', placeholder: 'lý do', style: { maxWidth: '200px' } });
+    let gPool = 'flow';
+    const gDelta = el('input', { class: 'hub-in', type: 'number', value: '0', style: { maxWidth: '110px' }, title: '+ trả lại / − trừ thêm' });
+    const gReason = el('input', { class: 'hub-in', placeholder: 'lý do', style: { maxWidth: '180px' } });
     const gBtn = el('button', { class: 'btn' }, 'Điều chỉnh');
     gBtn.addEventListener('click', async () => {
       const email = gEmail.value.trim().toLowerCase();
       const delta = parseInt(gDelta.value, 10);
       if (!email.includes('@') || !delta) { toast('Nhập email + số ≠ 0', 'error'); return; }
       try {
-        const r = await api.hub.grant({ email, delta, reason: gReason.value || 'điều chỉnh thủ công' });
-        toast(`Đã điều chỉnh (còn lại: ${r ? r.remaining : '?'})`, 'success');
+        await api.hub.grant({ email, pool: gPool, delta, reason: gReason.value || 'điều chỉnh thủ công' });
+        toast(`Đã điều chỉnh ${gPool} cho ${email}`, 'success');
+        load();
       } catch (e) { toast(hubErr(e), 'error'); }
     });
     quotaCard.appendChild(el('div', { class: 'hub-filters' },
       el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Email'), gEmail),
+      el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Hũ'),
+        el('select', { class: 'hub-in', onchange: e => gPool = e.target.value },
+          el('option', { value: 'flow', selected: true }, 'Flow'),
+          el('option', { value: 'shakker' }, 'Shakker'))),
       el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Delta (+/−)'), gDelta),
       el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Lý do'), gReason),
       gBtn,

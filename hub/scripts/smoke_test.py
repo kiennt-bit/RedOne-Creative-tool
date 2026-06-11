@@ -80,11 +80,14 @@ def main() -> None:
         check(r.status_code == 200 and r.json()["role"] == "admin", "admin /me role=admin")
 
         r = c.post("/admin/quota", headers=auth("kiennt@redone.vn"),
-                   json={"email": "alice@redone.vn", "limit_credits": 3, "period": "monthly", "reset": True})
-        check(r.status_code == 200 and r.json()["limit_credits"] == 3, "admin set alice quota=3")
+                   json={"email": "alice@redone.vn", "flow_limit": 3, "shakker_limit": 2, "period": "monthly", "reset": True})
+        check(r.status_code == 200 and r.json()["flow"]["limit"] == 3 and r.json()["shakker"]["limit"] == 2,
+              "admin set alice flow=3 shakker=2")
 
         r = c.get("/me", headers=auth("alice@redone.vn"))
-        check(r.status_code == 200 and r.json()["quota"]["remaining"] == 3, "alice remaining=3")
+        qj = r.json().get("quota", {})
+        check(r.status_code == 200 and qj["flow"]["remaining"] == 3 and qj["shakker"]["remaining"] == 2,
+              "alice flow rem=3, shakker rem=2")
 
         rids, rems = [], []
         for i in range(3):
@@ -110,7 +113,22 @@ def main() -> None:
 
         r = c.post("/events/commit", headers=auth("alice@redone.vn"),
                    data={"reservation_id": str(rids[1]), "status": "error", "type": "image", "credit_cost": "1"})
-        check(r.status_code == 200 and r.json().get("remaining") == 1, "commit #2 error refunded (remaining=1)")
+        check(r.status_code == 200 and r.json().get("remaining") == 1, "commit #2 error refunded (flow remaining=1)")
+
+        # Shakker pool is INDEPENDENT of flow.
+        srem = []
+        for i in range(2):
+            r = c.post("/events/reserve", headers=auth("alice@redone.vn"), json={"type": "shakker", "credit_cost": 1})
+            srem.append(r.json().get("remaining"))
+            check(r.status_code == 200 and r.json()["ok"], f"shakker reserve #{i + 1} ok")
+        check(srem == [1, 0], f"shakker remaining {srem} == [1,0]")
+        r = c.post("/events/reserve", headers=auth("alice@redone.vn"), json={"type": "shakker", "credit_cost": 1})
+        check(r.status_code == 200 and r.json()["ok"] is False and r.json().get("pool") == "shakker",
+              "shakker 3rd blocked (independent of flow)")
+
+        # Default user (no quota set) = 0 = blocked.
+        r = c.post("/events/reserve", headers=auth("bob@redone.vn"), json={"type": "image", "credit_cost": 1})
+        check(r.status_code == 200 and r.json()["ok"] is False, "default quota 0 -> blocked")
 
         if thumb_url:
             path = thumb_url.split("testserver", 1)[-1] if "testserver" in thumb_url else thumb_url

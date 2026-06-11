@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Auth ───────────────────────────────────────────────────────────────
@@ -21,12 +21,17 @@ class VerifyResponse(BaseModel):
     expires_at: datetime
 
 
-# ── Me / quota ─────────────────────────────────────────────────────────
+# ── Me / quota (two pools: flow + shakker) ─────────────────────────────
+class PoolSummary(BaseModel):
+    limit: Optional[int] = None   # None = unlimited, 0 = blocked, N = cap
+    used: int = 0
+    remaining: Optional[int] = None
+
+
 class QuotaSummary(BaseModel):
-    period: str
-    limit_credits: Optional[int] = None  # None = unlimited
-    used_credits: int = 0
-    remaining: Optional[int] = None      # None = unlimited
+    period: str = "monthly"
+    flow: PoolSummary = Field(default_factory=PoolSummary)
+    shakker: PoolSummary = Field(default_factory=PoolSummary)
     reset_at: Optional[datetime] = None
 
 
@@ -35,7 +40,7 @@ class MeResponse(BaseModel):
     name: str = ""
     role: str
     team_id: Optional[int] = None
-    quota: QuotaSummary
+    quota: QuotaSummary = Field(default_factory=QuotaSummary)
 
 
 # ── Events ─────────────────────────────────────────────────────────────
@@ -49,7 +54,8 @@ class ReserveRequest(BaseModel):
 class ReserveResponse(BaseModel):
     ok: bool
     reservation_id: Optional[int] = None
-    remaining: Optional[int] = None
+    remaining: Optional[int] = None   # remaining in the affected pool
+    pool: str = ""                    # "flow" | "shakker"
     message: str = ""
 
 
@@ -58,6 +64,7 @@ class CommitResponse(BaseModel):
     task_event_id: Optional[int] = None
     thumb_url: Optional[str] = None
     remaining: Optional[int] = None
+    pool: str = ""
     message: str = ""
 
 
@@ -102,6 +109,12 @@ class UserOut(BaseModel):
     team_id: Optional[int] = None
     active: bool = True
     created_at: Optional[datetime] = None
+    # Per-pool limits/usage (0 default when no quota row exists).
+    period: str = "monthly"
+    flow_limit: Optional[int] = 0
+    flow_used: int = 0
+    shakker_limit: Optional[int] = 0
+    shakker_used: int = 0
 
 
 class TeamIn(BaseModel):
@@ -119,12 +132,14 @@ class TeamOut(BaseModel):
 
 class QuotaIn(BaseModel):
     email: str
-    period: Optional[str] = None            # daily|weekly|monthly|none
-    limit_credits: Optional[int] = None     # <0 → unlimited; >=0 → cap; omitted → unchanged
-    reset: bool = False                     # reset used_credits to 0 now
+    period: Optional[str] = None             # daily|weekly|monthly|none
+    flow_limit: Optional[int] = None         # <0 → unlimited; >=0 → cap; omitted → unchanged
+    shakker_limit: Optional[int] = None      # same semantics
+    reset: bool = False                      # reset BOTH pools' usage to 0 now
 
 
 class GrantIn(BaseModel):
     email: str
-    delta: int                              # +grant / -deduct
+    pool: str = "flow"                       # flow | shakker
+    delta: int                               # +grant / -deduct
     reason: str = "manual adjustment"
