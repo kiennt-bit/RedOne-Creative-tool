@@ -39,6 +39,10 @@ class StorageBackend(ABC):
     def url_for(self, key: str, base_url: str = "") -> str:
         """Return a URL a browser can GET directly (signed / presigned)."""
 
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Remove a stored object (best-effort; used by retention sweep)."""
+
 
 # ── Local disk ─────────────────────────────────────────────────────────
 class LocalDiskStorage(StorageBackend):
@@ -77,6 +81,14 @@ class LocalDiskStorage(StorageBackend):
         base = (settings.PUBLIC_BASE_URL or base_url or "").rstrip("/")
         return f"{base}/media/{key}?exp={exp}&sig={sig}"
 
+    def delete(self, key: str) -> None:
+        try:
+            p = self.local_path(key)
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
 
 # ── S3 / R2 / any S3-compatible ────────────────────────────────────────
 class S3Storage(StorageBackend):
@@ -107,6 +119,12 @@ class S3Storage(StorageBackend):
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=settings.SIGNED_URL_TTL,
         )
+
+    def delete(self, key: str) -> None:
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=safe_key(key))
+        except Exception:
+            pass
 
 
 _BACKEND: Optional[StorageBackend] = None

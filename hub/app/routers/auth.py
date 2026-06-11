@@ -13,6 +13,7 @@ from ..config import settings
 from ..db import get_db
 from ..models import User
 from ..schemas import VerifyRequest, VerifyResponse
+from ..audit import write_audit
 from ..security import AuthError, issue_hub_token, verify_google_id_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -44,6 +45,7 @@ def verify(req: VerifyRequest, db: Session = Depends(get_db)):
 
     # Snapshot before commit (avoids post-commit attribute reload surprises).
     final_name, role, team_id = (user.name or name), user.role, user.team_id
+    write_audit(db, email, "auth.login", detail=f"role={role}")
     db.commit()
 
     token, exp = issue_hub_token(email)

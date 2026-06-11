@@ -94,5 +94,16 @@ class TaskEvent(Base):
     finished_at = Column(DateTime, nullable=True)
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    actor_email = Column(String(255), index=True, default="")
+    action = Column(String(64), default="")    # user.upsert|user.delete|team.upsert|team.delete|quota.set|credit.grant|auth.login
+    target = Column(String(255), default="")
+    detail = Column(Text, default="")
+    created_at = Column(DateTime, default=_utcnow, index=True)
+
+
 # Composite index for the common "this member's recent tasks" query.
 Index("ix_task_events_email_created", TaskEvent.email, TaskEvent.created_at)

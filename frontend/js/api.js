@@ -161,6 +161,7 @@ export const api = {
     delTeam: (id) => request('DELETE', `/api/hub/admin/teams/${id}`),
     setQuota: (payload) => request('POST', '/api/hub/admin/quota', { body: payload }),
     grant: (payload) => request('POST', '/api/hub/admin/grant', { body: payload }),
+    audit: (limit = 100) => request('GET', '/api/hub/admin/audit', { params: { limit } }),
   },
 
   tasks: {

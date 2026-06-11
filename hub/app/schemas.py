@@ -88,9 +88,20 @@ class UsageRow(BaseModel):
     email: str
     name: str = ""
     team_id: Optional[int] = None
+    flow_credits: int = 0
+    shakker_credits: int = 0
     total_credits: int = 0
     task_count: int = 0
     error_count: int = 0
+
+
+class AuditOut(BaseModel):
+    id: int
+    actor_email: str = ""
+    action: str = ""
+    target: str = ""
+    detail: str = ""
+    created_at: Optional[datetime] = None
 
 
 # ── Admin ──────────────────────────────────────────────────────────────

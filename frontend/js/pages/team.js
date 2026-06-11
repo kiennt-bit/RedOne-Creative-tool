@@ -21,10 +21,18 @@ export function ensureHubCss() {
   .hub-tbl{width:100%;border-collapse:collapse;}
   .hub-tbl th,.hub-tbl td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border,rgba(127,127,127,.18));font-size:13px;vertical-align:middle;}
   .hub-tbl th{opacity:.6;font-weight:600;font-size:12px;}
+  .hub-barrow{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px;}
+  .hub-barlabel{width:150px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .hub-bartrack{flex:1;display:flex;height:16px;border-radius:6px;overflow:hidden;background:rgba(127,127,127,.12);}
+  .hub-barseg{height:100%;}
+  .hub-barval{width:54px;flex:none;text-align:right;opacity:.8;}
   `;
   document.head.appendChild(el('style', { id: 'hub-pages-css', html: css }));
 }
 
+function swatch(color) {
+  return el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '2px', background: color, verticalAlign: 'middle', marginRight: '4px' } });
+}
 function fmtTime(iso) {
   if (!iso) return '';
   try { return new Date(iso).toLocaleString('vi-VN'); } catch { return iso; }
@@ -88,16 +96,41 @@ export function renderTeam(root) {
     clear(usageBox);
     usageBox.appendChild(el('div', { class: 'hub-sec' }, 'Tiêu thụ credit theo thành viên'));
     if (!rows || !rows.length) { usageBox.appendChild(el('div', { class: 'empty' }, 'Chưa có dữ liệu.')); return; }
-    usageBox.appendChild(el('table', { class: 'hub-tbl' },
+
+    const FLOW = 'var(--brand,#dc2626)', SHAK = 'var(--brand-2,#7c3aed)';
+    const maxTotal = Math.max(1, ...rows.map(r => r.total_credits || 0));
+
+    // Legend + stacked bars (Flow + Shakker) per member.
+    usageBox.appendChild(el('div', { style: { display: 'flex', gap: '16px', margin: '4px 0 10px', fontSize: '12px' } },
+      el('span', null, swatch(FLOW), 'Flow'),
+      el('span', null, swatch(SHAK), 'Shakker'),
+    ));
+    for (const r of rows) {
+      const total = r.total_credits || 0;
+      const flowW = (Math.max(0, r.flow_credits || 0) / maxTotal) * 100;
+      const shakW = (Math.max(0, r.shakker_credits || 0) / maxTotal) * 100;
+      usageBox.appendChild(el('div', { class: 'hub-barrow' },
+        el('div', { class: 'hub-barlabel', title: r.email }, r.name || r.email.split('@')[0]),
+        el('div', { class: 'hub-bartrack' },
+          el('div', { class: 'hub-barseg', style: { width: flowW + '%', background: FLOW }, title: `Flow ${r.flow_credits || 0}` }),
+          el('div', { class: 'hub-barseg', style: { width: shakW + '%', background: SHAK }, title: `Shakker ${r.shakker_credits || 0}` }),
+        ),
+        el('div', { class: 'hub-barval' }, String(total)),
+      ));
+    }
+
+    usageBox.appendChild(el('table', { class: 'hub-tbl', style: { marginTop: '12px' } },
       el('thead', null, el('tr', null,
-        el('th', null, 'Thành viên'), el('th', null, 'Credit đã dùng'),
-        el('th', null, 'Số task'), el('th', null, 'Lỗi'))),
+        el('th', null, 'Thành viên'), el('th', null, 'Flow'), el('th', null, 'Shakker'),
+        el('th', null, 'Tổng'), el('th', null, 'Task'), el('th', null, 'Lỗi'))),
       el('tbody', null, ...rows.map(r => el('tr', null,
         el('td', null,
           el('div', null, r.name || r.email.split('@')[0]),
           el('div', { class: 'hub-muted' }, r.email)),
-        el('td', null, String(r.total_credits)),
-        el('td', null, String(r.task_count)),
+        el('td', null, String(r.flow_credits || 0)),
+        el('td', null, String(r.shakker_credits || 0)),
+        el('td', null, String(r.total_credits || 0)),
+        el('td', null, String(r.task_count || 0)),
         el('td', null, r.error_count
           ? el('span', { style: { color: 'var(--red,#e5484d)' } }, String(r.error_count))
           : '0'),

@@ -64,6 +64,13 @@ class Settings:
     # this (object must be public-read) instead of presigned URLs.
     S3_PUBLIC_BASE_URL: str = os.getenv("S3_PUBLIC_BASE_URL", "").rstrip("/")
 
+    # ── Media retention ────────────────────────────────────────────────
+    # Auto-delete thumbnails/posters older than N days (0 = keep forever).
+    # A periodic sweep runs inside the Hub. For S3/R2 you can also use
+    # bucket lifecycle rules instead.
+    MEDIA_RETENTION_DAYS: int = int(os.getenv("MEDIA_RETENTION_DAYS", "60"))
+    RETENTION_SWEEP_HOURS: int = int(os.getenv("RETENTION_SWEEP_HOURS", "12"))
+
     # ── Quota defaults (applied when a user has no explicit quota row) ──
     # -1 = unlimited. Admin overrides per-user at runtime via the admin tab.
     DEFAULT_QUOTA_LIMIT: int = int(os.getenv("DEFAULT_QUOTA_LIMIT", "-1"))

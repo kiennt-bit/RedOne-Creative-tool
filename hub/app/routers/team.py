@@ -76,9 +76,11 @@ def team_usage(
     scope = visible_emails(db, user)
     qy = db.query(
         TaskEvent.email,
-        func.coalesce(func.sum(TaskEvent.credit_cost), 0),
-        func.count(TaskEvent.id),
-        func.coalesce(func.sum(case((TaskEvent.status == "error", 1), else_=0)), 0),
+        func.coalesce(func.sum(TaskEvent.credit_cost), 0),                                                  # total
+        func.count(TaskEvent.id),                                                                           # count
+        func.coalesce(func.sum(case((TaskEvent.status == "error", 1), else_=0)), 0),                        # errors
+        func.coalesce(func.sum(case((TaskEvent.type == "shakker", 0), else_=TaskEvent.credit_cost)), 0),    # flow
+        func.coalesce(func.sum(case((TaskEvent.type == "shakker", TaskEvent.credit_cost), else_=0)), 0),    # shakker
     ).filter(TaskEvent.created_at >= datetime.utcnow() - timedelta(days=days))
     if scope is not None:
         qy = qy.filter(TaskEvent.email.in_(scope))
@@ -91,13 +93,15 @@ def team_usage(
         else {}
     )
     out: list[UsageRow] = []
-    for email, total, count, errs in rows:
+    for email, total, count, errs, flow, shak in rows:
         u = users.get(email)
         out.append(
             UsageRow(
                 email=email,
                 name=(u.name if u else "") or "",
                 team_id=(u.team_id if u else None),
+                flow_credits=int(flow or 0),
+                shakker_credits=int(shak or 0),
                 total_credits=int(total or 0),
                 task_count=int(count or 0),
                 error_count=int(errs or 0),

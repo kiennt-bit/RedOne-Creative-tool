@@ -141,8 +141,9 @@ def main() -> None:
               "lead /team/tasks sees alice")
 
         r = c.get("/team/usage", headers=auth("bob@redone.vn"))
-        check(r.status_code == 200 and any(u["email"] == "alice@redone.vn" for u in r.json()),
-              "lead /team/usage has alice")
+        au = next((u for u in r.json() if u["email"] == "alice@redone.vn"), {})
+        check(r.status_code == 200 and au.get("flow_credits", 0) > 0 and au.get("shakker_credits", 0) > 0,
+              "lead /team/usage has alice (flow+shakker split)")
 
         r = c.get("/team/tasks", headers=auth("alice@redone.vn"))
         check(r.status_code == 403, "member blocked from /team/tasks (403)")
@@ -158,6 +159,11 @@ def main() -> None:
         r = c.get("/admin/users", headers=auth("kiennt@redone.vn"))
         carol = next((u for u in r.json() if u["email"] == "carol@redone.vn"), {})
         check(carol.get("flow_limit") == 50, "user list reflects new flow limit (50)")
+
+        r = c.get("/admin/audit", headers=auth("kiennt@redone.vn"))
+        acts = [a.get("action") for a in r.json()] if r.status_code == 200 else []
+        check(r.status_code == 200 and "credit.grant" in acts and "quota.set" in acts,
+              "audit log records admin actions")
 
         r = c.post("/admin/users", headers=auth("alice@redone.vn"), json={"email": "x@redone.vn"})
         check(r.status_code == 403, "member blocked from /admin (403)")

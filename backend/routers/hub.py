@@ -101,3 +101,8 @@ async def admin_quota(body: dict = Body(...)):
 @router.post("/admin/grant")
 async def admin_grant(body: dict = Body(...)):
     return await _proxy("POST", "/admin/grant", json=body)
+
+
+@router.get("/admin/audit")
+async def admin_audit(limit: int = 100):
+    return await _proxy("GET", "/admin/audit", params={"limit": limit})

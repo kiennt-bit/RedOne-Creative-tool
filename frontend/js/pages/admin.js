@@ -22,6 +22,10 @@ function fmtLim(used, limit) {
   const u = used || 0;
   return limit == null ? `${u}/∞` : `${u}/${limit}`;   // limit null = không giới hạn
 }
+function fmtT(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString('vi-VN'); } catch { return iso; }
+}
 function confirmDelete(msg, onYes) {
   modal({
     title: 'Xác nhận xoá',
@@ -38,10 +42,12 @@ export function renderAdmin(root) {
 
   const usersCard = el('div', { class: 'card', style: { marginBottom: '16px' } }, 'Đang tải…');
   const teamsCard = el('div', { class: 'card', style: { marginBottom: '16px' } }, '');
-  const quotaCard = el('div', { class: 'card' }, '');
+  const quotaCard = el('div', { class: 'card', style: { marginBottom: '16px' } }, '');
+  const auditCard = el('div', { class: 'card' }, '');
   root.appendChild(usersCard);
   root.appendChild(teamsCard);
   root.appendChild(quotaCard);
+  root.appendChild(auditCard);
 
   let teams = [];
 
@@ -55,6 +61,13 @@ export function renderAdmin(root) {
     } catch (e) {
       clear(usersCard);
       usersCard.appendChild(el('div', { class: 'empty' }, 'Lỗi: ' + hubErr(e)));
+    }
+    try {
+      renderAudit(await api.hub.audit(100));
+    } catch (e) {
+      clear(auditCard);
+      auditCard.appendChild(el('div', { class: 'hub-sec' }, 'Nhật ký hoạt động'));
+      auditCard.appendChild(el('div', { class: 'empty' }, 'Lỗi tải nhật ký: ' + hubErr(e)));
     }
   }
 
@@ -241,6 +254,24 @@ export function renderAdmin(root) {
       el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Delta (+/−)'), gDelta),
       el('div', { class: 'hub-fld' }, el('label', { class: 'field-label' }, 'Lý do'), gReason),
       gBtn,
+    ));
+  }
+
+  function renderAudit(rows) {
+    clear(auditCard);
+    auditCard.appendChild(el('div', { class: 'hub-sec' }, 'Nhật ký hoạt động'));
+    if (!rows || !rows.length) { auditCard.appendChild(el('div', { class: 'empty' }, 'Chưa có nhật ký.')); return; }
+    auditCard.appendChild(el('table', { class: 'hub-tbl' },
+      el('thead', null, el('tr', null,
+        el('th', null, 'Thời gian'), el('th', null, 'Người'), el('th', null, 'Hành động'),
+        el('th', null, 'Đối tượng'), el('th', null, 'Chi tiết'))),
+      el('tbody', null, ...rows.map(r => el('tr', null,
+        el('td', { class: 'hub-muted', style: { whiteSpace: 'nowrap' } }, fmtT(r.created_at)),
+        el('td', null, (r.actor_email || '').split('@')[0]),
+        el('td', null, r.action || ''),
+        el('td', null, r.target || ''),
+        el('td', { class: 'hub-muted' }, r.detail || ''),
+      ))),
     ));
   }
 
