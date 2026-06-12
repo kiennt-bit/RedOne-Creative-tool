@@ -187,21 +187,44 @@ Giữ nguyên `data\` và `outputs\` → settings + accounts + tasks lịch sử
 
 ### Mode mặc định (v1.1+): Chrome Extension Bridge
 
-User **KHÔNG** bấm Login trong tool. Workflow:
+User **KHÔNG** bấm Login trong tool. Extension được **force-install** từ GitHub
+(member khỏi Developer mode / Load unpacked):
 
-1. Sau khi giải nén zip, vào folder `extension\`
-2. Mở Chrome thật → `chrome://extensions/` → bật **Developer mode**
-3. Click **Load unpacked** → chọn folder `extension\` đó
-4. Extension "RedOne Auth Helper" xuất hiện (icon R đỏ)
-5. Mở tab https://labs.google/fx/tools/flow → login Google bình thường
-6. Chạy `RedOne Creative.exe` → web UI mở
-7. Settings → Auth mode = **Chrome Extension Bridge (Recommended)** → Save
-8. Tạo task gen → tool gọi extension trong Chrome thật → request đi ra từ
-   browser thật → Google không flag bot → 403 giảm về gần 0
+1. Member chạy **`redone-ext-install.reg`** (gửi kèm, hoặc tải từ
+   `chrome-ext/`) → bấm **Yes** (cần quyền admin 1 lần).
+2. Mở lại Chrome → extension "RedOne Auth Helper" tự cài + tự cập nhật
+   (`chrome://extensions/` thấy "Installed by enterprise policy",
+   ID `mjmcefhplbpghdpgpcefbaofenbegdmk`).
+3. Mở tab https://labs.google/fx/tools/flow → login Google bình thường.
+4. Chạy `RedOne Creative.exe` → web UI mở.
+5. Tạo task gen → tool gọi extension trong Chrome thật → request đi ra từ
+   browser thật → Google không flag bot → 403 giảm về gần 0.
+
+Gỡ: chạy `redone-ext-uninstall.reg` → mở lại Chrome.
+
+> **Dev / máy build** có thể vẫn Load unpacked folder `extension\` để test —
+> nhưng vì manifest đã có `"key"` cố định, ID sẽ TRÙNG bản policy; nếu Chrome
+> báo "đã cài bởi enterprise policy" thì gỡ key registry hoặc test bằng profile khác.
 
 **Win**: token + cookies + API call đều đi qua Chrome thật của user → Google
 scoring system thấy "real user, real fingerprint" → traffic indistinguishable
 from manual usage.
+
+#### Đóng gói lại extension thành .crx (ra bản extension mới)
+
+Khóa ký `extension.pem` (cố định ID) **KHÔNG nằm trong repo** — cất ở
+`C:\Users\Admin\Documents\redone-ext-signing-key.pem`. Dùng LẠI đúng file này.
+
+1. Sửa code extension + **bump `version`** trong `extension\manifest.json`
+   (vd `1.4.0` → `1.4.1`). Giữ nguyên field `"key"`.
+2. Repack bằng đúng .pem (giữ nguyên ID):
+   ```bat
+   "C:\Program Files\Google\Chrome\Application\chrome.exe" --pack-extension="D:\RedOne Creative tool\extension" --pack-extension-key="C:\Users\Admin\Documents\redone-ext-signing-key.pem" --user-data-dir="%TEMP%\redone-pack-tmp"
+   ```
+3. Copy `extension.crx` → `chrome-ext\redone-auth-helper.crx` (đè).
+4. Sửa **`version`** trong `chrome-ext\update.xml` cho khớp manifest.
+5. Commit + push (chỉ `chrome-ext\` + `manifest.json`; **không** push `.pem`).
+6. Chrome các máy tự cập nhật trong vài giờ (hoặc `chrome://extensions` → Update).
 
 ### Mode legacy: Playwright/Cloak
 

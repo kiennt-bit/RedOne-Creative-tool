@@ -44,6 +44,13 @@ backend/private_config.py
 service-account-*.json
 gcp-*.json
 
+# Chrome extension signing key (.pem) — quyết định ID CỐ ĐỊNH của extension.
+# Ai có file này có thể đẩy bản cập nhật ĐỘC cài đè lên Chrome của MỌI member.
+# TUYỆT ĐỐI không commit. Cất offline/an toàn, dùng LẠI đúng .pem cho mọi bản build.
+*.pem
+# .crx ký ở repo root chỉ là output tạm khi pack — bản phát hành nằm ở chrome-ext/.
+/extension.crx
+
 # Reverse-engineering / debug captures for Shakker — these .har files and
 # extracted request dumps contain LIVE auth tokens, cookies, user IDs and
 # image storage tokens. NEVER commit (security). Kept locally only.
