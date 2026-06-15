@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Local user data (per-machine)
+data/
+outputs/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+debug_credits.png
+debug_poll.json
+debug_*.json
+debug_*.png
+
+# Private config — company-internal secrets (OAuth client secret,
+# Vertex AI API key, service account paths, allowed email domain).
+# This file is NEVER committed. Use backend/private_config.py.template
+# as the starting point on each new machine.
+backend/private_config.py
+
+# Service account JSON keys downloaded from Google Cloud — never commit.
+# Catches files like `resonant-forge-497503-e0-abc123.json` or any
+# `*-credentials.json` if a user drops them in the repo by mistake.
+*-credentials.json
+*-key.json
+service-account-*.json
+gcp-*.json
+
+# Chrome extension signing key (.pem) — quyết định ID CỐ ĐỊNH của extension.
+# Ai có file này có thể đẩy bản cập nhật ĐỘC cài đè lên Chrome của MỌI member.
+# TUYỆT ĐỐI không commit. Cất offline/an toàn, dùng LẠI đúng .pem cho mọi bản build.
+*.pem
+# .crx ký ở repo root chỉ là output tạm khi pack — bản phát hành nằm ở chrome-ext/.
+/extension.crx
+
+# Reverse-engineering / debug captures for Shakker — these .har files and
+# extracted request dumps contain LIVE auth tokens, cookies, user IDs and
+# image storage tokens. NEVER commit (security). Kept locally only.
+docs/shakker_capture/
+*.har
+
+# Local rollback snapshots taken before risky changes (e.g. before the
+# extension parallel-dispatch change). Per-machine safety nets, not source.
+_backup_pre_*/

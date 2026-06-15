@@ -1,0 +1,61 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+playwright>=1.40.0
+# google-genai handles BOTH:
+#  - Gemini text (used by services/gemini.py)
+#  - Vertex AI commercial API (vertex_client.py) — image gen Nano Banana 2/Pro
+#    and video gen Veo 3.1 variants. Requires version with vertexai=True + Veo
+#    long-running operation support.
+google-genai>=0.5.0
+Pillow>=10.0.0
+# httpx — used by ShakkerClient (services/shakker_client.py) for all
+# shakker.ai API calls. Already a transitive dep of google-genai/fastapi
+# but pin it explicitly since we import it directly.
+httpx>=0.26.0
+# oss2 — Alibaba Cloud OSS SDK. ONLY needed for Shakker img2img reference
+# image upload (lazy-imported in shakker_client.upload_reference_image).
+# Text-to-image works without it. ~few MB pure-python + crcmod.
+oss2>=2.18.0
+yt-dlp>=2024.1.0
+imageio-ffmpeg>=0.4.9
+# opencv-python is REQUIRED from v1.0.4 — bundled into EXE so the Xóa
+# Watermark Video feature works out-of-box without external Python.
+opencv-python>=4.9.0
+
+# Optional — stealth Chromium for bypassing Google reCAPTCHA detection.
+# User chooses backend in Settings → "Trình duyệt sử dụng". If not
+# installed, tool falls back gracefully to system Chrome.
+# First time CloakBrowser is invoked, binary (~200MB) auto-downloads.
+cloakbrowser>=0.3.28
+
+# ── Optional video watermark removal (v1.0.5+) ─────────
+# Backend "Xóa watermark Video" feature spawns lama_inpaint.py as a
+# subprocess. Min: opencv-python for OpenCV TELEA fallback. Recommended:
+# also install LaMa packages for high-quality AI inpainting (best for
+# Veo logo on complex scenes).
+#
+# Minimum (OpenCV fallback only):
+# opencv-python>=4.9.0
+#
+# Recommended (LaMa AI quality):
+# opencv-python>=4.9.0
+# simple-lama-inpainting>=0.1.2
+# torch>=2.0.0           # CPU-only ~500MB. For CUDA build see pytorch.org
+# Note: first LaMa run also downloads big-lama.pt model (~204MB) to
+# ~/.cache/torch/hub/checkpoints/.
+
+# Other optional heavy AI:
+# ── Tách Nền (Background removal) — feature in "Xử lý ảnh" sidebar ──
+# rembg fails at IMPORT TIME with `SystemExit: 1` if onnxruntime backend
+# is missing. Always install them together:
+#   pip install rembg onnxruntime
+# OR via extras:
+#   pip install "rembg[cpu]"
+# rembg>=2.0.0
+# onnxruntime>=1.16.0
+#
+# Other:
+# openai-whisper>=20231117
+# spandrel>=0.3.0

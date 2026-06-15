@@ -1,0 +1,105 @@
+"""COMPANY-INTERNAL credentials — TEMPLATE.
+
+╔══════════════════════════════════════════════════════════════════════╗
+║  SETUP INSTRUCTIONS (do once, per build machine):                   ║
+║                                                                      ║
+║  1. Copy this file:                                                 ║
+║     cp backend/private_config.py.template backend/private_config.py ║
+║                                                                      ║
+║  2. Fill in the values below (replace ALL_CAPS placeholders).       ║
+║                                                                      ║
+║  3. NEVER commit `private_config.py` — it's gitignored.             ║
+║     If you accidentally `git add` it, immediately:                  ║
+║       git rm --cached backend/private_config.py                     ║
+║     and rotate ALL secrets in this file (revoke + create new).      ║
+║                                                                      ║
+║  4. When PyInstaller builds the EXE, this file gets baked into the  ║
+║     bundle. Distributed EXE has the secrets but they're protected   ║
+║     by the OAuth login gate — only @{ALLOWED_DOMAIN} users can      ║
+║     unlock the tool.                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+If `private_config.py` is missing or import fails, the tool falls back
+to reading these values from the SQLite settings (Settings page in UI).
+That's fine for personal use but not for company distribution.
+"""
+
+# ── Google OAuth (for the login gate) ─────────────────────────────────
+# Get from: https://console.cloud.google.com/apis/credentials
+# → + Create credentials → OAuth client ID → Web application
+# Redirect URIs MUST include:
+#   http://127.0.0.1:8000/auth/callback
+#   http://localhost:8000/auth/callback
+OAUTH_CLIENT_ID = "REPLACE_ME-XXXXXXXXX.apps.googleusercontent.com"
+OAUTH_CLIENT_SECRET = "GOCSPX-REPLACE_ME"
+
+# Only emails ending in @<this domain> are allowed to log in. The tool
+# rejects everyone else even if OAuth itself succeeds. Defense-in-depth:
+# the consent screen's "Internal" audience already filters at OAuth
+# level, but we re-check here so the rule survives if someone flips
+# audience to "External" later.
+ALLOWED_EMAIL_DOMAIN = "redone.vn"
+
+
+# ── RedOne Hub (multi-user management server) ─────────────────────────
+# Leave EMPTY to run the tool standalone (single-user — current behaviour).
+# To connect this build to the company Hub (roles / internal credit / lead
+# monitoring), set the Hub's HTTPS address:
+#     HUB_BASE_URL = "https://hub.redone.vn"
+# Gen still runs locally; if the Hub is unreachable the tool keeps working.
+HUB_BASE_URL = ""
+
+
+# ── Vertex AI commercial API (image gen + video gen) ─────────────────
+# Both Nano Banana (image) and Veo (video) authenticate via a single
+# Service Account.
+#
+# Get the JSON: GCP Console → IAM → Service Accounts → KEYS → Add key → JSON
+#               Role needed: Agent Platform User + Storage Object User.
+#
+# Two ways to provide the service account — pick ONE:
+#
+# OPTION A (recommended for COMPANY DISTRIBUTION):
+# ────────────────────────────────────────────────
+# Paste the ENTIRE contents of the downloaded JSON file as a Python
+# dict here. Tool reads from this dict directly — no external file.
+# When PyInstaller bakes private_config.py into the EXE, the
+# credentials travel inside the binary. Distribute the zip and users
+# don't need any local file.
+#
+# Use the helper to convert JSON file to dict literal:
+#   python tools/embed_service_account.py path/to/key.json
+# (copies a Python-ready dict to clipboard)
+#
+# VERTEX_SERVICE_ACCOUNT_INFO = {
+#     "type": "service_account",
+#     "project_id": "resonant-forge-497503-e0",
+#     "private_key_id": "...",
+#     "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+#     "client_email": "redone-vertex-client@resonant-forge-497503-e0.iam.gserviceaccount.com",
+#     "client_id": "...",
+#     ...
+# }
+VERTEX_SERVICE_ACCOUNT_INFO = None
+#
+# OPTION B (DEV-ONLY):
+# ────────────────────
+# Path to the JSON file on disk. Simpler for dev (download → save →
+# paste path) but won't work in distributed EXEs because the path
+# only exists on your machine.
+VERTEX_SERVICE_ACCOUNT_PATH = r"C:\Users\Admin\Documents\redone-vertex-key.json"
+
+# Project ID auto-detected from SERVICE_ACCOUNT_INFO if you use Option A.
+# Fill in manually only when using Option B (file path):
+VERTEX_PROJECT_ID = "your-project-id-here"
+VERTEX_REGION = "us-central1"   # us-central1 has Veo. Gemini Image uses global anyway.
+
+# NOTE: VERTEX_API_KEY is deprecated. Google's 2025 policy requires API
+# keys for Vertex to be "bound" to a service account, and that UI flow
+# is buggy. Service account auth alone covers everything.
+VERTEX_API_KEY = ""
+
+
+# ── Session config ───────────────────────────────────────────────────
+# How long a logged-in session stays valid before re-auth is required.
+SESSION_MAX_AGE_DAYS = 30

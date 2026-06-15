@@ -1,0 +1,199 @@
+/* ============================================================
+   RedOne Creative — Design System
+   Red + White primary, with Dark Mode support
+============================================================ */
+:root {
+  /* ── LIGHT (default) ───────────────────────────────────── */
+  --bg-0: #f7f7f8;
+  --bg-1: #ffffff;
+  --bg-2: #fafafa;
+  --bg-3: #f2f2f4;
+  --surface: #ffffff;
+  --surface-alt: #f8f8fa;
+
+  --border: #ececef;
+  --border-strong: #e0e0e4;
+  --border-soft: #f2f2f4;
+  --toggle-off: #cdd3dd;   /* off-state track of toggle switch */
+
+  --text: #161618;
+  --text-2: #2a2a2e;
+  --text-dim: #5b5b62;
+  --text-muted: #8a8a92;
+  --text-faint: #aeaeb6;
+
+  /* Brand RED */
+  --brand: #dc2626;
+  --brand-2: #b91c1c;
+  --brand-3: #991b1b;
+  --brand-soft: #fee2e2;
+  --brand-soft-2: #fecaca;
+  --brand-tint: #fef2f2;
+
+  /* Accents */
+  --accent-green: #10b981;
+  --accent-green-soft: #e7f8f1;
+  --accent-amber: #f59e0b;
+  --accent-amber-soft: #fef4e2;
+  --accent-orange: #f97316;
+  --accent-orange-soft: #fff1e6;
+  --accent-blue: #3b82f6;
+  --accent-blue-soft: #eaf0ff;
+  --accent-purple: #8b5cf6;
+  --accent-purple-soft: #f3eafe;
+
+  /* Status */
+  --green: #10b981;
+  --green-soft: #e7f8f1;
+  --yellow: #f59e0b;
+  --yellow-soft: #fef4e2;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --blue: #3b82f6;
+  --blue-soft: #eaf0ff;
+
+  /* Radius */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-2xl: 24px;
+  --r-full: 999px;
+
+  /* Shadow */
+  --sh-xs: 0 1px 2px rgba(20, 20, 25, 0.04);
+  --sh-sm: 0 2px 6px rgba(20, 20, 25, 0.05), 0 1px 2px rgba(20, 20, 25, 0.04);
+  --sh-md: 0 6px 18px rgba(20, 20, 25, 0.06), 0 2px 4px rgba(20, 20, 25, 0.04);
+  --sh-lg: 0 16px 40px rgba(20, 20, 25, 0.10), 0 4px 12px rgba(20, 20, 25, 0.04);
+  --sh-card: 0 1px 0 rgba(20, 20, 25, 0.03), 0 4px 14px rgba(20, 20, 25, 0.04);
+  --sh-red: 0 4px 14px rgba(220, 38, 38, 0.20);
+
+  /* Spacing */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 28px; --sp-7: 40px; --sp-8: 56px;
+
+  --sidebar-w: 248px;
+
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+/* ── DARK MODE ───────────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg-0: #0e0f12;
+  --bg-1: #16181d;
+  --bg-2: #111316;
+  --bg-3: #1d2027;
+  --surface: #16181d;
+  --surface-alt: #1a1d22;
+
+  --border: #21252c;
+  --border-strong: #2a2e36;
+  --border-soft: #1d2027;
+  --toggle-off: #3a3f49;   /* off-state track of toggle switch (dark) */
+
+  --text: #ececef;
+  --text-2: #c8c8cc;
+  --text-dim: #9fa3ad;
+  --text-muted: #757882;
+  --text-faint: #5b5e68;
+
+  /* Red stays vibrant — just bump softer fills darker */
+  --brand: #ef4444;
+  --brand-2: #f87171;
+  --brand-3: #fca5a5;
+  --brand-soft: rgba(239, 68, 68, 0.14);
+  --brand-soft-2: rgba(239, 68, 68, 0.22);
+  --brand-tint: rgba(239, 68, 68, 0.06);
+
+  --green-soft: rgba(16, 185, 129, 0.14);
+  --yellow-soft: rgba(245, 158, 11, 0.14);
+  --red-soft: rgba(239, 68, 68, 0.14);
+  --blue-soft: rgba(59, 130, 246, 0.14);
+  --accent-green-soft: rgba(16, 185, 129, 0.14);
+  --accent-amber-soft: rgba(245, 158, 11, 0.14);
+  --accent-orange-soft: rgba(249, 115, 22, 0.16);
+  --accent-blue-soft: rgba(59, 130, 246, 0.14);
+  --accent-purple-soft: rgba(139, 92, 246, 0.14);
+
+  --sh-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --sh-sm: 0 2px 6px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --sh-md: 0 6px 18px rgba(0, 0, 0, 0.35);
+  --sh-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --sh-card: 0 1px 0 rgba(255, 255, 255, 0.02), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --sh-red: 0 4px 14px rgba(239, 68, 68, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-0);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+::selection {
+  background: var(--brand-soft-2);
+  color: var(--text);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+input, button, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+button { cursor: pointer; border: none; background: none; color: inherit; }
+a { color: var(--brand); text-decoration: none; }
+a:hover { color: var(--brand-2); }
+
+/* Utilities */
+.hidden { display: none !important; }
+.flex { display: flex; }
+.flex-col { display: flex; flex-direction: column; }
+.flex-1 { flex: 1; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.text-dim { color: var(--text-dim); }
+.text-muted { color: var(--text-muted); }
+.text-faint { color: var(--text-faint); }
+.text-sm { font-size: 12px; }
+.text-xs { font-size: 11px; }
+.text-lg { font-size: 16px; }
+.text-xl { font-size: 20px; font-weight: 700; }
+.mono { font-family: var(--font-mono); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.25s ease both; }

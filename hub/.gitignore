@@ -1,0 +1,9 @@
+# Hub secrets & runtime data — never commit
+.env
+*.db
+*.db-wal
+*.db-shm
+media/
+.venv/
+__pycache__/
+*.pyc
