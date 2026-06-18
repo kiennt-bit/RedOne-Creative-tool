@@ -56,14 +56,22 @@ class TaskQueue:
             log.info("Queue worker stopped")
 
     # ── public api ────────────────────────────────────────
-    async def enqueue(self, kind: str, task_id: int, runner: Runner) -> int:
-        """Add a task to the queue. Returns the queue position (0 = next to run)."""
-        self._items.append(QueuedItem(task_id=task_id, kind=kind))
+    async def enqueue(self, kind: str, task_id: int, runner: Runner, front: bool = False) -> int:
+        """Add a task to the queue. Returns its queue index (0 = next to run).
+
+        `front=True` inserts at the HEAD of the waiting list so the task runs
+        right after the currently-running one finishes — used by Resume so a
+        paused task continues NEXT instead of being sent to the back."""
+        item = QueuedItem(task_id=task_id, kind=kind)
+        if front:
+            self._items.insert(0, item)
+        else:
+            self._items.append(item)
         self._runners[task_id] = runner
         self._signal.set()
-        log.info(f"Enqueued task={task_id} kind={kind} (queue len={len(self._items)})")
+        log.info(f"Enqueued task={task_id} kind={kind} front={front} (queue len={len(self._items)})")
         await hub.broadcast("queue_updated", self.snapshot())
-        return len(self._items) - 1
+        return 0 if front else len(self._items) - 1
 
     async def cancel(self, task_id: int) -> bool:
         """Cancel a queued or running task.

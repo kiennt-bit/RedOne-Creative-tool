@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from ..database import db
 from ..config import (
     OUTPUT_DIR, TaskStatus, ItemStatus, ASPECT_RATIOS, RESOLUTIONS,
-    video_model_for, interpolation_model_for, get_save_dir, clamp_duration,
+    video_model_for, interpolation_model_for, get_save_dir, clamp_duration, project_item_stem,
 )
 from ..ws_hub import hub
 from ..queue_manager import queue
@@ -273,7 +273,7 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             raise RuntimeError("Video sinh xong nhưng response không có media_id")
 
         ext_dir = get_save_dir("video", task_id, task.get("name"))
-        out_path = ext_dir / f"item_{item_id}.mp4"
+        out_path = ext_dir / f"{project_item_stem(task, item_id)}.mp4"
         ok = await client.download_to(media_id, str(out_path))
         if not ok:
             raise RuntimeError("Download failed")

@@ -163,9 +163,9 @@ async def retry_task(task_id: int):
     return {"ok": True, **info}
 
 
-async def _reenqueue_task(task_id: int) -> dict:
+async def _reenqueue_task(task_id: int, front: bool = False) -> dict:
     """Pick the runner by task.mode and enqueue. Returns {queue_position, kind}.
-    Shared by /retry and /resume."""
+    Shared by /retry (append) and /resume (front=True → run next)."""
     task = db.get_task(task_id) or {}
     mode = (task.get("mode") or "").lower()
     enqueue_q = queue
@@ -186,7 +186,7 @@ async def _reenqueue_task(task_id: int) -> dict:
         from . import content as content_mod
         runner = content_mod._process_task
         kind = "content"
-    pos = await enqueue_q.enqueue(kind, task_id, runner)
+    pos = await enqueue_q.enqueue(kind, task_id, runner, front=front)
     return {"queue_position": pos, "kind": kind}
 
 
@@ -240,7 +240,7 @@ async def resume_task(task_id: int):
         elif it["status"] in redo:
             db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
     db.update_task(task_id, status="PENDING", done_count=done, error_count=0, finished_at=None)
-    info = await _reenqueue_task(task_id)
+    info = await _reenqueue_task(task_id, front=True)   # Tiếp tục → chạy kế tiếp (đầu hàng đợi)
     await hub.broadcast("task_started", {"task_id": task_id, "resumed": True})
     return {"ok": True, **info}
 

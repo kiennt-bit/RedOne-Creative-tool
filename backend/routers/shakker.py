@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ..database import db
-from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, get_save_dir
+from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, get_save_dir, project_item_stem
 from ..ws_hub import hub
 from ..queue_manager import shakker_queue as queue
 from ..services.shakker_client import ShakkerClient, ShakkerError, DEFAULT_BASE_TYPE
@@ -243,7 +243,7 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
 
         data = await client.download_result(img["url"])
         out_dir = get_save_dir("image", f"shakker_{task_id}", task.get("name"))
-        out_path = out_dir / f"item_{item_id}.png"
+        out_path = out_dir / f"{project_item_stem(task, item_id)}.png"
         out_path.write_bytes(data)
 
         # Persist gen metadata (seed/sampler info from shakker) for tooltip.

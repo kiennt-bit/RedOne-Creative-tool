@@ -333,3 +333,21 @@ def get_save_dir(
     d = base / kind / today / folder
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def project_item_stem(task: dict, item_id: int) -> str:
+    """Filename stem `<project>_<stt>` for a generated item, where <stt> is the
+    item's 1-based position WITHIN its task (prompt/creation order) — so files
+    read like `chan_dung_3.png` instead of the global `item_457.png`. Falls back
+    to the global item id only if the per-task position can't be resolved."""
+    from .database import db  # local import — avoid circular
+    slug = slugify_folder(task.get("name") or "", fallback=f"task_{task.get('id')}")
+    seq = None
+    try:
+        for i, it in enumerate(db.get_task_items(task.get("id")), start=1):
+            if it["id"] == item_id:
+                seq = i
+                break
+    except Exception:
+        pass
+    return f"{slug}_{seq if seq is not None else item_id}"

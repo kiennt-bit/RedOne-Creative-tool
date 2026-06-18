@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..database import db
-from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, get_save_dir
+from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, get_save_dir, project_item_stem
 from ..ws_hub import hub
 from ..queue_manager import queue
 
@@ -172,7 +172,7 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
         )
 
         out_dir = get_save_dir("image", f"task_{task_id}", task.get("name"))
-        out_path = out_dir / f"item_{item_id}.png"
+        out_path = out_dir / f"{project_item_stem(task, item_id)}.png"
         ok = await client.download_image(result["download_url"], str(out_path))
         if not ok:
             raise RuntimeError("Image download failed")
