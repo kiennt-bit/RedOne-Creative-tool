@@ -43,7 +43,8 @@ def init_db() -> None:
 def _migrate_sqlite_add_columns() -> None:
     """Lightweight additive migration for an EXISTING sqlite DB (trial). On a
     fresh Postgres/MySQL, create_all() already makes the full schema, so this
-    is a no-op there. Adds columns introduced after the first release."""
+    is a no-op there. Adds columns introduced after the first release, and
+    drops dead pre-split columns whose NOT NULL constraint breaks new inserts."""
     if not settings.DATABASE_URL.startswith("sqlite"):
         return
     adds = [
@@ -60,3 +61,17 @@ def _migrate_sqlite_add_columns() -> None:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     except Exception:
         pass
+    # Drop dead single-pool columns. The pre-split schema had `limit_credits` +
+    # `used_credits` (the latter NOT NULL, no default). The current Quota model
+    # no longer sets them, so inserting a NEW quota row (first-time /admin/grant
+    # or /admin/quota for a member) failed with
+    # "NOT NULL constraint failed: quotas.used_credits" → HTTP 500. They hold no
+    # live data (the tool uses flow_*/shakker_* now). Needs SQLite >= 3.35.
+    for col in ("used_credits", "limit_credits"):
+        try:
+            with engine.begin() as conn:
+                cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(quotas)").fetchall()]
+                if col in cols:
+                    conn.exec_driver_sql(f"ALTER TABLE quotas DROP COLUMN {col}")
+        except Exception:
+            pass

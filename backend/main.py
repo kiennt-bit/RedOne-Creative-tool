@@ -76,6 +76,36 @@ def _silent_proactor_handler(loop, context):
     loop.default_exception_handler(context)
 
 
+def recover_interrupted_tasks():
+    """On startup the in-memory queue is empty, so any task left RUNNING/PENDING
+    from a previous run is orphaned (crash / update / disconnect). Mark them
+    PAUSED and reset half-done items to PENDING so the user can Resume instead
+    of recreating the task."""
+    try:
+        from .database import db
+        from .config import TaskStatus, ItemStatus
+        interrupted_item = {
+            ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value,
+            ItemStatus.DOWNLOADING.value,
+        }
+        n = 0
+        for t in db.list_tasks(limit=1000):
+            if t.get("status") not in (TaskStatus.RUNNING.value, TaskStatus.PENDING.value):
+                continue
+            done = 0
+            for it in db.get_task_items(t["id"]):
+                if it["status"] == ItemStatus.COMPLETED.value:
+                    done += 1
+                elif it["status"] in interrupted_item:
+                    db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
+            db.update_task(t["id"], status=TaskStatus.PAUSED.value, done_count=done, finished_at=None)
+            n += 1
+        if n:
+            log.info(f"Recovered {n} interrupted task(s) -> PAUSED (resumable)")
+    except Exception as e:
+        log.warning(f"recover_interrupted_tasks failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info(f"=== {APP_NAME} v{APP_VERSION} starting ===")
@@ -86,11 +116,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        files_router.cleanup_pending_folder(max_age_hours=24)
+        files_router.cleanup_pending_folder(max_age_hours=168)  # giữ file _pending 1 tuần (trước: 24h)
     except Exception as e:
         log.warning(f"cleanup_pending_folder failed: {e}")
     task_queue.start()
     shakker_queue.start()   # independent lane → runs concurrently with Flow
+    recover_interrupted_tasks()
     yield
     task_queue.stop()
     shakker_queue.stop()
@@ -98,9 +129,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
+# CORS locked to the tool's own localhost origin. The SPA is served same-origin
+# (needs no CORS) and the Chrome extension bypasses CORS via host_permissions,
+# so a strict allowlist breaks nothing — but it stops ANY other website the user
+# visits from making credentialed reads against this local server, which would
+# otherwise expose /sync/* (incl. the shared Google password) + authenticated
+# /api/* responses. See security review C1.
+_CORS_ORIGINS = [f"http://127.0.0.1:{SERVER_PORT}", f"http://localhost:{SERVER_PORT}"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,

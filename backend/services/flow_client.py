@@ -624,7 +624,14 @@ class FlowClient:
         
         # Resolve model name
         model_name = self.IMAGE_MODEL_MAP.get(model_key, model_key)
-        
+        # Imagen's text-to-image model (IMAGEN_3_5) rejects reference images with
+        # a 400 INVALID_ARGUMENT. Google Flow itself switches to the "R2I"
+        # (reference-to-image) model when an Imagen request carries reference
+        # images — captured from the live Flow request. Mirror that exactly.
+        # Nano Banana keeps its own model (its I2I already works as-is).
+        if reference_images and model_key.startswith("imagen"):
+            model_name = "R2I"
+
         # Resolve aspect ratio
         ar_enum = self.IMAGE_ASPECT_RATIO_MAP.get(aspect_ratio, "IMAGE_ASPECT_RATIO_SQUARE")
         

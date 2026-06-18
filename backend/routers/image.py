@@ -140,7 +140,9 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
     # Hub internal-credit reserve (no-op when Hub disabled/unreachable). Only a
     # genuine "out of credit" (Hub reachable) blocks the gen — any Hub problem
     # degrades to allow, so gen never breaks because of the Hub.
-    _cost = 1
+    # Images are FREE on Google Flow (nano_banana / imagen don't consume Flow
+    # credits — per Flow's official pricing table), so deduct 0.
+    _cost = 0
     _res = await hub_client.reserve(kind="image", model=model, credit_cost=_cost, prompt=item.get("prompt", ""))
     if not _res.get("ok", True):
         _msg = _res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm."
@@ -293,6 +295,9 @@ async def _process_image_task(task_id: int):
 
         session_dead_err: Optional[fc_mod.SessionDeadError] = None
         for batch_idx, batch in enumerate(batches):
+            if queue.is_paused(task_id):
+                await queue.mark_paused(task_id)
+                return
             batch_results = await asyncio.gather(
                 *(generate_image_item(client, task, it) for it in batch),
                 return_exceptions=True,

@@ -288,7 +288,7 @@ export const tasksStore = {
    *
    * Returns true if the item was found + flipped.
    */
-  retryItemUI(taskId, itemId) {
+  retryItemUI(taskId, itemId, asStatus = 'generating') {
     const t = tasks.get(taskId);
     if (!t) return false;
     const it = t.items.find(x => x.id === itemId);
@@ -298,7 +298,7 @@ export const tasksStore = {
     // regenerates. Regen-from-done overwrites in place → drop the old output.
     if (it.status === 'error') t.error = Math.max(0, t.error - 1);
     else if (it.status === 'done') t.done = Math.max(0, t.done - 1);
-    it.status = 'generating';
+    it.status = asStatus;
     it.error = null;
     it.error_detail = null;
     it.output_url = null;
@@ -352,6 +352,15 @@ ws.on('task_started', (d) => {
   log('task_started', d.task_id, 'in store?', !!t);
   if (t) {
     t.status = 'running';
+    notify(d.task_id);
+  }
+});
+
+ws.on('task_paused', (d) => {
+  if (!d || !d.task_id) return;
+  const t = tasks.get(d.task_id);
+  if (t) {
+    t.status = 'paused';
     notify(d.task_id);
   }
 });

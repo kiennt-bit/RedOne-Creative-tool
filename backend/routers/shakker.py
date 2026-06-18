@@ -178,6 +178,11 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
     cfg = _task_config(task)
     aspect = task.get("aspect_ratio") or "1:1"
 
+    # Paused mid-batch: leave this item PENDING and bail before reserving so it
+    # can be resumed later.
+    if queue.is_paused(task_id):
+        return False
+
     await hub.broadcast("item_status", {
         "task_id": task_id, "item_id": item_id,
         "status": ItemStatus.GENERATING.value, "kind": "shakker",
@@ -325,6 +330,9 @@ async def _process_shakker_task(task_id: int):
             *(generate_shakker_item(client, task, it) for it in pending),
             return_exceptions=True,
         )
+        if queue.is_paused(task_id):
+            await queue.mark_paused(task_id)
+            return
         token_dead = any(
             isinstance(r, ShakkerError) and _is_token_dead(r) for r in results
         )

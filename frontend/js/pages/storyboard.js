@@ -339,7 +339,7 @@ export function renderStoryboard(root) {
         onSendToI2V: async (ids) => sendSelectedToI2V(ids),
         onRegen: async (ids) => {
           await api.tasks.retryItems(state.id, ids);
-          ids.forEach(iid => tasksStore.retryItemUI(state.id, iid));
+          ids.forEach(iid => tasksStore.retryItemUI(state.id, iid, 'pending'));
         },
       });
       actions.appendChild(toolbar);

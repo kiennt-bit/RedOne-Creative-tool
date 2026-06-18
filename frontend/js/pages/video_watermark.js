@@ -185,6 +185,7 @@ export function renderVideoWatermark(root) {
       const sizeStr = `${(it.size / 1024 / 1024).toFixed(1)} MB`;
 
       const row = el('div', {
+        'data-qid': it.id,
         style: {
           padding: '12px',
           marginBottom: '8px',
@@ -200,7 +201,7 @@ export function renderVideoWatermark(root) {
               fontWeight: 600, fontSize: '13px',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             } }, it.name),
-            el('div', { class: 'field-help' }, `${sizeStr} • ${it.label || ''}`),
+            el('div', { class: 'field-help', 'data-role': 'label' }, `${sizeStr} • ${it.label || ''}`),
           ),
           // Per-row remove button (only when not running)
           it.status !== 'running' ? el('button', {
@@ -217,6 +218,7 @@ export function renderVideoWatermark(root) {
               },
             },
               el('div', {
+                'data-role': 'bar',
                 style: {
                   height: '100%', width: `${it.progress || 0}%`,
                   background: it.status === 'done' ? 'var(--green)' : 'var(--brand)',
@@ -254,6 +256,27 @@ export function renderVideoWatermark(root) {
     }
   }
 
+  // Update ONE row's progress + label in place. Rebuilding the whole queue on
+  // every WS progress tick (renderQueue) tore down + recreated all rows, which
+  // made them flicker continuously while a video was processing.
+  function updateProgress(it) {
+    const row = root.querySelector(`#vwm-queue [data-qid="${it.id}"]`);
+    if (!row) { renderQueue(); return; }
+    const bar = row.querySelector('[data-role="bar"]');
+    if (bar) bar.style.width = `${it.progress || 0}%`;
+    const lbl = row.querySelector('[data-role="label"]');
+    if (lbl) lbl.textContent = `${(it.size / 1024 / 1024).toFixed(1)} MB • ${it.label || ''}`;
+    const sum = root.querySelector('#vwm-summary');
+    if (sum) {
+      const xs = [...queue.values()];
+      const done = xs.filter(x => x.status === 'done').length;
+      const err = xs.filter(x => x.status === 'error').length;
+      const running = xs.filter(x => x.status === 'running').length;
+      sum.textContent = `${xs.length} file • OK: ${done} • Lỗi: ${err}`
+        + (running ? ` • Đang chạy: ${running}` : '');
+    }
+  }
+
   // ─── Subscribe WS events ────────────────────────────
   // We watch all watermark_* events while on this page. activeQueueId routes
   // events to the correct queue item. Other pages also receive these events
@@ -278,7 +301,7 @@ export function renderVideoWatermark(root) {
       if (!it || (it.job_id && d.job_id !== it.job_id)) return;
       it.progress = d.progress || 0;
       it.label = d.status || '';
-      renderQueue();
+      updateProgress(it);
     }),
   ];
 

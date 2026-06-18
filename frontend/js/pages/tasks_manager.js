@@ -12,6 +12,7 @@ const KIND_LABEL = {
   t2v: 'Tạo Video',
   i2v: 'Tạo Video (I2V)',
   long_video: 'Video Dài',
+  shakker: 'Ảnh Shakker',
 };
 const KIND_NAV = {
   image: 'image',
@@ -20,6 +21,7 @@ const KIND_NAV = {
   t2v: 'content',
   i2v: 'content',
   long_video: 'long-video',
+  shakker: 'shakker',
 };
 const STATUS_CHIP = {
   PENDING:   { cls: 'chip-yellow', label: 'Đang chờ' },
@@ -204,6 +206,16 @@ export function renderTasksManager(root) {
               onclick: () => retryTask(t.id) },
               icon('refresh', 14))
           : null,
+        t.status === 'PAUSED'
+          ? el('button', { class: 'btn btn-sm btn-primary', title: 'Tiếp tục gen',
+              onclick: () => resumeTask(t.id) },
+              icon('play', 14))
+          : null,
+        ['PENDING', 'RUNNING'].includes(t.status)
+          ? el('button', { class: 'btn btn-sm btn-ghost', title: 'Tạm dừng (gen tiếp sau)',
+              onclick: () => pauseTask(t.id) },
+              icon('pause', 14))
+          : null,
         ['PENDING', 'RUNNING'].includes(t.status)
           ? el('button', { class: 'btn btn-sm btn-danger', title: 'Hủy',
               onclick: () => cancelTask(t.id) },
@@ -253,6 +265,22 @@ export function renderTasksManager(root) {
     } catch (e) { toast(e.message, 'error'); }
   }
 
+  async function pauseTask(id) {
+    try {
+      await api.tasks.pause(id);
+      toast('Đã tạm dừng — bấm Tiếp tục để gen nốt', 'info');
+      await reload();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function resumeTask(id) {
+    try {
+      await api.tasks.resume(id);
+      toast(`Đang tiếp tục task #${id}`, 'success');
+      await reload();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   // Wire toolbar
   root.querySelector('#tm-refresh').addEventListener('click', reload);
   root.querySelector('#tm-active-only').addEventListener('change', render);
@@ -261,6 +289,7 @@ export function renderTasksManager(root) {
   const offs = [];
   const events = [
     'task_started', 'task_completed', 'task_error', 'task_cancelled',
+    'task_paused', 'task_resumed',
     'task_progress', 'item_completed', 'item_error', 'queue_updated',
   ];
   for (const ev of events) {

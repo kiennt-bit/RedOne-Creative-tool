@@ -14,6 +14,8 @@
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  min-height: 0;      /* grid item: don't let content grow past the 100vh row */
+  overflow: hidden;   /* footer stays pinned; scrolling happens in .sidebar-nav */
   position: relative;
   z-index: 2;
 }
@@ -49,6 +51,9 @@
 
 .sidebar-nav {
   flex: 1;
+  min-height: 0;   /* let nav shrink inside the 100vh sidebar so overflow-y
+                      actually scrolls — without this the menu overflows and the
+                      bottom tabs (Hệ thống / Team / Quản trị) get clipped on 16:9 */
   overflow-y: auto;
   padding: 4px 14px 16px;
   /* NO mask-image — earlier we used a fade gradient at top/bottom to

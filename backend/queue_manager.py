@@ -40,6 +40,7 @@ class TaskQueue:
         self._current: Optional[QueuedItem] = None
         self._current_async_task: Optional[asyncio.Task] = None
         self._cancel_set: set[int] = set()         # tasks marked to skip / cancel
+        self._pause_set: set[int] = set()          # tasks paused (resumable, not cancelled)
         self._signal = asyncio.Event()
         self._worker: Optional[asyncio.Task] = None
 
@@ -108,6 +109,53 @@ class TaskQueue:
     def is_cancelled(self, task_id: int) -> bool:
         return task_id in self._cancel_set
 
+    async def pause(self, task_id: int) -> str:
+        """Pause a queued or running task so it can be resumed later (unlike
+        cancel, which discards it). Returns:
+          - "queued"  : was waiting in queue -> removed + marked PAUSED
+          - "running" : currently running -> cancelled IMMEDIATELY + marked
+                        PAUSED; in-flight items reset to PENDING for resume
+          - "absent"  : not on this queue (caller decides)
+        """
+        before = len(self._items)
+        self._items = [x for x in self._items if x.task_id != task_id]
+        self._runners.pop(task_id, None)
+        if len(self._items) < before:
+            try:
+                db.update_task(task_id, status=TaskStatus.PAUSED.value)
+            except Exception:
+                pass
+            await hub.broadcast("task_paused", {"task_id": task_id})
+            await hub.broadcast("queue_updated", self.snapshot())
+            return "queued"
+        if (
+            self._current and self._current.task_id == task_id
+            and self._current_async_task and not self._current_async_task.done()
+        ):
+            # Hard pause: a single high-concurrency batch has no batch boundary
+            # to stop at cooperatively, so flag PAUSED then cancel the in-flight
+            # task NOW. The worker's CancelledError handler sees _pause_set and
+            # marks PAUSED (not CANCELLED) + resets half-done items to PENDING.
+            self._pause_set.add(task_id)
+            self._current_async_task.cancel()
+            log.info(f"Pausing running task={task_id} (cancel in-flight)")
+            return "running"
+        return "absent"
+
+    def is_paused(self, task_id: int) -> bool:
+        return task_id in self._pause_set
+
+    async def mark_paused(self, task_id: int):
+        """Called by a runner when it notices is_paused() and stops gracefully:
+        record PAUSED in DB + clear the flag + notify the UI."""
+        self._pause_set.discard(task_id)
+        try:
+            db.update_task(task_id, status=TaskStatus.PAUSED.value, finished_at=None)
+        except Exception:
+            pass
+        await hub.broadcast("task_paused", {"task_id": task_id})
+        await hub.broadcast("queue_updated", self.snapshot())
+
     def snapshot(self) -> dict:
         return {
             "current": asdict(self._current) if self._current else None,
@@ -145,16 +193,36 @@ class TaskQueue:
                 try:
                     await self._current_async_task
                 except asyncio.CancelledError:
-                    log.info(f"Task {item.task_id} was cancelled mid-run")
-                    try:
-                        db.update_task(item.task_id, status=TaskStatus.CANCELLED.value)
-                    except Exception:
-                        pass
-                    await hub.broadcast("task_cancelled", {"task_id": item.task_id})
+                    if item.task_id in self._pause_set:
+                        # Paused (not cancelled) — keep it resumable. Reset any
+                        # half-done items so resume regenerates exactly them.
+                        log.info(f"Task {item.task_id} paused mid-run")
+                        self._pause_set.discard(item.task_id)
+                        try:
+                            from .config import ItemStatus
+                            _redo = {ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value,
+                                     ItemStatus.DOWNLOADING.value}
+                            for _it in db.get_task_items(item.task_id):
+                                if _it["status"] in _redo:
+                                    db.update_item(_it["id"], status=ItemStatus.PENDING.value,
+                                                   error_message=None)
+                            db.update_task(item.task_id, status=TaskStatus.PAUSED.value,
+                                           finished_at=None)
+                        except Exception:
+                            pass
+                        await hub.broadcast("task_paused", {"task_id": item.task_id})
+                    else:
+                        log.info(f"Task {item.task_id} was cancelled mid-run")
+                        try:
+                            db.update_task(item.task_id, status=TaskStatus.CANCELLED.value)
+                        except Exception:
+                            pass
+                        await hub.broadcast("task_cancelled", {"task_id": item.task_id})
                 except Exception as e:
                     log.exception(f"Queue runner crashed for task {item.task_id}: {e}")
                 finally:
                     self._cancel_set.discard(item.task_id)
+                    self._pause_set.discard(item.task_id)
                     self._current = None
                     self._current_async_task = None
                     await hub.broadcast("queue_updated", self.snapshot())

@@ -149,6 +149,30 @@ def friendly_error(raw: str) -> str:
             "'Gen lại'."
         )
 
+    # ── Unsafe generation — RAI/content-safety block (PERMANENT for this
+    # prompt+image). The raw is INVALID_ARGUMENT + reason
+    # PUBLIC_ERROR_UNSAFE_GENERATION. For Imagen image-to-image (R2I) the usual
+    # cause is a real person/face in the REFERENCE image. MUST be checked before
+    # the generic INVALID_ARGUMENT bucket below (the raw also carries it). ──
+    if has("unsafe_generation", "public_error_unsafe", "unsafe"):
+        return (
+            "Google chặn vì nội dung không an toàn (chính sách RAI). Lỗi do "
+            "PROMPT hoặc ẢNH THAM CHIẾU bị gắn cờ. Với 'tạo ảnh từ ảnh' bằng "
+            "Imagen, thường là do ảnh tham chiếu có người/khuôn mặt thật — "
+            "Imagen không cho tái tạo người thật. Cách xử lý: sửa prompt an "
+            "toàn hơn, đổi ảnh tham chiếu không có người thật, hoặc dùng model "
+            "NANO BANANA (thoáng hơn cho nhân vật). Gen lại y nguyên sẽ vẫn lỗi."
+        )
+
+    # ── Request rejected as invalid, no specific reason matched above —
+    # usually an unsupported prompt/parameter combo for the chosen model. ──
+    if has("invalid_argument", "invalid argument"):
+        return (
+            "Google từ chối yêu cầu vì tham số không hợp lệ — thường do prompt "
+            "hoặc tổ hợp tuỳ chọn không hợp với model đang chọn. Thử đổi model, "
+            "bỏ ảnh tham chiếu, hoặc sửa prompt rồi gen lại."
+        )
+
     # Fallback: show the raw error (trimmed) so nothing is hidden.
     trimmed = s.strip()
     if len(trimmed) > 300:

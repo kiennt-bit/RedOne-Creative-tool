@@ -73,7 +73,7 @@ export function renderSettings(root) {
       ),
       el('div', { class: 'field-help' },
         'Bật: video/ảnh tự lưu vĩnh viễn vào outputs/. '
-        + 'Tắt: lưu tạm vào outputs/_pending/ (auto dọn dẹp sau 24h) — '
+        + 'Tắt: lưu tạm vào outputs/_pending/ (auto dọn dẹp sau 1 tuần) — '
         + 'bạn chủ động chọn file muốn giữ qua nút "Lưu vào outputs" ở gallery.'),
     ),
     el('div', { class: 'field-group' },

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.2"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -111,6 +111,7 @@ IMAGE_MODELS = {
     "imagen_4": {"name": "Imagen 4", "cost": 1},
     "imagen_3": {"name": "Imagen 3", "cost": 1},
     "nano_banana_2": {"name": "Nano Banana 2", "cost": 1},
+    "nano_banana_pro": {"name": "Nano Banana Pro", "cost": 1},
 }
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
@@ -317,7 +318,7 @@ def get_save_dir(
         outputs/<kind>/<YYYY-MM-DD>/<task_name|task_id>/
 
     If auto_save_outputs is False, the same layout is used under
-    outputs/_pending/ (auto-cleaned after 24h).
+    outputs/_pending/ (auto-cleaned after 1 week).
 
     Kind is "video" or "image".
     """

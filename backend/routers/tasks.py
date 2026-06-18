@@ -73,23 +73,60 @@ async def get_task(task_id: int):
     }
 
 
+# ── Detached retry/regen runners registry ───────────────────────────
+# /retry-failed, /retry-item, /retry-items run a regen coroutine OUTSIDE the
+# sequential queue (so they can run mid-task). Track them per task_id so
+# pause/cancel can stop them too — otherwise those buttons are unstoppable.
+_retry_runners: dict[int, set] = {}
+
+
+def _track_retry(task_id: int, coro):
+    """Wrap a detached retry coroutine in a tracked asyncio.Task."""
+    t = asyncio.create_task(coro)
+    _retry_runners.setdefault(task_id, set()).add(t)
+    t.add_done_callback(lambda fut, tid=task_id: _retry_runners.get(tid, set()).discard(fut))
+    return t
+
+
+async def _stop_retry_runners(task_id: int) -> bool:
+    """Cancel any detached retry runners for this task and wait for them to
+    settle. Returns True if any were running."""
+    running = [t for t in _retry_runners.get(task_id, set()) if not t.done()]
+    for t in running:
+        t.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    _retry_runners.pop(task_id, None)
+    return bool(running)
+
+
+def _reset_inflight_items(task_id: int):
+    """Flip items stuck mid-gen (GENERATING/UPLOADING/DOWNLOADING) back to
+    PENDING so a paused/cancelled task has no stuck spinners + can resume."""
+    redo = {ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value, ItemStatus.DOWNLOADING.value}
+    for it in db.get_task_items(task_id):
+        if it.get("status") in redo:
+            db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
+
+
 @router.post("/{task_id}/cancel")
 async def cancel_task(task_id: int):
-    """Cancel a queued or running task (kind-agnostic). Tries both the Flow
-    and Shakker queues since a task lives on one of them."""
+    """Cancel a queued or running task (kind-agnostic). Also stops any detached
+    retry/regen runner for this task (they bypass the queue)."""
     task = db.get_task(task_id)
     q = _queue_for_mode(task.get("mode") if task else "")
     ok = await q.cancel(task_id)
     if not ok:
-        # Fall back: try the other queue in case mode is missing/stale.
         other = queue if q is shakker_queue else shakker_queue
         ok = await other.cancel(task_id)
+    stopped_retry = await _stop_retry_runners(task_id)
+    if stopped_retry:
+        _reset_inflight_items(task_id)
     if not ok:
-        # Maybe task already finished, just update DB
-        from ..config import TaskStatus
+        # Not on a queue (finished, or was a detached retry) → mark DB cancelled.
         db.update_task(task_id, status=TaskStatus.CANCELLED.value)
         await hub.broadcast("task_cancelled", {"task_id": task_id})
-    return {"ok": True, "queue_cancel": ok}
+    return {"ok": True, "queue_cancel": ok, "stopped_retry": stopped_retry}
 
 
 @router.post("/{task_id}/retry")
@@ -121,7 +158,15 @@ async def retry_task(task_id: int):
                    error_count=0,
                    finished_at=None)
 
-    # Pick the right runner based on task mode
+    info = await _reenqueue_task(task_id)
+    await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
+    return {"ok": True, **info}
+
+
+async def _reenqueue_task(task_id: int) -> dict:
+    """Pick the runner by task.mode and enqueue. Returns {queue_position, kind}.
+    Shared by /retry and /resume."""
+    task = db.get_task(task_id) or {}
     mode = (task.get("mode") or "").lower()
     enqueue_q = queue
     if mode == "image":
@@ -141,10 +186,63 @@ async def retry_task(task_id: int):
         from . import content as content_mod
         runner = content_mod._process_task
         kind = "content"
-
     pos = await enqueue_q.enqueue(kind, task_id, runner)
-    await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
-    return {"ok": True, "queue_position": pos, "kind": kind}
+    return {"queue_position": pos, "kind": kind}
+
+
+@router.post("/{task_id}/pause")
+async def pause_task(task_id: int):
+    """Pause a queued/running task so it can be resumed later (unlike cancel,
+    which discards it). Stops the queue runner AND any detached retry/regen
+    runner, then resets in-flight items to PENDING so resume continues them."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    q = _queue_for_mode(task.get("mode"))
+    res = await q.pause(task_id)
+    if res == "absent":
+        other = queue if q is shakker_queue else shakker_queue
+        res = await other.pause(task_id)
+    # Detached retry/regen runners bypass the queue — stop them too.
+    stopped_retry = await _stop_retry_runners(task_id)
+    if res in ("running", "queued"):
+        # queue.pause handled it: "running" -> worker resets items + marks PAUSED;
+        # "queued" -> already marked PAUSED.
+        return {"ok": True, "result": res, "stopped_retry": stopped_retry,
+                "status": TaskStatus.PAUSED.value}
+    # absent: a detached retry was running, or the task is active but idle in
+    # the queue → mark PAUSED + reset in-flight items ourselves.
+    if stopped_retry or task.get("status") in (TaskStatus.RUNNING.value, TaskStatus.PENDING.value):
+        _reset_inflight_items(task_id)
+        db.update_task(task_id, status=TaskStatus.PAUSED.value, finished_at=None)
+        await hub.broadcast("task_paused", {"task_id": task_id})
+    return {"ok": True, "result": res, "stopped_retry": stopped_retry,
+            "status": TaskStatus.PAUSED.value}
+
+
+@router.post("/{task_id}/resume")
+async def resume_task(task_id: int):
+    """Resume a PAUSED task — regenerates only items that aren't COMPLETED yet."""
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if task.get("status") != TaskStatus.PAUSED.value:
+        raise HTTPException(400, "Task khong o trang thai Tam dung")
+    items = db.get_task_items(task_id)
+    done = 0
+    redo = {
+        ItemStatus.GENERATING.value, ItemStatus.UPLOADING.value,
+        ItemStatus.DOWNLOADING.value, ItemStatus.ERROR.value, ItemStatus.PENDING.value,
+    }
+    for it in items:
+        if it["status"] == ItemStatus.COMPLETED.value:
+            done += 1
+        elif it["status"] in redo:
+            db.update_item(it["id"], status=ItemStatus.PENDING.value, error_message=None)
+    db.update_task(task_id, status="PENDING", done_count=done, error_count=0, finished_at=None)
+    info = await _reenqueue_task(task_id)
+    await hub.broadcast("task_started", {"task_id": task_id, "resumed": True})
+    return {"ok": True, **info}
 
 
 # ── Per-item / failed-only retry (works WHILE the task is still running) ──
@@ -293,7 +391,7 @@ async def retry_item(item_id: int):
         db.update_task(task["id"], status=TaskStatus.RUNNING.value, finished_at=None)
         await hub.broadcast("task_started", {"task_id": task["id"], "retried": True})
 
-    asyncio.create_task(_retry_items_runner(task, [item_id], force=True))
+    _track_retry(task["id"], _retry_items_runner(task, [item_id], force=True))
     return {"ok": True, "item_id": item_id}
 
 
@@ -315,7 +413,7 @@ async def retry_failed(task_id: int):
         db.update_task(task_id, status=TaskStatus.RUNNING.value, finished_at=None)
     await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
 
-    asyncio.create_task(_retry_items_runner(task, failed_ids))
+    _track_retry(task_id, _retry_items_runner(task, failed_ids))
     return {"ok": True, "retried": len(failed_ids)}
 
 
@@ -343,7 +441,7 @@ async def retry_items(task_id: int, body: RetryItemsRequest):
         db.update_task(task_id, status=TaskStatus.RUNNING.value, finished_at=None)
     await hub.broadcast("task_started", {"task_id": task_id, "retried": True})
 
-    asyncio.create_task(_retry_items_runner(task, ids, force=True))
+    _track_retry(task_id, _retry_items_runner(task, ids, force=True))
     return {"ok": True, "retried": len(ids)}
 
 

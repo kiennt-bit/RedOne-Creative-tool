@@ -329,7 +329,7 @@ Gemini bản free có **giới hạn lượt dùng mỗi ngày**. Nhập nhiều
 | **Chế độ kết nối** | Cố định **Chrome Extension Bridge** — hiển thị trạng thái extension đã kết nối hay chưa |
 | **Khoảng nghỉ giữa các đợt gen** | Random min–max giây (mặc định 5–10s) — tăng lên nếu hay bị 429 |
 | **Tỉ lệ / Chất lượng mặc định** | Áp dụng khi mở trang tạo mới |
-| **Tự lưu vào outputs/** | Bật = lưu vĩnh viễn; Tắt = lưu tạm (tự xóa sau 24h) |
+| **Tự lưu vào outputs/** | Bật = lưu vĩnh viễn; Tắt = lưu tạm (tự xóa sau 1 tuần) |
 | **Kiểm tra cập nhật** | Kiểm tra bản mới trên GitHub |
 
 ---

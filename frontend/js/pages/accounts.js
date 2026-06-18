@@ -51,7 +51,6 @@ async function renderSharedAccount(box) {
 
   const emailIn = el('input', { class: 'input', placeholder: 'shared@gmail.com', autocomplete: 'off' });
   const pwIn = el('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
-  const tokenIn = el('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
   const balEl = el('div', { class: 'field-help', style: { marginTop: '8px' } }, '');
   const saveBtn = el('button', { class: 'btn btn-primary', onclick: save }, icon('check', 16), ' Lưu tài khoản chung');
   const fld = (label, ctrl) => el('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '170px', flex: '1' } },
@@ -61,7 +60,6 @@ async function renderSharedAccount(box) {
     ...(teamSel ? [fld('Nhóm', teamSel)] : []),
     fld('Google email', emailIn),
     fld('Google mật khẩu', pwIn),
-    fld('Shakker token (tự động)', tokenIn),
     el('div', { style: { display: 'flex', alignItems: 'flex-end' } }, saveBtn),
   ));
   box.appendChild(balEl);
@@ -70,9 +68,8 @@ async function renderSharedAccount(box) {
     try {
       const c = await api.hub.getTeamCredentials(teamId);
       emailIn.value = c.google_email || '';
-      pwIn.value = ''; tokenIn.value = '';
+      pwIn.value = '';
       pwIn.placeholder = c.google_password_set ? '•••• đã đặt — trống = giữ' : 'chưa đặt';
-      tokenIn.placeholder = c.shakker_token_set ? '•••• đã đặt — trống = giữ' : 'chưa đặt';
     } catch (e) { toast(e.message || 'Lỗi tải tài khoản chung', 'error'); }
     try {
       const b = await api.hub.sharedBalance();
@@ -87,10 +84,9 @@ async function renderSharedAccount(box) {
       const payload = { google_email: emailIn.value.trim() };
       if (teamId) payload.team_id = teamId;
       if (pwIn.value) payload.google_password = pwIn.value;
-      if (tokenIn.value) payload.shakker_token = tokenIn.value;
       await api.hub.setTeamCredentials(payload);
       toast('Đã lưu tài khoản chung (mật khẩu được mã hóa)', 'success');
-      pwIn.value = ''; tokenIn.value = '';
+      pwIn.value = '';
       loadForm(); loadStatus();
     } catch (e) { toast(e.message || 'Lưu thất bại', 'error'); }
     finally { saveBtn.disabled = false; }

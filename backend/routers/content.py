@@ -378,6 +378,9 @@ async def _process_task(task_id: int):
 
         session_dead_err: Optional[fc_mod.SessionDeadError] = None
         for batch_idx, batch in enumerate(batches):
+            if queue.is_paused(task_id):
+                await queue.mark_paused(task_id)
+                return
             batch_results = await asyncio.gather(
                 *(generate_content_item(client, task, it) for it in batch),
                 return_exceptions=True,

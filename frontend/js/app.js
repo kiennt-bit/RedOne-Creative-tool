@@ -24,7 +24,6 @@ import { renderImagePrompt } from './pages/image_prompt.js';
 import { renderBgRemove } from './pages/bg_remove.js';
 import { renderWatermark } from './pages/watermark.js';
 import { renderVideoWatermark } from './pages/video_watermark.js';
-import { renderUpscale } from './pages/upscale.js';
 import { renderBatchResize } from './pages/batch_resize.js';
 import { renderAudioMerge } from './pages/audio_merge.js';
 import { renderSubtitle } from './pages/subtitle.js';
@@ -51,7 +50,6 @@ const PAGES = {
   'image-prompt':  { title: 'Ảnh → Prompt',      subtitle: 'Phân tích ảnh và sinh prompt cho video',                 render: renderImagePrompt },
   'bg-remove':     { title: 'Tách Nền',          subtitle: 'Xóa background ảnh (rembg / Gemini)',                    render: renderBgRemove },
   'watermark':     { title: 'Xóa Logo / Watermark', subtitle: 'Xóa watermark khỏi ảnh (vẽ vùng + inpaint OpenCV)',  render: renderWatermark },
-  'upscale':       { title: 'Upscale Ảnh',       subtitle: 'Phóng to ảnh giữ nét',                                   render: renderUpscale },
   'batch-resize':  { title: 'Resize Hàng Loạt',  subtitle: 'Đổi kích thước nhiều ảnh theo preset',                   render: renderBatchResize },
   'audio-merge':   { title: 'Ghép Audio',        subtitle: 'Ghép âm thanh vào video bằng FFmpeg',                    render: renderAudioMerge },
   'subtitle':      { title: 'Tạo Phụ Đề',        subtitle: 'Sinh phụ đề SRT từ video bằng Whisper',                  render: renderSubtitle },
@@ -584,7 +582,10 @@ function openUpdateModal(info) {
     return;
   }
 
-  const root = el('div', { class: 'modal-backdrop', style: { display: 'flex' } });
+  // No inline display override — let .modal-backdrop's `display:grid; place-items:center`
+  // center the card. (An inline `display:flex` here only centered vertically and
+  // pinned the modal to the left, since flex ignores place-items' justify-items.)
+  const root = el('div', { class: 'modal-backdrop' });
   const card = el('div', { class: 'modal', style: { maxWidth: '560px' } });
   root.appendChild(card);
   document.body.appendChild(root);

@@ -119,7 +119,6 @@ export const api = {
       { body: { paths, method: opts.method || 'auto', device: opts.device || 'auto',
                 gpu_ratio: opts.gpuRatio || 70 } }),
     lamaStatus: (force = false) => request('GET', '/api/media/lama-status', { params: { force } }),
-    upscale: (form) => request('POST', '/api/media/upscale', { form }),
     audioMerge: (form) => request('POST', '/api/media/audio-merge', { form }),
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
     resizePresets: () => request('GET', '/api/media/resize-presets'),
@@ -178,6 +177,8 @@ export const api = {
     list: (limit = 200) => request('GET', '/api/tasks', { params: { limit } }),
     get: (id) => request('GET', `/api/tasks/${id}`),
     cancel: (id) => request('POST', `/api/tasks/${id}/cancel`),
+    pause: (id) => request('POST', `/api/tasks/${id}/pause`),
+    resume: (id) => request('POST', `/api/tasks/${id}/resume`),
     retry: (id) => request('POST', `/api/tasks/${id}/retry`),
     // Regenerate ALL failed items — works even while the task is still running.
     retryFailed: (id) => request('POST', `/api/tasks/${id}/retry-failed`),

@@ -147,8 +147,9 @@ async def open_folder(body: OpenFolderBody):
     return {"ok": True, "path": folder}
 
 
-def cleanup_pending_folder(max_age_hours: int = 24):
-    """Remove _pending files older than `max_age_hours`. Safe to call on startup."""
+def cleanup_pending_folder(max_age_hours: int = 168):
+    """Remove _pending files older than `max_age_hours` (default 1 tuần = 168h).
+    Safe to call on startup."""
     pending = OUTPUT_DIR / "_pending"
     if not pending.exists():
         return 0

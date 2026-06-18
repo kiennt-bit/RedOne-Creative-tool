@@ -380,35 +380,6 @@ async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
     }
 
 
-# ─────────────────────── Upscale ───────────────────────
-
-@router.post("/upscale")
-async def upscale_image(
-    file: UploadFile = File(...),
-    scale: int = Form(4),
-):
-    src = _save_temp(file, "upscale")
-    out_dir = OUTPUT_DIR / "image" / "upscaled"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{uuid.uuid4().hex}.png"
-    try:
-        try:
-            from PIL import Image
-            img = Image.open(src).convert("RGB")
-            new_size = (img.width * scale, img.height * scale)
-            up = img.resize(new_size, Image.LANCZOS)
-            up.save(out_path, "PNG")
-        except Exception as e:
-            raise HTTPException(500, f"Upscale failed: {e}")
-        return {
-            "path": str(out_path),
-            "url": f"/files/{out_path.relative_to(OUTPUT_DIR).as_posix()}",
-            "note": "Using PIL LANCZOS (basic). For neural upscaling, install Real-ESRGAN.",
-        }
-    finally:
-        shutil.rmtree(src.parent, ignore_errors=True)
-
-
 # ─────────────────────── Audio Merge ───────────────────────
 
 @router.post("/audio-merge")

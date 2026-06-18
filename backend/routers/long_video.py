@@ -72,6 +72,23 @@ async def _run_long_video(task_id: int):
         prev_workflow_id: Optional[str] = None
 
         for idx, item in enumerate(items):
+            # Resume: skip a scene already done, but rebuild the clip list and
+            # carry forward its media_id so the next extend continues correctly.
+            if item.get("status") == ItemStatus.COMPLETED.value:
+                if item.get("output_path"):
+                    clips.append(item["output_path"])
+                try:
+                    _ex = json.loads(item.get("extra_json") or "{}")
+                    if _ex.get("media_id"):
+                        prev_media_id = _ex["media_id"]
+                        prev_workflow_id = _ex.get("workflow_id") or prev_workflow_id
+                except Exception:
+                    pass
+                continue
+            # Paused: stop before starting a new scene (resume re-runs from here).
+            if queue.is_paused(task_id):
+                await queue.mark_paused(task_id)
+                return
             db.update_item(item["id"], status=ItemStatus.GENERATING.value)
             await hub.broadcast("scene_started", {"task_id": task_id, "scene": idx + 1, "item_id": item["id"]})
             try:
@@ -134,7 +151,11 @@ async def _run_long_video(task_id: int):
                 if not ok:
                     raise RuntimeError("Download failed")
                 clips.append(str(clip_path))
-                db.update_item(item["id"], status=ItemStatus.COMPLETED.value, output_path=str(clip_path))
+                _ex = json.loads(item.get("extra_json") or "{}")
+                _ex["media_id"] = media_id
+                _ex["workflow_id"] = prev_workflow_id
+                db.update_item(item["id"], status=ItemStatus.COMPLETED.value,
+                               output_path=str(clip_path), extra_json=json.dumps(_ex))
                 await hub.broadcast("scene_done", {
                     "task_id": task_id, "scene": idx + 1, "item_id": item["id"],
                     "output_path": str(clip_path),

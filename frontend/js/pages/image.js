@@ -660,7 +660,7 @@ export function renderImage(root) {
         onSendToI2V: async (ids) => sendImagesToI2V(taskState, ids),
         onRegen: async (ids) => {
           await api.tasks.retryItems(taskState.id, ids);
-          ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid));
+          ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid, 'pending'));
         },
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {

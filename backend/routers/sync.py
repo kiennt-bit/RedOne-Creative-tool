@@ -257,8 +257,24 @@ async def shakker_account_sync(request: Request):
     return {"ok": True, "id": acc_id}
 
 
+def _is_foreign_web_origin(request: Request) -> bool:
+    """True only when the request carries a foreign http(s) Origin — i.e. a real
+    website doing a cross-origin fetch. The extension's service-worker fetch
+    sends no Origin (or a chrome-extension:// one), so it is never flagged.
+    Used to refuse handing the shared credentials to a drive-by web page even if
+    CORS were ever misconfigured (security review C1, defense in depth)."""
+    origin = (request.headers.get("origin") or "").strip().lower()
+    if not origin or origin.startswith("chrome-extension://"):
+        return False
+    if not origin.startswith(("http://", "https://")):
+        return False  # "null", file://, etc. — not the drive-by web vector
+    from ..config import SERVER_PORT
+    allowed = {f"http://127.0.0.1:{SERVER_PORT}", f"http://localhost:{SERVER_PORT}"}
+    return origin not in allowed
+
+
 @router.get("/shared-google")
-async def shared_google_login():
+async def shared_google_login(request: Request):
     """Return the team's shared Google account (email+password) for the
     extension to auto-fill the accounts.google.com login form. Fetched from
     the Hub (decrypted) using this machine's Hub session.
@@ -266,6 +282,10 @@ async def shared_google_login():
     Localhost-only + bypasses the OAuth gate like the other /sync endpoints
     (same local-origin trust model). Envelope-obfuscated in transit. The
     member never sees this in any UI; only the extension consumes it."""
+    # CORS already blocks a cross-origin site from READING the response; this is
+    # the second layer — never even emit the password to a foreign web origin.
+    if _is_foreign_web_origin(request):
+        raise HTTPException(403, "forbidden origin")
     from ..services import hub_client
     try:
         creds = await hub_client.get_shared_credentials()
