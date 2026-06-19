@@ -37,7 +37,7 @@ const MODELS_WITH_IMAGE = ['lite_lp', 'lite', 'fast', 'quality'];
 
 function defaultTaskName() {
   const d = new Date();
-  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}`;
+  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}m${d.getSeconds().toString().padStart(2, '0')}`;
   return `long_video_${ts}`;
 }
 
@@ -165,7 +165,6 @@ export function renderLongVideo(root) {
   });
   const nameInput = root.querySelector('#lv-taskname');
   nameInput.value = form.taskName || defaultTaskName();
-  form.taskName = nameInput.value;
   nameInput.addEventListener('input', (e) => { form.taskName = e.target.value; });
   if (form.startImagePreviewUrl) {
     root.querySelector('#lv-image-preview').appendChild(
@@ -286,7 +285,7 @@ export function renderLongVideo(root) {
         aspect_ratio: form.aspect,
         duration: form.duration,
         start_image_path: form.startImagePath,
-        task_name: form.taskName || defaultTaskName(),
+        task_name: (() => { let n = (form.taskName || '').trim(); if (!n) { n = defaultTaskName(); nameInput.value = n; } return n; })(),
       });
       tasksStore.register(res.task_id, 'long_video', {
         items: prompts,

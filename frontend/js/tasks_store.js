@@ -107,12 +107,18 @@ export const tasksStore = {
       status: 'running',
       aspect: meta.aspect || '1:1',
       model: meta.model || '',
+      // Sub-type within a kind: shakker tasks are either gen (false) or upscale
+      // (true). Lets the Shakker page keep the two galleries independent.
+      upscale: !!meta.upscale,
       items: (meta.items || []).map(p => ({
         id: null,
         prompt: typeof p === 'string' ? p : (p.prompt || ''),
         status: 'pending',
         output_url: null,
         error: null,
+        // For upscale tasks: the original (pre-upscale) image url, so the
+        // gallery can open a before/after comparison on the result.
+        before_url: (p && typeof p === 'object' && p.before_url) ? p.before_url : null,
       })),
       done: 0,
       error: 0,

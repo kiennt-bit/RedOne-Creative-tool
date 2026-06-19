@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -334,7 +334,11 @@ def get_save_dir(
         auto_save = auto_save.lower() not in ("false", "0", "no")
     base = OUTPUT_DIR if auto_save else (OUTPUT_DIR / "_pending")
     today = datetime.now().strftime("%Y-%m-%d")
-    folder = slugify_folder(task_name or "", fallback=f"task_{task_id}")
+    # Always unique per task: append the (numeric) task_id so two tasks that
+    # share a name (e.g. duplicate time-based defaults) never write into the
+    # same folder and overwrite each other's files.
+    slug = slugify_folder(task_name or "", fallback="")
+    folder = f"{slug}_{task_id}" if slug else f"task_{task_id}"
     d = base / kind / today / folder
     d.mkdir(parents=True, exist_ok=True)
     return d

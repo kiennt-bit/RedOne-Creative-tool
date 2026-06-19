@@ -2,7 +2,7 @@
 // Mirrors pages/image.js (gallery via tasksStore, survives navigation) but
 // targets the Shakker provider: checkpoint + multi-LoRA + 1 reference image
 // + 7 aspect ratios + bulk prompts.
-import { el, clear, toast, setLoading, icon, modal, makeThumbnail, openMediaViewer } from '../ui.js';
+import { el, clear, toast, setLoading, icon, modal, makeThumbnail, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { ws } from '../ws.js';
@@ -26,12 +26,23 @@ const form = {
   refStrength: 0.5,
   countPerPrompt: 1,
   taskName: '',
+  mode: 'gen',                // 'gen' | 'upscale'
+  upscale: {
+    scale: 2,                 // 2 | 3 | 4
+    model: 'enhanced',        // 'enhanced' | 'original'
+    variability: 0.3,         // Enhanced slider only
+    taskName: '',
+    sources: [],              // [{ url, width, height, label, preview }]
+  },
   _initialized: false,
 };
 
+const UPSCALE_SCALES = [2, 3, 4];
+const UPSCALE_SCALES_LOCKED = [6, 8];
+
 function defaultTaskName() {
   const d = new Date();
-  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}`;
+  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}m${d.getSeconds().toString().padStart(2, '0')}`;
   return `shakker_${ts}`;
 }
 
@@ -160,6 +171,18 @@ export function renderShakker(root) {
       el('p', null, 'Sinh ảnh hàng loạt qua Shakker.ai — model + LoRA + ảnh tham chiếu'),
     ),
   ));
+
+  // ── Mode toggle: Sinh ảnh | Upscale (like T2V/I2V on the video page) ──
+  const modeGenBtn = el('button', { class: 'btn btn-sm', onclick: () => { form.mode = 'gen'; applyMode(); attachForMode(); } },
+    icon('sparkles', 15), 'Sinh ảnh');
+  const modeUpBtn = el('button', { class: 'btn btn-sm', onclick: () => { form.mode = 'upscale'; applyMode(); attachForMode(); } },
+    icon('image', 15), 'Upscale');
+  root.appendChild(el('div', {
+    style: {
+      display: 'inline-flex', gap: '4px', padding: '4px', marginBottom: '12px',
+      background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)',
+    },
+  }, modeGenBtn, modeUpBtn));
 
   // Token-expired banner (hidden by default)
   const banner = el('div', {
@@ -400,7 +423,6 @@ export function renderShakker(root) {
   // Restore task name
   const nameInput = cfgCard.querySelector('#shk-taskname');
   nameInput.value = form.taskName || defaultTaskName();
-  form.taskName = nameInput.value;
   nameInput.addEventListener('input', (e) => { form.taskName = e.target.value; });
 
   // ── RIGHT: prompts + gallery ──
@@ -561,7 +583,7 @@ export function renderShakker(root) {
         ref_image_url: form.refImageUrl,
         ref_strength: form.refStrength,
         count_per_prompt: form.countPerPrompt,
-        task_name: form.taskName || defaultTaskName(),
+        task_name: (() => { let n = (form.taskName || '').trim(); if (!n) { n = defaultTaskName(); nameInput.value = n; } return n; })(),
       });
       tasksStore.register(res.task_id, 'shakker', { items: expanded, aspect: form.aspect, model: form.checkpoint.name });
       attachToTask(res.task_id);
@@ -664,7 +686,18 @@ export function renderShakker(root) {
         el('div', { class: 'scene-number' }, `#${i + 1}`));
       if (it.status === 'done' && it.output_url) {
         const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        img.addEventListener('click', () => openMediaViewer({ type: 'image', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() }));
+        img.addEventListener('click', () => {
+          if (it.before_url) {
+            // Upscale result → before/after comparison (original vs upscaled).
+            openCompareViewer({
+              beforeUrl: it.before_url, afterUrl: it.output_url,
+              beforeLabel: 'Ảnh gốc', afterLabel: 'Đã upscale',
+              downloadUrl: it.output_url, title: it.prompt || '',
+            });
+          } else {
+            openMediaViewer({ type: 'image', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() });
+          }
+        });
         thumb.appendChild(img);
       } else if (it.status === 'error') {
         thumb.appendChild(el('div', { class: 'scene-error', title: it.error_detail || it.error || 'Lỗi',
@@ -718,7 +751,351 @@ export function renderShakker(root) {
       statusText = 'Đã hủy'; cancelBtn.classList.add('hidden');
     } else { statusText = '—'; }
     root.querySelector('#shk-status').textContent = statusText;
+    // Mirror the running-state cancel button into the upscale card (the gen
+    // cancel button lives in the hidden gen config card while in upscale mode).
+    if (upCancelBtn) {
+      upCancelBtn.classList.toggle('hidden',
+        cancelBtn.classList.contains('hidden') || form.mode !== 'upscale');
+    }
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // UPSCALE mode — config (left) + source images (right), shares the
+  // gallery below. Both gen + upscale tasks are kind "shakker", so the
+  // results gallery, WS, retry and pause/resume all work unchanged.
+  // ─────────────────────────────────────────────────────────────
+  const up = form.upscale;
+
+  function readImageDims(file) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const u = URL.createObjectURL(file);
+      img.onload = () => { resolve({ w: img.naturalWidth, h: img.naturalHeight }); URL.revokeObjectURL(u); };
+      img.onerror = () => { resolve({ w: 0, h: 0 }); URL.revokeObjectURL(u); };
+      img.src = u;
+    });
+  }
+
+  // -- left: upscale settings --
+  const upCfgCard = el('div', { class: 'card', style: { display: 'none' } });
+  left.appendChild(upCfgCard);
+
+  upCfgCard.appendChild(el('div', { class: 'field-group' },
+    el('label', { class: 'field-label' }, 'Tên task'),
+    el('input', { class: 'input', id: 'shku-taskname', placeholder: 'vd: upscale_san_pham' }),
+  ));
+
+  // Preset scale: 2x/3x/4x active, 6x/8x locked.
+  const scaleRow = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } });
+  function refreshScale() {
+    clear(scaleRow);
+    UPSCALE_SCALES.forEach(s => {
+      scaleRow.appendChild(el('button', {
+        class: `btn btn-sm ${up.scale === s ? 'btn-primary' : 'btn-ghost'}`,
+        onclick: () => { up.scale = s; refreshScale(); refreshSources(); estimatePower(); },
+      }, `${s}x`));
+    });
+    UPSCALE_SCALES_LOCKED.forEach(s => {
+      scaleRow.appendChild(el('button', {
+        class: 'btn btn-sm btn-ghost', disabled: true,
+        title: 'Chỉ có ở gói cao hơn',
+        style: { opacity: '0.4', cursor: 'not-allowed' },
+      }, `${s}x`));
+    });
+  }
+  refreshScale();
+  upCfgCard.appendChild(el('div', { class: 'field-group' },
+    el('label', { class: 'field-label' }, 'Tỉ lệ phóng (Preset Scale)'),
+    scaleRow,
+  ));
+
+  // Type: Original | Enhanced
+  const typeRow = el('div', { style: { display: 'flex', gap: '6px' } });
+  function refreshType() {
+    clear(typeRow);
+    [['original', 'Original'], ['enhanced', 'Enhanced']].forEach(([val, label]) => {
+      typeRow.appendChild(el('button', {
+        class: `btn btn-sm ${up.model === val ? 'btn-primary' : 'btn-ghost'}`,
+        style: { flex: 1 },
+        onclick: () => { up.model = val; refreshType(); refreshVariability(); estimatePower(); },
+      }, label));
+    });
+  }
+  refreshType();
+  upCfgCard.appendChild(el('div', { class: 'field-group' },
+    el('label', { class: 'field-label' }, 'Kiểu (Type)'),
+    typeRow,
+    el('div', { class: 'field-help' }, 'Enhanced: nét hơn + cho chỉnh Variability. Original: giữ nguyên gốc.'),
+  ));
+
+  // Variability (Enhanced only)
+  const variWrap = el('div', { class: 'field-group' });
+  function refreshVariability() {
+    clear(variWrap);
+    if (up.model !== 'enhanced') return;
+    const valLabel = el('span', { class: 'text-muted text-sm', style: { minWidth: '32px' } }, up.variability.toFixed(2));
+    variWrap.appendChild(el('label', { class: 'field-label' }, 'Variability'));
+    variWrap.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+      el('input', {
+        type: 'range', min: '0', max: '1', step: '0.05', value: String(up.variability),
+        style: { flex: 1 },
+        oninput: (e) => { up.variability = parseFloat(e.target.value); valLabel.textContent = up.variability.toFixed(2); },
+        onchange: () => estimatePower(),
+      }),
+      valLabel,
+    ));
+    variWrap.appendChild(el('div', { class: 'field-help' }, 'Cao = thêm chi tiết sáng tạo; thấp = bám sát ảnh gốc.'));
+  }
+  refreshVariability();
+  upCfgCard.appendChild(variWrap);
+
+  // Power preview
+  const upPowerEl = el('div', { id: 'shku-power', style: { fontWeight: 700, color: 'var(--brand)' } }, '—');
+  upCfgCard.appendChild(el('div', { class: 'field-group' },
+    el('label', { class: 'field-label' }, 'Power dự kiến'),
+    el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '15px' } },
+      el('span', null, '⚡'), upPowerEl,
+    ),
+    el('div', { class: 'field-help', id: 'shku-power-help' }, 'Thêm ảnh để tính power.'),
+  ));
+
+  // Upscale / cancel buttons
+  const upStartBtn = el('button', { class: 'btn btn-primary', style: { flex: 1 }, id: 'shku-start' },
+    icon('image'), el('span', null, 'Upscale'));
+  const upCancelBtn = el('button', { class: 'btn btn-danger hidden', id: 'shku-cancel' },
+    icon('stop'), el('span', null, 'Hủy'));
+  upCfgCard.appendChild(el('div', { style: { display: 'flex', gap: '8px', marginTop: '16px' } },
+    upStartBtn, upCancelBtn));
+
+  const upNameInput = upCfgCard.querySelector('#shku-taskname');
+  upNameInput.value = up.taskName || `upscale_${defaultTaskName().replace('shakker_', '')}`;
+  upNameInput.addEventListener('input', (e) => { up.taskName = e.target.value; });
+
+  // -- right: source images (inserted above the shared results gallery) --
+  const upSourceCard = el('div', { class: 'card', style: { display: 'none', marginBottom: '16px' } },
+    el('div', { class: 'card-header' },
+      el('div', null,
+        el('h3', { class: 'card-title' }, 'Ảnh cần upscale'),
+        el('div', { class: 'card-subtitle', id: 'shku-src-count' }, 'Chưa có ảnh'),
+      ),
+      el('div', { style: { display: 'flex', gap: '8px' } },
+        el('button', { class: 'btn btn-sm btn-danger', id: 'shku-clear-src' }, icon('trash', 14), 'Xóa hết'),
+      ),
+    ),
+    el('div', { id: 'shku-dropzone-wrap' }),
+    el('div', { id: 'shku-src-list', style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' } }),
+  );
+  right.insertBefore(upSourceCard, resultsCard);
+
+  function buildDropzone() {
+    const wrap = upSourceCard.querySelector('#shku-dropzone-wrap');
+    clear(wrap);
+    const dz = el('div', { class: 'dropzone' },
+      el('div', { class: 'dropzone-icon' }, icon('upload', 22)),
+      el('div', null, 'Kéo thả ảnh hoặc click (nhiều ảnh)'),
+      el('div', { class: 'field-help' }, 'Ảnh sẽ được tải lên Shakker để upscale.'),
+      el('input', { type: 'file', accept: 'image/*', multiple: true, id: 'shku-files', style: { display: 'none' } }),
+    );
+    const fi = dz.querySelector('#shku-files');
+    dz.addEventListener('click', () => fi.click());
+    ['dragover', 'dragleave', 'drop'].forEach(ev => {
+      dz.addEventListener(ev, e => {
+        e.preventDefault();
+        dz.classList.toggle('dragover', ev === 'dragover');
+        if (ev === 'drop' && e.dataTransfer.files.length) addUpscaleFiles(e.dataTransfer.files);
+      });
+    });
+    fi.addEventListener('change', () => { if (fi.files.length) addUpscaleFiles(fi.files); });
+    wrap.appendChild(dz);
+  }
+
+  async function addUpscaleFiles(fileList) {
+    const files = [...fileList].filter(f => f.type && f.type.startsWith('image/'));
+    if (!files.length) return;
+    if (!api.shakker) return;
+    for (const file of files) {
+      if (file.size > 20 * 1024 * 1024) { toast(`${file.name}: ảnh quá lớn (>20MB)`, 'warning'); continue; }
+      const tmp = { url: null, width: 0, height: 0, label: file.name, preview: null, uploading: true };
+      up.sources.push(tmp);
+      refreshSources();
+      try {
+        const [dims, preview] = await Promise.all([
+          readImageDims(file),
+          makeThumbnail(file).catch(() => null),
+        ]);
+        tmp.width = dims.w; tmp.height = dims.h; tmp.preview = preview;
+        const r = await api.shakker.uploadRef(file);
+        tmp.url = r.url; tmp.uploading = false;
+        refreshSources();
+      } catch (e) {
+        const i = up.sources.indexOf(tmp);
+        if (i >= 0) up.sources.splice(i, 1);
+        toast(`Upload lỗi (${file.name}): ${e.message}`, 'error');
+        refreshSources();
+      }
+    }
+    estimatePower();
+  }
+
+  // Like addUpscaleFiles but the images come from URLs (sent from another tab).
+  // The source card already shows "Đang tải lên…" per item, so we switch tabs
+  // instantly and run the Shakker upload here.
+  async function addUpscaleFromUrls(items) {
+    for (const it of items) {
+      const tmp = { url: null, width: 0, height: 0, label: it.label || 'ảnh', preview: it.url || null, uploading: true };
+      up.sources.push(tmp);
+      refreshSources();
+      try {
+        const blob = await (await fetch(it.url)).blob();
+        const dims = await readImageDims(blob);
+        const base = (it.label || 'image').replace(/[^\w]+/g, '_').slice(0, 24) || 'image';
+        const file = new File([blob], `${base}.png`, { type: blob.type || 'image/png' });
+        const r = await api.shakker.uploadRef(file);
+        tmp.url = r.url; tmp.width = dims.w; tmp.height = dims.h; tmp.uploading = false;
+        refreshSources();
+      } catch (e) {
+        const i = up.sources.indexOf(tmp);
+        if (i >= 0) up.sources.splice(i, 1);
+        toast(`Tải ảnh lỗi: ${e.message}`, 'error');
+        refreshSources();
+      }
+    }
+    estimatePower();
+  }
+
+  function refreshSources() {
+    const listEl = upSourceCard.querySelector('#shku-src-list');
+    const countEl = upSourceCard.querySelector('#shku-src-count');
+    if (!listEl) return;
+    clear(listEl);
+    if (!up.sources.length) {
+      countEl.textContent = 'Chưa có ảnh';
+      listEl.appendChild(el('div', { class: 'field-help', style: { margin: 0 } }, 'Kéo thả hoặc chọn ảnh ở trên.'));
+      return;
+    }
+    countEl.textContent = `${up.sources.length} ảnh`;
+    up.sources.forEach((s, i) => {
+      const tw = s.width ? s.width * up.scale : 0;
+      const th = s.height ? s.height * up.scale : 0;
+      const dimsText = s.uploading ? 'Đang tải lên…'
+        : (s.width ? `${s.width}×${s.height} → ${tw}×${th}` : 'Không đọc được kích thước');
+      listEl.appendChild(el('div', {
+        style: {
+          display: 'flex', alignItems: 'center', gap: '10px',
+          border: '1px solid var(--border)', borderRadius: 'var(--r-md)',
+          padding: '8px', background: 'var(--bg-2)',
+        },
+      },
+        el('img', {
+          src: s.preview || s.url || '', loading: 'lazy',
+          style: { width: '52px', height: '52px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--border)' },
+        }),
+        el('div', { style: { flex: 1, minWidth: 0 } },
+          el('div', { style: { fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, title: s.label }, s.label || `Ảnh ${i + 1}`),
+          el('div', { class: 'text-muted text-sm' }, dimsText),
+        ),
+        el('button', { class: 'btn btn-icon btn-ghost', title: 'Xóa', onclick: () => { up.sources.splice(i, 1); refreshSources(); estimatePower(); } }, icon('x', 14)),
+      ));
+    });
+  }
+
+  let _powerTimer = null;
+  function estimatePower() {
+    const helpEl = upSourceCard ? root.querySelector('#shku-power-help') : null;
+    const ready = up.sources.filter(s => s.url && s.width > 0);
+    if (!ready.length) { upPowerEl.textContent = '—'; if (helpEl) helpEl.textContent = 'Thêm ảnh để tính power.'; return; }
+    clearTimeout(_powerTimer);
+    upPowerEl.textContent = '…';
+    _powerTimer = setTimeout(async () => {
+      try {
+        const sample = ready[0];
+        const r = await api.shakker.upscaleEstimate({
+          url: sample.url, width: sample.width, height: sample.height,
+          scale: up.scale, model: up.model,
+          variability: up.model === 'enhanced' ? up.variability : null,
+        });
+        const per = r.power || 0;
+        const total = per * ready.length;
+        upPowerEl.textContent = `≈ ${total.toLocaleString()}`;
+        if (helpEl) helpEl.textContent = `≈ ${per}/ảnh × ${ready.length} ảnh (ước tính)`;
+      } catch (e) {
+        upPowerEl.textContent = '—';
+        if (helpEl) helpEl.textContent = 'Không tính được power (sẽ trừ theo thực tế).';
+      }
+    }, 400);
+  }
+
+  buildDropzone();
+  refreshSources();
+
+  upSourceCard.querySelector('#shku-clear-src').addEventListener('click', () => {
+    up.sources = []; form.upscale.sources = up.sources; refreshSources(); estimatePower();
+  });
+
+  upStartBtn.addEventListener('click', async () => {
+    const ready = up.sources.filter(s => s.url && s.width > 0 && s.height > 0);
+    if (!ready.length) return toast('Thêm ít nhất 1 ảnh (đã tải lên xong)', 'warning');
+    if (up.sources.some(s => s.uploading)) return toast('Đợi ảnh tải lên xong', 'info');
+    setLoading(upStartBtn, true);
+    try {
+      const res = await api.shakker.upscale({
+        images: ready.map(s => ({ url: s.url, width: s.width, height: s.height, label: s.label })),
+        scale: up.scale,
+        model: up.model,
+        variability: up.model === 'enhanced' ? up.variability : null,
+        task_name: (() => { let n = (up.taskName || '').trim(); if (!n) { n = `upscale_${defaultTaskName().replace('shakker_', '')}`; upNameInput.value = n; } return n; })(),
+      });
+      tasksStore.register(res.task_id, 'shakker', {
+        items: ready.map(s => ({ prompt: `${s.label || 'ảnh'} (${up.scale}x)`, before_url: s.url })),
+        aspect: '', model: `Upscale ${up.scale}x · ${up.model === 'enhanced' ? 'Enhanced' : 'Original'}`,
+        upscale: true,
+      });
+      attachToTask(res.task_id);
+      toast(`Task #${res.task_id} — upscale ${res.items} ảnh`, 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setLoading(upStartBtn, false);
+    }
+  });
+
+  upCancelBtn.addEventListener('click', async () => {
+    const t = currentTaskId();
+    if (!t) return;
+    try { await api.shakker.cancel(t); toast('Đã hủy', 'info'); } catch (e) { toast(e.message, 'error'); }
+  });
+
+  // Cross-tab "Gửi sang Upscale Shakker": images already uploaded by the
+  // sender (image.js / storyboard.js) arrive here with url + dims.
+  const pendUp = window.__app && window.__app._pendingUpscale;
+  if (Array.isArray(pendUp) && pendUp.length) {
+    form.mode = 'upscale';
+    window.__app._pendingUpscale = null;
+    // Already-uploaded items (have a shakker url) load instantly; items flagged
+    // needsUpload were sent as local urls → upload here so the tab switches
+    // immediately and uploading progress shows in this panel.
+    up.sources = pendUp.filter(x => !x.needsUpload && x.url).map(x => ({
+      url: x.url, width: x.width || 0, height: x.height || 0,
+      label: x.label || 'ảnh', preview: x.preview || x.url,
+    }));
+    refreshSources();
+    const toUpload = pendUp.filter(x => x.needsUpload && x.url);
+    if (toUpload.length) addUpscaleFromUrls(toUpload);
+    estimatePower();
+  }
+
+  // Apply the current mode (show/hide gen vs upscale cards).
+  function applyMode() {
+    const isUp = form.mode === 'upscale';
+    modeGenBtn.className = `btn btn-sm ${isUp ? 'btn-ghost' : 'btn-primary'}`;
+    modeUpBtn.className = `btn btn-sm ${isUp ? 'btn-primary' : 'btn-ghost'}`;
+    cfgCard.style.display = isUp ? 'none' : '';
+    promptsCard.style.display = isUp ? 'none' : '';
+    upCfgCard.style.display = isUp ? '' : 'none';
+    upSourceCard.style.display = isUp ? '' : 'none';
+    if (isUp) { refreshScale(); refreshType(); refreshVariability(); refreshSources(); estimatePower(); }
+  }
+  applyMode();
 
   // ── live subscription ──
   let unsubscribe = null;
@@ -741,13 +1118,28 @@ export function renderShakker(root) {
     unsubscribe = tasksStore.on(taskId, scheduleRender);
   }
 
+  // Gen vs Upscale tasks are independent: each mode's gallery shows only its
+  // own latest shakker task (tagged via tasksStore .upscale).
+  function latestShakker(isUpscale) {
+    for (const t of tasksStore.list()) {   // list() is newest-first
+      if (t.kind === 'shakker' && !!t.upscale === isUpscale) return t;
+    }
+    return null;
+  }
+  function attachForMode() {
+    const t = latestShakker(form.mode === 'upscale');
+    attachToTask(t ? t.id : null);
+  }
+
   const pending = window.__app && window.__app._pendingTaskId;
   if (pending != null && tasksStore.get(pending)) {
+    const pt = tasksStore.get(pending);
+    form.mode = pt.upscale ? 'upscale' : 'gen';
+    applyMode();
     attachToTask(pending);
     window.__app._pendingTaskId = null;
   } else {
-    const latest = tasksStore.latestByKind('shakker');
-    if (latest) attachToTask(latest.id);
+    attachForMode();
   }
 
   // token-expired banner via WS

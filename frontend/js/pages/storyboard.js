@@ -3,7 +3,7 @@
 // reusing the image task pipeline (batch concurrency "số luồng song song" +
 // cooldown + WebSocket streaming). Output scenes can be sent in bulk to the
 // "Tạo Video" tab as I2V (each scene image becomes the reference frame).
-import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice, openMediaViewer } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
@@ -28,6 +28,21 @@ function ratioToStyle(r) {
   return ({ '1:1': '1/1', '16:9': '16/9', '9:16': '9/16', '4:3': '4/3', '3:4': '3/4' })[r] || '16/9';
 }
 
+// Open the before/after comparison for a Flow-upscaled scene (original vs the
+// 2K/4K result), with a download button inside the viewer.
+function openFlowUpscaleCompare(it) {
+  if (!it.upscale_url || !it.output_url) return;
+  const res = (it.upscale_resolution || '').toUpperCase();
+  openCompareViewer({
+    beforeUrl: it.output_url,
+    afterUrl: it.upscale_url,
+    beforeLabel: 'Gốc',
+    afterLabel: res || 'Upscale',
+    downloadUrl: it.upscale_url,
+    title: `${res ? res + ' · ' : ''}${it.prompt || ''}`.trim(),
+  });
+}
+
 // Upscale-state pill on a scene thumbnail (same look as the Tạo Ảnh gallery).
 function _upscaleBadge(it) {
   const res = (it.upscale_resolution || '').toUpperCase();
@@ -39,8 +54,9 @@ function _upscaleBadge(it) {
         el('span', { class: 'upscale-badge-spin' }), `Đang upscale ${res}…`);
     case 'done':
       return el('a', {
-        class: 'upscale-badge is-done', href: it.upscale_url || '#', target: '_blank', download: '',
-        title: `Ảnh ${res} — click để tải`, onclick: (e) => e.stopPropagation(),
+        class: 'upscale-badge is-done', href: '#',
+        title: `Ảnh ${res} — click để so sánh trước/sau`,
+        onclick: (e) => { e.preventDefault(); e.stopPropagation(); openFlowUpscaleCompare(it); },
       }, `✓ ${res}`);
     case 'error':
       return el('div', { class: 'upscale-badge is-error', title: it.upscale_error || 'Lỗi upscale' }, `⚠ Lỗi ${res}`);
@@ -283,6 +299,26 @@ export function renderStoryboard(root) {
     toast(`Đã gửi ${scenes.length} cảnh sang Tạo Video (I2V)${upN ? ` (${upN} ảnh đã upscale)` : ''}`, 'success');
   }
 
+  // Send SELECTED scenes to the Shakker Upscale tab (green button). Hands local
+  // urls over and switches IMMEDIATELY — the upload to Shakker runs in the
+  // Upscale panel (each shows "Đang tải lên…"), so we don't block the switch.
+  function sendSelectedToUpscale(idList) {
+    const t = _taskId ? tasksStore.get(_taskId) : null;
+    if (!t) return;
+    const byId = new Map(t.items.map(it => [it.id, it]));
+    const chosen = idList.map(id => byId.get(id)).filter(it => it && it.status === 'done' && it.output_path);
+    if (!chosen.length) return toast('Chọn cảnh đã hoàn thành để gửi', 'warning');
+    // Always send the ORIGINAL (output_url) to Shakker upscale — never the Flow
+    // 2K/4K, so the user re-upscales the source scene, not an upscaled one.
+    const out = chosen.map(it => ({
+      url: it.output_url, label: (it.prompt || 'cảnh').slice(0, 40), needsUpload: true,
+    })).filter(x => x.url);
+    if (!out.length) return toast('Ảnh chưa sẵn sàng', 'warning');
+    window.__app._pendingUpscale = out;
+    window.__app.navigate('shakker');
+    toast(`Đã gửi ${out.length} ảnh sang Upscale Shakker (đang tải lên…)`, 'success');
+  }
+
   function renderGallery(state) {
     if (!root.isConnected) return;
     const wrap = root.querySelector('#sb2-results');
@@ -336,6 +372,7 @@ export function renderStoryboard(root) {
         },
         onUpscale: async (ids, res) => { await runBatchUpscale(ids, res); },
         onSendToI2V: async (ids) => sendSelectedToI2V(ids),
+        onSendToUpscale: async (ids) => sendSelectedToUpscale(ids),
         onRegen: async (ids) => {
           await api.tasks.retryItems(state.id, ids);
           ids.forEach(iid => tasksStore.retryItemUI(state.id, iid, 'pending'));
@@ -389,18 +426,18 @@ export function renderStoryboard(root) {
 
       const actionsRow = el('div', { class: 'scene-actions' });
       if (it.output_url) {
-        actionsRow.appendChild(el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' }, icon('download', 14), 'Tải'));
+        actionsRow.appendChild(el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost', title: 'Tải ảnh gốc' }, icon('download', 14), 'Tải'));
       }
-      actionsRow.appendChild(el('button', {
-        class: 'btn btn-sm btn-ghost', title: 'Copy prompt',
-        onclick: () => { navigator.clipboard.writeText(it.prompt || ''); toast('Đã copy prompt', 'success'); },
-      }, icon('copy', 14)));
       if (it.upscale_status === 'done' && it.upscale_url) {
         actionsRow.appendChild(el('a', {
           href: it.upscale_url, download: '', target: '_blank',
-          class: 'btn btn-sm btn-ghost', style: { marginLeft: 'auto' }, title: 'Tải ảnh đã upscale',
+          class: 'btn btn-sm btn-ghost sa-accent', title: 'Tải ảnh đã upscale (bấm chip trên ảnh để so sánh)',
         }, icon('download', 14), `Tải ${(it.upscale_resolution || '').toUpperCase()}`));
       }
+      actionsRow.appendChild(el('button', {
+        class: 'btn btn-sm btn-ghost btn-icon', title: 'Copy prompt', style: { marginLeft: 'auto' },
+        onclick: () => { navigator.clipboard.writeText(it.prompt || ''); toast('Đã copy prompt', 'success'); },
+      }, icon('copy', 14)));
       // (Per-scene "Gen lại" removed — regen is on the selection toolbar:
       //  tick scenes → "Gen lại". Keeps the card from overflowing.)
 

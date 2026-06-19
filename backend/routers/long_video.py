@@ -145,7 +145,7 @@ async def _run_long_video(task_id: int):
                 prev_media_id = media_id
                 prev_workflow_id = state.get("workflowId") or state.get("workflow_id") or wf
 
-                out_dir = get_save_dir("video", f"long_{task_id}", task.get("name"))
+                out_dir = get_save_dir("video", task_id, task.get("name"))
                 clip_path = out_dir / f"scene_{idx + 1}.mp4"
                 ok = await client.download_to(media_id, str(clip_path))
                 if not ok:
@@ -178,7 +178,7 @@ async def _run_long_video(task_id: int):
                 raise
 
         # Concat
-        final_path = get_save_dir("video", f"long_{task_id}", task.get("name")) / "final.mp4"
+        final_path = get_save_dir("video", task_id, task.get("name")) / "final.mp4"
         await hub.broadcast("concat_started", {"task_id": task_id, "clips": len(clips)})
         ok = await concat_videos(clips, str(final_path), re_encode=True)
         if not ok:

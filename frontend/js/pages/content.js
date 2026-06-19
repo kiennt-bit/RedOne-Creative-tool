@@ -56,7 +56,7 @@ const MODEL_LABELS = {
 
 function defaultTaskName(prefix = 'video') {
   const d = new Date();
-  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}`;
+  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}m${d.getSeconds().toString().padStart(2, '0')}`;
   return `${prefix}_${ts}`;
 }
 
@@ -416,7 +416,6 @@ export function renderContent(root) {
   });
   const nameInput = root.querySelector('#cnt-taskname');
   nameInput.value = form.taskName || defaultTaskName('video');
-  form.taskName = nameInput.value;
   nameInput.addEventListener('input', (e) => { form.taskName = e.target.value; });
 
   // ─────────── I2V reference image pairing (with drag-to-reorder) ───────────
@@ -758,7 +757,8 @@ export function renderContent(root) {
 
     if (!(await ensureFlowAccountOrWarn())) return;
 
-    const taskName = form.taskName || defaultTaskName('video');
+    let taskName = (form.taskName || '').trim();
+    if (!taskName) { taskName = defaultTaskName('video'); nameInput.value = taskName; }
     setLoading(startBtn, true);
     try {
       const res = await api.content.start({

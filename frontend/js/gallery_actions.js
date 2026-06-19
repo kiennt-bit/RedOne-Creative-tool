@@ -30,7 +30,7 @@ import { tasksStore } from './tasks_store.js';
  *          file paths. Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onRegen }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
   // Live overall upscale progress ("Đang upscale 2/5"). Hidden until the
   // page calls toolbar._setUpscaleProgress() with an active batch.
@@ -60,7 +60,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
         toast(`Đã tải zip ${paths.length} files`, 'success');
       }
     } catch (e) { toast(`Tải lỗi: ${e.message}`, 'error'); }
-  }, 'btn-primary');
+  });
 
   const btnClear = iconBtn('x', 'Bỏ khỏi danh sách', () => {
     const paths = selectedCards().map(pathOf).filter(Boolean);
@@ -115,7 +115,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     ? iconBtn('upscale', 'Nâng cấp 2K', () => runUpscale('2k'))
     : null;
   const btn4k = upscaleEnabled
-    ? iconBtn('upscale', 'Nâng cấp 4K', () => runUpscale('4k'), 'btn-primary')
+    ? iconBtn('upscale', 'Nâng cấp 4K', () => runUpscale('4k'))
     : null;
 
   // Watermark removal — uses built-in Veo mask. Only shown when caller
@@ -129,7 +129,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     } catch (e) {
       toast(`Xóa watermark lỗi: ${e.message}`, 'error');
     }
-  }, 'btn-warm') : null;
+  }) : null;
 
   // Send the SELECTED items to the Tạo Video tab as I2V (each image becomes a
   // video's first frame). Provided by the image + storyboard pages; passes the
@@ -139,7 +139,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     const ids = selectedCards().map(itemOf).filter(x => x && x.id != null).map(x => x.id);
     if (!ids.length) return;
     try { await onSendToI2V(ids); } catch (e) { toast(`Gửi I2V lỗi: ${e.message}`, 'error'); }
-  }, 'btn-primary') : null;
+  }) : null;
 
   // Regenerate the SELECTED items (overwrite in place, priority over normal
   // gen). Items currently upscaling are skipped — you can't regen a card that's
@@ -157,29 +157,76 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     }
     if (skipped > 0) toast(`Bỏ qua ${skipped} ảnh đang upscale`, 'info');
     try { await onRegen(ids); } catch (e) { toast(`Gen lại lỗi: ${e.message}`, 'error'); }
-  }, 'btn-warm') : null;
+  }) : null;
 
-  // Hide selection actions by default
-  const selectionButtons = [btnRegen, btnI2V, btnDownload, btn2k, btn4k, btnWm, btnClear].filter(Boolean);
+  // Send SELECTED images to the Shakker Upscale tab (green). Provided by the
+  // image + storyboard pages; the page uploads each to Shakker then opens the
+  // Upscale sub-mode with them preloaded.
+  const sendUpscaleEnabled = !!(itemOf && onSendToUpscale);
+  const btnSendUpscale = sendUpscaleEnabled ? iconBtn('upscale', 'Upscale Shakker', async () => {
+    const ids = selectedCards().map(itemOf).filter(x => x && x.id != null).map(x => x.id);
+    if (!ids.length) return;
+    try { await onSendToUpscale(ids); } catch (e) { toast(`Gửi upscale lỗi: ${e.message}`, 'error'); }
+  }, 'btn-success') : null;
+
+  // Selection meta-controls — quiet (ghost), sit on the left.
+  const selBtnAll = iconBtn('check', 'Chọn tất cả', () => {
+    getCards().forEach(c => {
+      c.classList.add('selected');
+      const cb = c.querySelector('.card-checkbox');
+      if (cb) cb.checked = true;
+    });
+    refreshCounter();
+  }, 'btn-ghost');
+  const selBtnNone = iconBtn('x', 'Bỏ chọn', () => {
+    getCards().forEach(c => {
+      c.classList.remove('selected');
+      const cb = c.querySelector('.card-checkbox');
+      if (cb) cb.checked = false;
+    });
+    refreshCounter();
+  }, 'btn-ghost');
+
+  function divider() {
+    return el('div', { class: 'sel-divider', style: {
+      width: '1px', height: '22px', flexShrink: '0', background: 'var(--border)', margin: '0 3px',
+    } });
+  }
+
+  // Action buttons grouped by purpose (left→right), separated by thin dividers.
+  // Empty groups (action not available on this page) collapse so there are no
+  // stray dividers. Colours carry meaning: neutral = normal action, green =
+  // send to Shakker, red = destructive (remove from list, kept last).
+  const actionGroups = [
+    [btnRegen],                          // regenerate
+    [btnI2V, btnSendUpscale],            // send to another tab / tool
+    [btn2k, btn4k],                      // Flow upscale 2K / 4K
+    [btnWm],                             // watermark removal (video pages)
+    [btnDownload],                       // download
+    onClearSelected ? [btnClear] : [],   // remove from list (destructive)
+  ].map(g => g.filter(Boolean)).filter(g => g.length);
+
+  const rightChildren = [];
+  actionGroups.forEach((g, i) => {
+    if (i > 0) rightChildren.push(divider());
+    rightChildren.push(...g);
+  });
+
+  // Buttons + their dividers only appear when ≥1 card is selected.
+  const selectionButtons = rightChildren.slice();
   for (const b of selectionButtons) b.style.display = 'none';
 
   function refreshCounter() {
     const n = selectedCards().length;
     counterEl.textContent = `${n} đã chọn`;
     const show = n > 0;
-    if (btnRegen) btnRegen.style.display = show ? '' : 'none';
-    if (btnI2V) btnI2V.style.display = show ? '' : 'none';
-    btnDownload.style.display = show ? '' : 'none';
-    btnClear.style.display = (show && onClearSelected) ? '' : 'none';
-    if (btn2k) btn2k.style.display = show ? '' : 'none';
-    if (btn4k) btn4k.style.display = show ? '' : 'none';
-    if (btnWm) btnWm.style.display = show ? '' : 'none';
+    for (const b of selectionButtons) b.style.display = show ? '' : 'none';
   }
 
   const toolbar = el('div', {
     class: 'selection-toolbar',
     style: {
-      display: 'flex', alignItems: 'center', gap: '8px',
+      display: 'flex', alignItems: 'center', gap: '6px',
       padding: '10px 12px', marginBottom: '12px',
       background: 'var(--bg-2)',
       border: '1px solid var(--border)',
@@ -187,32 +234,9 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
       flexWrap: 'wrap',
     },
   },
-    iconBtn('check', 'Chọn tất cả', () => {
-      getCards().forEach(c => {
-        c.classList.add('selected');
-        const cb = c.querySelector('.card-checkbox');
-        if (cb) cb.checked = true;
-      });
-      refreshCounter();
-    }),
-    iconBtn('x', 'Bỏ chọn', () => {
-      getCards().forEach(c => {
-        c.classList.remove('selected');
-        const cb = c.querySelector('.card-checkbox');
-        if (cb) cb.checked = false;
-      });
-      refreshCounter();
-    }),
-    counterEl,
-    upscaleProgressEl,
+    selBtnAll, selBtnNone, counterEl, upscaleProgressEl,
     el('div', { style: { flex: 1 } }),
-    ...(btnRegen ? [btnRegen] : []),
-    ...(btnI2V ? [btnI2V] : []),
-    btnDownload,
-    ...(btn2k ? [btn2k] : []),
-    ...(btn4k ? [btn4k] : []),
-    ...(btnWm ? [btnWm] : []),
-    btnClear,
+    ...rightChildren,
   );
 
   function iconBtn(name, label, onclick, extraClass = '') {

@@ -171,7 +171,7 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             reference_images=ref_media_ids or None,
         )
 
-        out_dir = get_save_dir("image", f"task_{task_id}", task.get("name"))
+        out_dir = get_save_dir("image", task_id, task.get("name"))
         out_path = out_dir / f"{project_item_stem(task, item_id)}.png"
         ok = await client.download_image(result["download_url"], str(out_path))
         if not ok:
@@ -411,7 +411,7 @@ def _save_upscaled(item_id: int, resolution: str, raw_bytes: bytes, task: dict) 
     """Save upscaled JPEG bytes to outputs/image/<date>/<task>/upscaled/."""
     # Mirror the original task's folder so the upscaled file lives next to
     # the source — keeps everything tidy when the user opens the folder.
-    base_dir = get_save_dir("image", f"task_{task['id']}", task.get("name"))
+    base_dir = get_save_dir("image", task["id"], task.get("name"))
     upscale_dir = base_dir / "upscaled"
     upscale_dir.mkdir(parents=True, exist_ok=True)
     out_path = upscale_dir / f"item_{item_id}_{resolution}.jpg"
@@ -428,7 +428,7 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
         url = r.get("download_url")
         if not url:
             raise RuntimeError("Upscale response thiếu cả encoded_image lẫn download_url")
-        out_dir = get_save_dir("image", f"task_{task['id']}", task.get("name")) / "upscaled"
+        out_dir = get_save_dir("image", task["id"], task.get("name")) / "upscaled"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"item_{item_id}_{resolution}.png"
         ok = await client.download_image(url, str(out_path))
@@ -437,18 +437,24 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
     else:
         out_path = _save_upscaled(item_id, resolution, raw, task)
 
-    # Upscale đi qua media_id nên Flow upscale ảnh gốc 1376×768 (lệch 16:9).
-    # Crop + chuẩn hóa về 2K=2560×1440 / 4K=3840×2160 (crop 2 bên rồi resize
-    # 1 lần). Dùng cùng resize_image(mode="cover") của tab Resize Hàng Loạt.
+    # Giữ ĐÚNG tỉ lệ ảnh gốc — chỉ scale lên theo "cạnh dài" 2K=2560 / 4K=3840.
+    # (Code cũ crop cứng về 16:9 nên ảnh 1:1, 9:16... bị méo/cắt khi so sánh.)
     up_w, up_h = r.get("width"), r.get("height")
-    _UPSCALE_DIMS = {"2k": (2560, 1440), "4k": (3840, 2160)}
-    tw, th = _UPSCALE_DIMS.get(resolution.lower(), (3840, 2160))
+    _LONG_EDGE = {"2k": 2560, "4k": 3840}.get(resolution.lower(), 3840)
     try:
         from ..services.image_utils import crop_cover_inplace
+        from PIL import Image
+        with Image.open(out_path) as _im:
+            sw, sh = _im.size
+        if sw >= sh:
+            tw, th = _LONG_EDGE, max(1, round(_LONG_EDGE * sh / sw))
+        else:
+            tw, th = max(1, round(_LONG_EDGE * sw / sh)), _LONG_EDGE
+        # tw:th khớp tỉ lệ gốc → crop_cover chỉ scale (không cắt) → không méo.
         crop_cover_inplace(out_path, width=tw, height=th)
         up_w, up_h = tw, th
     except Exception as e:
-        log.warning(f"Crop upscale 16:9 failed (giữ ảnh gốc): {e}")
+        log.warning(f"Resize upscale (giữ tỉ lệ gốc) failed: {e}")
 
     rel = out_path.relative_to(OUTPUT_DIR).as_posix()
     return {

@@ -34,7 +34,10 @@ from ..database import db
 from ..config import OUTPUT_DIR, TaskStatus, ItemStatus, get_save_dir, project_item_stem
 from ..ws_hub import hub
 from ..queue_manager import shakker_queue as queue
-from ..services.shakker_client import ShakkerClient, ShakkerError, DEFAULT_BASE_TYPE
+from ..services.shakker_client import (
+    ShakkerClient, ShakkerError, DEFAULT_BASE_TYPE,
+    UPSCALE_MODELS, UPSCALE_SCALES,
+)
 from ..services.error_messages import friendly_shakker_error
 
 log = logging.getLogger("redone.shakker_router")
@@ -59,6 +62,18 @@ async def _spaced_submit(client: ShakkerClient, payload: dict) -> str:
         if gap < _SUBMIT_MIN_GAP_S:
             await asyncio.sleep(_SUBMIT_MIN_GAP_S - gap)
         gid = await client.submit_generate(payload)
+        _last_submit_ts[0] = time.time()
+        return gid
+
+
+async def _spaced_submit_upscale(client: ShakkerClient, payload: dict) -> str:
+    """Submit one /comfy-wrapper (upscale) call under the SAME global spacing
+    lock as _spaced_submit — Shakker's concurrent=1 limit covers both."""
+    async with _submit_lock:
+        gap = time.time() - _last_submit_ts[0]
+        if gap < _SUBMIT_MIN_GAP_S:
+            await asyncio.sleep(_SUBMIT_MIN_GAP_S - gap)
+        gid = await client.submit_upscale(payload)
         _last_submit_ts[0] = time.time()
         return gid
 
@@ -242,7 +257,7 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
             )
 
         data = await client.download_result(img["url"])
-        out_dir = get_save_dir("image", f"shakker_{task_id}", task.get("name"))
+        out_dir = get_save_dir("image", task_id, task.get("name"))
         out_path = out_dir / f"{project_item_stem(task, item_id)}.png"
         out_path.write_bytes(data)
 
@@ -298,6 +313,178 @@ async def generate_shakker_item(client: ShakkerClient, task: dict, item: dict) -
         await _broadcast_progress(task_id)
 
 
+# ── Per-item UPSCALE generator (mirrors generate_shakker_item) ───────
+
+async def upscale_shakker_item(client: ShakkerClient, task: dict, item: dict) -> bool:
+    """Upscale ONE image via Shakker. Same lifecycle as generate_shakker_item
+    (reserve → submit → poll → download → save → commit power) but uses the
+    comfy-wrapper upscale endpoint and the per-item source image stored in
+    extra_json. Returns True on success, False on handled failure; raises
+    ShakkerError only for token-dead so the caller can stop + flag the account.
+    """
+    task_id = task["id"]
+    item_id = item["id"]
+    cfg = _task_config(task)
+
+    # Paused mid-batch: leave PENDING and bail before reserving.
+    if queue.is_paused(task_id):
+        return False
+
+    # Per-item source (set when the task was created).
+    try:
+        src = json.loads(item.get("extra_json") or "{}")
+    except Exception:
+        src = {}
+    src_url = src.get("src_url")
+    src_w = int(src.get("src_w") or 0)
+    src_h = int(src.get("src_h") or 0)
+
+    scale = int(cfg.get("scale") or 2)
+    model = str(cfg.get("model") or "enhanced")
+    variability = cfg.get("variability")
+
+    await hub.broadcast("item_status", {
+        "task_id": task_id, "item_id": item_id,
+        "status": ItemStatus.GENERATING.value, "kind": "shakker",
+    })
+    db.update_item(item_id, status=ItemStatus.GENERATING.value, error_message=None)
+
+    if not src_url or src_w <= 0 or src_h <= 0:
+        msg = "Thiếu ảnh nguồn để upscale"
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=msg)
+        await hub.broadcast("item_error", {"task_id": task_id, "item_id": item_id,
+                                           "error": msg, "kind": "shakker"})
+        await _broadcast_progress(task_id)
+        return False
+
+    from ..services import hub_client
+    _model = f"upscale_{model}"
+
+    # The upscale engine reads the source from its `copy/<path>` working
+    # location, so physically populate it first (download src → upload to
+    # copy/). Skipping this makes Shakker fail with "cannot identify image
+    # file". Do it before reserving credit so a failure costs nothing.
+    try:
+        source_image_id = await client.prepare_upscale_source(src_url)
+    except ShakkerError as ex:
+        friendly = str(ex)
+        raw = getattr(ex, "raw", friendly)
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=friendly)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id,
+            "error": friendly, "error_detail": raw, "kind": "shakker",
+        })
+        await _broadcast_progress(task_id)
+        if _is_token_dead(ex):
+            raise
+        return False
+
+    # Build the payload so we can ask Shakker for the real power cost and
+    # reserve the correct internal credit up-front (trued-up on commit).
+    payload = client.build_upscale_payload(
+        image_url=src_url, src_w=src_w, src_h=src_h,
+        scale=scale, model=model, variability=variability,
+        checkpoint_id=cfg.get("checkpoint_id") or 1508012,
+        source_image_id=source_image_id,
+    )
+    try:
+        _est_power = await client.calculate_upscale_power(payload)
+    except ShakkerError:
+        _est_power = 0
+    _cost = _est_power or 1
+
+    _res = await hub_client.reserve(kind="shakker", model=_model, credit_cost=_cost,
+                                    prompt=item.get("prompt", ""))
+    _rid = _res.get("reservation_id")
+    if not _res.get("ok", True):
+        _msg = _res.get("message") or "Hết credit nội bộ — liên hệ lead để được cấp thêm."
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=_msg)
+        await hub.broadcast("item_error", {"task_id": task_id, "item_id": item_id,
+                                           "error": _msg, "kind": "shakker"})
+        await _broadcast_progress(task_id)
+        return False
+
+    try:
+        gid = await _spaced_submit_upscale(client, payload)
+
+        async def _on_progress(status):
+            await hub.broadcast("item_progress", {
+                "task_id": task_id, "item_id": item_id, "kind": "shakker",
+                "percent": status.get("percent") or 0,
+                "queue_num": status.get("queue_num") or 0,
+                "state": status.get("state"),
+            })
+
+        result = await client.wait_for_completion(gid, on_progress=_on_progress)
+
+        if result["state"] != "success" or not result.get("images"):
+            raw = result.get("error") or "Shakker không trả ảnh upscale"
+            raise ShakkerError(friendly_shakker_error(raw), raw=raw)
+
+        img = result["images"][0]
+        data = await client.download_result(img["url"])
+        out_dir = get_save_dir("upscale", task_id, task.get("name"))
+        out_path = out_dir / f"{project_item_stem(task, item_id)}_{scale}x.png"
+        out_path.write_bytes(data)
+
+        extra = dict(src)  # keep src_url/src_w/src_h for reference
+        extra["power"] = result.get("power") or 0
+        extra["generate_id"] = gid
+        extra["scale"] = scale
+        extra["upscale_model"] = model
+        db.update_item(
+            item_id,
+            status=ItemStatus.COMPLETED.value,
+            output_path=str(out_path),
+            credit_cost=result.get("power") or 0,
+            extra_json=json.dumps(extra),
+            error_message=None,
+        )
+        await hub.broadcast("item_completed", {
+            "task_id": task_id, "item_id": item_id,
+            "output_path": str(out_path), "kind": "shakker",
+            "power": result.get("power") or 0,
+        })
+        _real_power = int(result.get("power") or 0)
+        await hub_client.commit_result(_rid, "done", kind="shakker", model=_model,
+                                       credit_cost=_real_power, prompt=item.get("prompt", ""),
+                                       path=str(out_path), is_video=False)
+        return True
+
+    except ShakkerError as ex:
+        friendly = str(ex)
+        raw = getattr(ex, "raw", friendly)
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=friendly)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id,
+            "error": friendly, "error_detail": raw, "kind": "shakker",
+        })
+        await hub_client.commit_result(_rid, "error", kind="shakker", model=_model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
+        if _is_token_dead(ex):
+            raise
+        return False
+    except Exception as ex:
+        raw = str(ex)
+        friendly = friendly_shakker_error(raw)
+        db.update_item(item_id, status=ItemStatus.ERROR.value, error_message=friendly)
+        await hub.broadcast("item_error", {
+            "task_id": task_id, "item_id": item_id,
+            "error": friendly, "error_detail": raw, "kind": "shakker",
+        })
+        await hub_client.commit_result(_rid, "error", kind="shakker", model=_model,
+                                       credit_cost=_cost, prompt=item.get("prompt", ""))
+        return False
+    finally:
+        await _broadcast_progress(task_id)
+
+
+def _item_runner_for(task: dict):
+    """Pick the per-item runner for a shakker task: upscale tasks carry an
+    `upscale` flag in their config blob; everything else is normal gen."""
+    return upscale_shakker_item if _task_config(task).get("upscale") else generate_shakker_item
+
+
 # ── Batch runner (queue worker) ──────────────────────────────────────
 
 async def _process_shakker_task(task_id: int):
@@ -326,8 +513,9 @@ async def _process_shakker_task(task_id: int):
         # item flips to "Đang tạo" right away while images stream back.
         pending = [it for it in items if it.get("status") != ItemStatus.COMPLETED.value]
 
+        runner = _item_runner_for(task)
         results = await asyncio.gather(
-            *(generate_shakker_item(client, task, it) for it in pending),
+            *(runner(client, task, it) for it in pending),
             return_exceptions=True,
         )
         if queue.is_paused(task_id):
@@ -397,8 +585,9 @@ async def _retry_shakker_items_runner(task: dict, item_ids: list[int], force: bo
             await _maybe_finalize(task_id)
             return
 
+        runner = _item_runner_for(task)
         results = await asyncio.gather(
-            *(generate_shakker_item(client, task, it) for it in targets),
+            *(runner(client, task, it) for it in targets),
             return_exceptions=True,
         )
         if any(isinstance(r, ShakkerError) and _is_token_dead(r) for r in results):
@@ -435,6 +624,30 @@ class StartShakkerRequest(BaseModel):
     count_per_prompt: int = 1
     concurrent: int = 1          # ignored — concurrency is unlimited (all prompts fan out at once)
     task_name: Optional[str] = None
+
+
+class UpscaleImageSpec(BaseModel):
+    url: str                      # shakker CDN url (from /upload-ref or a shakker image)
+    width: int
+    height: int
+    label: Optional[str] = None   # source filename / short label for the gallery
+
+
+class StartUpscaleRequest(BaseModel):
+    images: list[UpscaleImageSpec]
+    scale: int = 2                # 2 | 3 | 4
+    model: str = "enhanced"       # "enhanced" | "original"
+    variability: Optional[float] = None   # Enhanced slider; ignored for Original
+    task_name: Optional[str] = None
+
+
+class UpscaleEstimateRequest(BaseModel):
+    url: str
+    width: int
+    height: int
+    scale: int = 2
+    model: str = "enhanced"
+    variability: Optional[float] = None
 
 
 # ── Endpoints: generation ────────────────────────────────────────────
@@ -491,6 +704,80 @@ async def start_shakker_task(body: StartShakkerRequest):
         "queue_position": position,
         "queued": position > 0,
     }
+
+
+@router.post("/upscale")
+async def start_upscale_task(body: StartUpscaleRequest):
+    """Upscale a batch of images through Shakker. Each image is one task item;
+    runs through the SAME queue/retry/pause machinery as gen (the config blob
+    carries an `upscale` flag so the worker dispatches to upscale_shakker_item).
+    """
+    if not body.images:
+        raise HTTPException(400, "Cần ít nhất 1 ảnh để upscale")
+    if body.scale not in UPSCALE_SCALES:
+        raise HTTPException(400, f"Tỉ lệ phóng không hợp lệ (chỉ {UPSCALE_SCALES})")
+    model = body.model if body.model in UPSCALE_MODELS else "enhanced"
+    if not _pick_shakker_account():
+        raise HTTPException(400, "Chưa có tài khoản Shakker khả dụng — mở shakker.ai trong Chrome")
+
+    images = [im for im in body.images if (im.url or "").strip()
+              and im.width > 0 and im.height > 0]
+    if not images:
+        raise HTTPException(400, "Danh sách ảnh rỗng hoặc thiếu kích thước")
+
+    config = {
+        "upscale": True,
+        "scale": body.scale,
+        "model": model,
+        "variability": body.variability,
+    }
+    task_name = (body.task_name or "").strip() or f"upscale_{int(time.time())}"
+    from ..services import hub_client
+    task_id = db.create_task(
+        name=task_name,
+        mode="shakker",
+        image_model=f"upscale_{model}",
+        aspect_ratio="",
+        concurrent=len(images),
+        total_count=len(images),
+        status=TaskStatus.PENDING.value,
+        character_images_json=json.dumps(config),
+        user_email=hub_client.current_user_email(),
+    )
+    for im in images:
+        label = (im.label or "").strip() or f"upscale {body.scale}x"
+        db.add_task_item(task_id, label, extra={
+            "src_url": im.url, "src_w": int(im.width), "src_h": int(im.height),
+        })
+
+    position = await queue.enqueue("shakker", task_id, _process_shakker_task)
+    return {
+        "task_id": task_id,
+        "items": len(images),
+        "queue_position": position,
+        "queued": position > 0,
+    }
+
+
+@router.post("/upscale/estimate")
+async def estimate_upscale_power(body: UpscaleEstimateRequest):
+    """Return the Shakker `power` an upscale would cost (for the ⚡ preview)."""
+    acc = _pick_shakker_account()
+    if not acc:
+        raise HTTPException(400, "Chưa có tài khoản Shakker")
+    model = body.model if body.model in UPSCALE_MODELS else "enhanced"
+    client = _make_client(acc)
+    try:
+        payload = client.build_upscale_payload(
+            image_url=body.url, src_w=body.width, src_h=body.height,
+            scale=body.scale, model=model, variability=body.variability,
+        )
+        power = await client.calculate_upscale_power(payload)
+    except ShakkerError as e:
+        if _is_token_dead(e):
+            await _flag_token_expired(acc, str(e))
+        raise HTTPException(502, friendly_shakker_error(getattr(e, "raw", str(e))))
+    return {"ok": True, "power": power}
 
 
 @router.post("/cancel/{task_id}")

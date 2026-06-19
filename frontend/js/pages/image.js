@@ -1,6 +1,6 @@
 // Image generation page (Imagen / Nano Banana via Google Labs)
 // State is persisted in tasksStore so the gallery survives page navigation.
-import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, openMediaViewer } from '../ui.js';
+import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
 import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
@@ -26,7 +26,7 @@ let _lastViewedTaskId = null;
 
 function defaultTaskName() {
   const d = new Date();
-  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}`;
+  const ts = `${d.getHours().toString().padStart(2, '0')}h${d.getMinutes().toString().padStart(2, '0')}m${d.getSeconds().toString().padStart(2, '0')}`;
   return `image_${ts}`;
 }
 
@@ -39,9 +39,24 @@ function applySavedDefaults() {
   if (s.default_aspect) form.aspect = s.default_aspect;
 }
 
+// Open the before/after comparison for a Flow-upscaled item (original gen vs
+// the 2K/4K result), with a download button inside the viewer.
+function openFlowUpscaleCompare(it) {
+  if (!it.upscale_url || !it.output_url) return;
+  const res = (it.upscale_resolution || '').toUpperCase();
+  openCompareViewer({
+    beforeUrl: it.output_url,
+    afterUrl: it.upscale_url,
+    beforeLabel: 'Gốc',
+    afterLabel: res || 'Upscale',
+    downloadUrl: it.upscale_url,
+    title: `${res ? res + ' · ' : ''}${it.prompt || ''}`.trim(),
+  });
+}
+
 // Build the upscale-state pill overlaid on a card's thumbnail. Returns an
 // element for the current `upscale_status` (queued | running | done | error).
-// Done is a clickable link to the upscaled file; the rest are plain pills.
+// Done opens a before/after comparison viewer; the rest are plain pills.
 function _upscaleBadge(it) {
   const res = (it.upscale_resolution || '').toUpperCase();
   switch (it.upscale_status) {
@@ -55,9 +70,9 @@ function _upscaleBadge(it) {
     case 'done':
       return el('a', {
         class: 'upscale-badge is-done',
-        href: it.upscale_url || '#', target: '_blank', download: '',
-        title: `Ảnh ${res} — click để tải`,
-        onclick: (e) => e.stopPropagation(),
+        href: '#',
+        title: `Ảnh ${res} — click để so sánh trước/sau`,
+        onclick: (e) => { e.preventDefault(); e.stopPropagation(); openFlowUpscaleCompare(it); },
       }, `✓ ${res}`);
     case 'error':
       return el('div', { class: 'upscale-badge is-error', title: it.upscale_error || 'Lỗi upscale' },
@@ -87,6 +102,25 @@ function sendImagesToI2V(taskState, idList) {
   sessionStorage.setItem('inject_i2v', JSON.stringify(scenes));
   window.__app.navigate('content');
   toast(`Đã gửi ${scenes.length} ảnh sang Tạo Video (I2V)${upN ? ` (${upN} ảnh đã upscale)` : ''}`, 'success');
+}
+
+// "Gửi sang Upscale Shakker" (green button): hand the selected images to the
+// Shakker tab as local urls and switch IMMEDIATELY — the upload to Shakker runs
+// in the Upscale panel (each item shows "Đang tải lên…"), so we never block the
+// tab switch on uploads.
+function sendImagesToUpscale(taskState, idList) {
+  const byId = new Map(taskState.items.map(it => [it.id, it]));
+  const chosen = idList.map(id => byId.get(id)).filter(it => it && it.status === 'done' && it.output_path);
+  if (!chosen.length) return toast('Chọn ảnh đã xong để gửi', 'warning');
+  // Always send the ORIGINAL (output_url) to Shakker upscale — never the Flow
+  // 2K/4K, so the user re-upscales the source image, not an already-upscaled one.
+  const out = chosen.map(it => ({
+    url: it.output_url, label: (it.prompt || 'ảnh').slice(0, 40), needsUpload: true,
+  })).filter(x => x.url);
+  if (!out.length) return toast('Ảnh chưa sẵn sàng', 'warning');
+  window.__app._pendingUpscale = out;
+  window.__app.navigate('shakker');
+  toast(`Đã gửi ${out.length} ảnh sang Upscale Shakker (đang tải lên…)`, 'success');
 }
 
 export function renderImage(root) {
@@ -180,7 +214,6 @@ export function renderImage(root) {
   left.querySelector('#img-concurrent').value = form.concurrent;
   const nameInput = left.querySelector('#img-taskname');
   nameInput.value = form.taskName || defaultTaskName();
-  form.taskName = nameInput.value;
   nameInput.addEventListener('input', (e) => { form.taskName = e.target.value; });
 
   // ── RIGHT: prompts + gallery ──────────────────────────
@@ -546,7 +579,8 @@ export function renderImage(root) {
       for (let k = 0; k < form.countPerPrompt; k++) expanded.push(p);
     }
 
-    const taskName = form.taskName || defaultTaskName();
+    let taskName = (form.taskName || '').trim();
+    if (!taskName) { taskName = defaultTaskName(); nameInput.value = taskName; }
     setLoading(startBtn, true);
     try {
       const res = await api.image.start({
@@ -657,6 +691,7 @@ export function renderImage(root) {
           await runBatchUpscale(itemIds, resolution);
         },
         onSendToI2V: async (ids) => sendImagesToI2V(taskState, ids),
+        onSendToUpscale: async (ids) => sendImagesToUpscale(taskState, ids),
         onRegen: async (ids) => {
           await api.tasks.retryItems(taskState.id, ids);
           ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid, 'pending'));
@@ -731,26 +766,29 @@ export function renderImage(root) {
       );
 
       if (it.status === 'done' && it.output_url) {
+        // Downloads grouped on the left; copy-prompt as a square icon on the
+        // right. The upscaled (2K/4K) download is brand-tinted to stand out.
         const actions = el('div', { class: 'scene-actions' },
-          el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
+          el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost', title: 'Tải ảnh gốc' },
             icon('download', 14), 'Tải'),
-          el('button', { class: 'btn btn-sm btn-ghost', title: 'Copy prompt', onclick: () => {
+        );
+        if (it.upscale_status === 'done' && it.upscale_url) {
+          actions.appendChild(el('a', {
+            href: it.upscale_url, download: '', target: '_blank',
+            class: 'btn btn-sm btn-ghost sa-accent',
+            title: 'Tải ảnh đã upscale (bấm chip trên ảnh để so sánh)',
+          }, icon('download', 14), `Tải ${(it.upscale_resolution || '').toUpperCase()}`));
+        }
+        actions.appendChild(el('button', {
+          class: 'btn btn-sm btn-ghost btn-icon', title: 'Copy prompt',
+          style: { marginLeft: 'auto' },
+          onclick: () => {
             const p = (it.prompt || '').trim();
             if (!p) return toast('Không có prompt để copy', 'warning');
             navigator.clipboard.writeText(p);
             toast('Đã copy prompt', 'success');
-          } }, icon('copy', 14)),
-        );
-        // When an upscaled file exists, offer a clean "Tải 4K" button. The
-        // live status (queued/running/error) shows as a badge on the
-        // thumbnail instead, so this row never wraps.
-        if (it.upscale_status === 'done' && it.upscale_url) {
-          actions.appendChild(el('a', {
-            href: it.upscale_url, download: '', target: '_blank',
-            class: 'btn btn-sm btn-ghost', style: { marginLeft: 'auto' },
-            title: 'Tải ảnh đã upscale',
-          }, icon('download', 14), `Tải ${(it.upscale_resolution || '').toUpperCase()}`));
-        }
+          },
+        }, icon('copy', 14)));
         info.appendChild(actions);
       }
       // (Per-card "Gen lại" removed — regen is now on the selection toolbar:

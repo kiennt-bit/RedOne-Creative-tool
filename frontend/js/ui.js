@@ -350,3 +350,182 @@ export function openMediaViewer({ url, type = 'image', label = '', downloadUrl =
   document.body.appendChild(backdrop);
   return { close };
 }
+
+// Before/after comparison viewer — overlays the upscaled image on top of the
+// original and reveals the original by dragging a vertical divider. Used for
+// Shakker upscale + Flow 2K/4K so the user can judge the gain, with a download
+// option in the caption. Both images must share the same aspect ratio.
+export function openCompareViewer({
+  beforeUrl,
+  afterUrl,
+  beforeLabel = 'Ảnh gốc',
+  afterLabel = 'Đã upscale',
+  downloadUrl = '',
+  downloadName = '',
+  title = '',
+}) {
+  if (!beforeUrl || !afterUrl) return null;
+  const old = document.getElementById('compare-viewer');
+  if (old) old.remove();
+
+  let pct = 50;
+
+  // after = base layer (full); before = clipped overlay on the left.
+  const afterImg = el('img', {
+    src: afterUrl, alt: afterLabel, draggable: false,
+    style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+             objectFit: 'contain', display: 'block', userSelect: 'none', pointerEvents: 'none' },
+  });
+  const beforeImg = el('img', {
+    src: beforeUrl, alt: beforeLabel, draggable: false,
+    style: { position: 'absolute', top: 0, left: 0, height: '100%', maxWidth: 'none',
+             objectFit: 'contain', display: 'block', userSelect: 'none', pointerEvents: 'none' },
+  });
+  const beforeClip = el('div', {
+    style: { position: 'absolute', top: 0, left: 0, height: '100%', width: pct + '%',
+             overflow: 'hidden' },
+  }, beforeImg);
+
+  const line = el('div', {
+    style: { position: 'absolute', top: 0, bottom: 0, left: pct + '%', width: '2px',
+             transform: 'translateX(-1px)', background: 'rgba(255,255,255,0.92)',
+             boxShadow: '0 0 10px rgba(0,0,0,0.6)', zIndex: 3, pointerEvents: 'none' },
+  });
+
+  const handleIcon = document.createElement('span');
+  handleIcon.style.cssText = 'display:flex;color:#fff';
+  handleIcon.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" '
+    + 'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M9 7l-5 5 5 5"/><path d="M15 7l5 5-5 5"/></svg>';
+  const handle = el('div', {
+    style: { position: 'absolute', top: '50%', left: pct + '%', transform: 'translate(-50%,-50%)',
+             width: '46px', height: '46px', borderRadius: '50%', background: 'rgba(37,99,235,0.92)',
+             border: '3px solid #fff', boxShadow: '0 3px 14px rgba(0,0,0,0.55)',
+             display: 'flex', alignItems: 'center', justifyContent: 'center',
+             cursor: 'ew-resize', zIndex: 4 },
+  }, handleIcon);
+
+  const labelChip = (txt, side) => el('div', {
+    style: { position: 'absolute', top: '12px', [side]: '12px', padding: '4px 11px',
+             borderRadius: '999px', fontSize: '12px', fontWeight: 700, color: '#fff',
+             background: 'rgba(0,0,0,0.6)', letterSpacing: '0.3px', zIndex: 4,
+             pointerEvents: 'none', transition: 'opacity 0.15s' },
+  }, txt);
+  const beforeChip = labelChip(beforeLabel, 'left');
+  const afterChip = labelChip(afterLabel, 'right');
+
+  // Loading / error overlay — large upscaled images can take a moment, and a
+  // silent failure would otherwise just show a blank pane.
+  const statusEl = el('div', {
+    style: { position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+             zIndex: 5, maxWidth: '80%', padding: '10px 16px', borderRadius: 'var(--r-md)',
+             color: '#fff', background: 'rgba(0,0,0,0.62)', fontSize: '13px', fontWeight: 600,
+             textAlign: 'center', pointerEvents: 'none' },
+  }, 'Đang tải ảnh…');
+
+  const box = el('div', {
+    style: { position: 'relative', overflow: 'hidden', borderRadius: 'var(--r-md)',
+             boxShadow: 'var(--sh-lg)', background: '#0c0c10', cursor: 'ew-resize',
+             touchAction: 'none', maxWidth: '94vw', maxHeight: '78vh', width: '60vw', height: '40vh' },
+  }, afterImg, beforeClip, line, handle, beforeChip, afterChip, statusEl);
+
+  function setPct(p) {
+    pct = Math.max(0, Math.min(100, p));
+    beforeClip.style.width = pct + '%';
+    line.style.left = pct + '%';
+    handle.style.left = pct + '%';
+    beforeChip.style.opacity = pct < 12 ? '0' : '1';
+    afterChip.style.opacity = pct > 88 ? '0' : '1';
+  }
+
+  function fit() {
+    const natW = afterImg.naturalWidth || beforeImg.naturalWidth;
+    const natH = afterImg.naturalHeight || beforeImg.naturalHeight;
+    if (!natW || !natH) return;
+    const maxW = window.innerWidth * 0.94;
+    const maxH = window.innerHeight * 0.78;
+    let W = maxW, H = W * natH / natW;
+    if (H > maxH) { H = maxH; W = H * natW / natH; }
+    W = Math.round(W); H = Math.round(H);
+    box.style.width = W + 'px';
+    box.style.height = H + 'px';
+    beforeImg.style.width = W + 'px';
+    beforeImg.style.height = H + 'px';
+  }
+  let afterLoaded = false;
+  function onAfterLoad() { afterLoaded = true; statusEl.style.display = 'none'; fit(); }
+  function onImgError(which) {
+    statusEl.style.display = '';
+    statusEl.style.background = 'rgba(120,22,22,0.9)';
+    statusEl.textContent = which === 'after'
+      ? 'Không tải được ảnh đã upscale — bấm "Tải ảnh upscale" bên dưới.'
+      : 'Không tải được ảnh gốc.';
+  }
+  afterImg.addEventListener('load', onAfterLoad);
+  afterImg.addEventListener('error', () => onImgError('after'));
+  beforeImg.addEventListener('load', fit);
+  beforeImg.addEventListener('error', () => onImgError('before'));
+  // Cached images may already be complete before listeners attach → load never
+  // fires; reconcile manually.
+  if (afterImg.complete && afterImg.naturalWidth) onAfterLoad();
+  else if (afterImg.complete && !afterImg.naturalWidth) onImgError('after');
+  if (beforeImg.complete && beforeImg.naturalWidth) fit();
+
+  let dragging = false;
+  function pctFromEvent(e) {
+    const r = box.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    return ((cx - r.left) / r.width) * 100;
+  }
+  function onMove(e) { if (dragging) { setPct(pctFromEvent(e)); e.preventDefault(); } }
+  function onUp() { dragging = false; }
+  box.addEventListener('pointerdown', (e) => { dragging = true; setPct(pctFromEvent(e)); });
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+
+  const dl = downloadUrl || afterUrl;
+  const closeBtn = el('button', {
+    class: 'btn btn-sm', style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+  }, icon('x', 14), 'Đóng');
+  const dlBtn = el('a', {
+    class: 'btn btn-sm btn-primary', href: dl, download: downloadName || '',
+    style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+  }, icon('download', 14), 'Tải ảnh upscale');
+  const caption = el('div', {
+    style: { display: 'flex', alignItems: 'center', gap: '12px', maxWidth: '94vw',
+             padding: '8px 14px', color: '#fff', background: 'rgba(0,0,0,0.62)', borderRadius: 'var(--r-md)' },
+  },
+    el('span', {
+      style: { flex: '1', minWidth: '0', fontSize: '13px', fontWeight: '600',
+               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+    }, title || 'Kéo thanh ở giữa để so sánh trước / sau'),
+    dlBtn, closeBtn,
+  );
+  caption.addEventListener('click', (e) => e.stopPropagation());
+  box.addEventListener('click', (e) => e.stopPropagation());
+
+  const backdrop = el('div', {
+    id: 'compare-viewer',
+    style: { position: 'fixed', inset: '0', zIndex: '2000', display: 'flex', flexDirection: 'column',
+             alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '24px',
+             background: 'rgba(8,8,12,0.85)', backdropFilter: 'blur(4px)', animation: 'fadeIn 0.18s ease both' },
+  }, box, caption);
+
+  function close() {
+    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    window.removeEventListener('resize', fit);
+    backdrop.remove();
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  backdrop.addEventListener('click', close);
+  closeBtn.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('resize', fit);
+
+  document.body.appendChild(backdrop);
+  fit();
+  setPct(50);
+  return { close };
+}

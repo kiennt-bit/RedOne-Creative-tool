@@ -389,10 +389,41 @@
 }
 .scene-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   margin-top: auto;
   padding-top: 10px;
   border-top: 1px solid var(--border-soft);
+}
+/* Tidy surface buttons inside a card's action row — overrides .btn-ghost so the
+   buttons read as real controls instead of floating text+icon. */
+.scene-actions .btn {
+  background: var(--bg-3);
+  border-color: var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.scene-actions .btn:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+/* Square icon-only button (copy prompt). */
+.scene-actions .btn-icon {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+}
+/* The upscaled (2K/4K) download — brand-tinted so it stands apart from the
+   plain "Tải". */
+.scene-actions .sa-accent {
+  color: var(--brand);
+  border-color: var(--brand-soft);
+}
+.scene-actions .sa-accent:hover {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 /* Storyboard (analyzer) prompt cards — no image thumb, text-focused.
