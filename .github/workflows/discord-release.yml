@@ -1,0 +1,20 @@
+name: Discord Notification
+on:
+  release:
+    types: [published]
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord Message
+        uses: appleboy/discord-action@master
+        with:
+          webhook_id: ${{ secrets.DISCORD_ID }}
+          webhook_token: ${{ secrets.DISCORD_TOKEN }}
+          message: |
+            **Có Release mới: ${{ github.event.release.name }}**
+            Tag: `${{ github.event.release.tag_name }}`
+            
+            **Mô tả chi tiết:**
+            ${{ github.event.release.body }}
