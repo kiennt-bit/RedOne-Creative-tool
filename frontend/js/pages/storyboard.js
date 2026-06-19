@@ -11,7 +11,6 @@ import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from 
 const IMAGE_MODELS = [
   { key: 'nano_banana_pro', label: '🍌 Nano Banana Pro' },
   { key: 'nano_banana_2',   label: '🍌 Nano Banana 2' },
-  { key: 'imagen_4',        label: 'Imagen 4' },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 

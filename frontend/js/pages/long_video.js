@@ -26,7 +26,7 @@ const DURATION_BY_MODEL = {
 // Omni Flash doesn't support image-input yet → hide if start_image is set.
 // Short labels so they fit the narrow config column (see content.js).
 const MODEL_LABELS = {
-  omni_flash: 'Omni Flash · Miễn phí',
+  omni_flash: 'Omni Flash · 7–15 credit/cảnh (theo độ dài)',
   lite_lp:    'Veo 3.1 Lite · Miễn phí (chậm)',
   lite:       'Veo 3.1 Lite · 5 credit/cảnh',
   fast:       'Veo 3.1 Fast · 10 credit/cảnh',

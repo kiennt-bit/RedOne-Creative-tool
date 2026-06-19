@@ -47,7 +47,7 @@ const MODELS_FOR_MODE = {
 // overflowing into the dropdown arrow. The longer details (durations,
 // what "Lower Priority" means) live in the field-help line below.
 const MODEL_LABELS = {
-  omni_flash: 'Omni Flash · Miễn phí',
+  omni_flash: 'Omni Flash · 7–15 credit (theo độ dài)',
   lite_lp:    'Veo 3.1 Lite · Miễn phí (chậm)',
   lite:       'Veo 3.1 Lite · 5 credit',
   fast:       'Veo 3.1 Fast · 10 credit',

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -108,10 +108,8 @@ VIDEO_MODELS = {
 }
 
 IMAGE_MODELS = {
-    "imagen_4": {"name": "Imagen 4", "cost": 1},
-    "imagen_3": {"name": "Imagen 3", "cost": 1},
-    "nano_banana_2": {"name": "Nano Banana 2", "cost": 1},
-    "nano_banana_pro": {"name": "Nano Banana Pro", "cost": 1},
+    "nano_banana_pro": {"name": "Nano Banana Pro", "cost": 0},
+    "nano_banana_2": {"name": "Nano Banana 2", "cost": 0},
 }
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
@@ -160,6 +158,13 @@ def cost_for_model_key(model_key: str) -> int:
     if not model_key:
         return 10
     mk = model_key.lower()
+    # Omni Flash (key pattern abra_<mode>_<N>s): Google prices it BY DURATION
+    # (4s=7, 6s=10, 8s=12, 10s=15). Must run before the generic checks below.
+    if mk.startswith("abra_"):
+        import re as _re
+        _m = _re.search(r"_(\d+)s", mk)
+        _d = int(_m.group(1)) if _m else 8
+        return {4: 7, 6: 10, 8: 12, 10: 15}.get(_d, 12)
     if "_low_priority" in mk or "_relaxed" in mk:
         return 0
     if "_extension_lite" in mk or "_extension_fast" in mk:
