@@ -13,6 +13,7 @@ const KIND_LABEL = {
   i2v: 'Tạo Video (I2V)',
   long_video: 'Video Dài',
   shakker: 'Ảnh Shakker',
+  flow_upscale: 'Upscale',
 };
 const KIND_NAV = {
   image: 'image',
@@ -23,6 +24,10 @@ const KIND_NAV = {
   long_video: 'long-video',
   shakker: 'shakker',
 };
+// Parent task ids whose nested upscale children are collapsed (hidden).
+// Module-level → survives WS reloads + page navigation. Default = expanded.
+const tmCollapsed = new Set();
+
 const STATUS_CHIP = {
   PENDING:   { cls: 'chip-yellow', label: 'Đang chờ' },
   RUNNING:   { cls: 'chip-blue',   label: 'Đang chạy' },
@@ -92,13 +97,17 @@ export function renderTasksManager(root) {
     const tasks = activeOnly
       ? allTasks.filter(t => ['PENDING', 'RUNNING', 'PAUSED'].includes(t.status) || t.id === upscalingId)
       : allTasks;
-    countEl.textContent = `${tasks.length} task`;
+    // Task upscale (con) là task phụ của task gốc → KHÔNG đếm như task riêng.
+    const countedN = tasks.filter((t) => t.mode !== 'flow_upscale').length;
+    countEl.textContent = `${countedN} task`;
     renderStats(allTasks);
     renderTable(tasks);
   }
 
   function renderStats(tasks) {
     clear(stats);
+    // Task upscale (con) không tính như task riêng trong thống kê.
+    tasks = tasks.filter((t) => t.mode !== 'flow_upscale');
     const ub = tasksStore.getUpscaleBatch();
     const upscalingId = ub.active ? ub.taskId : null;
     // Task đang upscale (gen đã COMPLETED) vẫn tính là "đang chạy".
@@ -131,6 +140,20 @@ export function renderTasksManager(root) {
       return;
     }
 
+    // Nhóm task Flow-upscale (mode 'flow_upscale') xuống DƯỚI task gốc của nó
+    // như dòng con thụt vào. parent_task_id nằm trong character_images_json.
+    const cfgOf = (t) => { try { return JSON.parse(t.character_images_json || '{}'); } catch (_) { return {}; } };
+    const parentOf = (t) => (t.mode === 'flow_upscale' ? (cfgOf(t).parent_task_id || null) : null);
+    const idSet = new Set(tasks.map((t) => t.id));
+    const childrenByParent = new Map();
+    for (const t of tasks) {
+      const p = parentOf(t);
+      if (p != null && idSet.has(p)) {
+        if (!childrenByParent.has(p)) childrenByParent.set(p, []);
+        childrenByParent.get(p).push(t);
+      }
+    }
+
     const table = el('table', { class: 'table' });
     table.appendChild(el('thead', null, el('tr', null,
       el('th', null, '#'),
@@ -142,12 +165,31 @@ export function renderTasksManager(root) {
       el('th', { style: { textAlign: 'right' } }, ''),
     )));
     const tbody = el('tbody');
-    tasks.forEach((t) => tbody.appendChild(renderRow(t)));
+    for (const t of tasks) {
+      // Dòng con (cha có trong danh sách) render dưới cha — bỏ qua ở đây.
+      // Con mồ côi (cha bị lọc/đã xóa) vẫn render top-level để không bị ẩn.
+      const p = parentOf(t);
+      if (p != null && idSet.has(p)) continue;
+      const kids = childrenByParent.get(t.id);
+      const hasKids = !!(kids && kids.length);
+      const expanded = hasKids && !tmCollapsed.has(t.id);
+      tbody.appendChild(renderRow(t, {
+        hasKids,
+        expanded,
+        onToggle: () => {
+          if (tmCollapsed.has(t.id)) tmCollapsed.delete(t.id);
+          else tmCollapsed.add(t.id);
+          render();
+        },
+      }));
+      if (hasKids && expanded) kids.forEach((k) => tbody.appendChild(renderRow(k, { isChild: true })));
+    }
     table.appendChild(tbody);
     wrap.appendChild(table);
   }
 
-  function renderRow(t) {
+  function renderRow(t, opts = {}) {
+    const { isChild = false, hasKids = false, expanded = false, onToggle = null } = opts;
     const kindLabel = KIND_LABEL[t.mode] || t.mode || '—';
     const navTarget = KIND_NAV[t.mode];
     // Khi ảnh của task đang được upscale (chạy ngoài queue), hiện "Đang upscale"
@@ -175,13 +217,41 @@ export function renderTasksManager(root) {
         `${t.done_count || 0}/${t.total_count || 0} ${t.error_count ? `· ${t.error_count} lỗi` : ''}`),
     );
 
-    return el('tr', null,
-      el('td', { class: 'mono', style: { color: 'var(--text-muted)' } }, `#${t.id}`),
-      el('td', null,
-        el('div', { style: { fontWeight: 600 } }, t.name || '(không tên)'),
-        el('div', { style: { fontSize: '11px', color: 'var(--text-muted)' } },
-          `${t.quality || '—'} · ${t.aspect_ratio || '—'}`),
-      ),
+    // Name cell. Child (upscale) rows hang off a CSS tree-line (.tm-subname) and
+    // lead with a colored status dot — hierarchy read like a sidebar tree.
+    const nameInner = el('div', null,
+      el('div', { style: { fontWeight: 600 } }, t.name || '(không tên)'),
+      // Dòng con (upscale): chỉ tên + chấm trạng thái, bỏ dòng phụ cho gọn.
+      isChild ? null : el('div', { style: { fontSize: '11px', color: 'var(--text-muted)' } },
+        `${t.quality || '—'} · ${t.aspect_ratio || '—'}`),
+    );
+    const DOT = {
+      RUNNING: '#3b82f6', PENDING: '#3b82f6', COMPLETED: 'var(--green)',
+      ERROR: 'var(--red)', PAUSED: 'var(--yellow)', CANCELLED: 'var(--text-muted)',
+    };
+    // Parent with upscale children: a chevron toggle to expand/collapse them.
+    const caret = hasKids
+      ? el('button', {
+          class: 'btn btn-sm btn-ghost tm-caret',
+          title: expanded ? 'Thu gọn task con' : 'Mở rộng task con',
+          onclick: () => { if (onToggle) onToggle(); },
+          style: { transform: expanded ? 'rotate(90deg)' : 'none' },
+        }, icon('chevron', 16))
+      : null;
+    const nameCell = isChild
+      ? el('td', { class: 'tm-subname' },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '9px' } },
+            el('span', { class: 'tm-dot', style: { background: DOT[t.status] || 'var(--text-muted)' } }),
+            nameInner))
+      : el('td', null,
+          hasKids
+            ? el('div', { style: { display: 'flex', alignItems: 'center', gap: '4px' } }, caret, nameInner)
+            : nameInner);
+
+    return el('tr', isChild ? { class: 'tm-subrow' } : null,
+      // Dòng con (upscale) không hiện số task riêng — nó thuộc task gốc phía trên.
+      el('td', { class: 'mono', style: { color: 'var(--text-muted)' } }, isChild ? '' : `#${t.id}`),
+      nameCell,
       el('td', null, kindLabel),
       el('td', null,
         el('span', { class: `chip ${stat.cls}` }, stat.label),

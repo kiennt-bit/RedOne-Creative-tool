@@ -10,6 +10,8 @@
   --bg-3: #f2f2f4;
   --surface: #ffffff;
   --surface-alt: #f8f8fa;
+  --subrow-bg: #f3f3f6;        /* nested sub-task row band — recessed vs white */
+  --subrow-bg-hover: #ececef;
 
   --border: #ececef;
   --border-strong: #e0e0e4;
@@ -87,6 +89,8 @@
   --bg-3: #1d2027;
   --surface: #16181d;
   --surface-alt: #1a1d22;
+  --subrow-bg: #0f1014;        /* nested sub-task row band — recessed vs card */
+  --subrow-bg-hover: #14161b;
 
   --border: #21252c;
   --border-strong: #2a2e36;

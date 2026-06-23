@@ -363,12 +363,35 @@ async def _run_ffmpeg_delogo(
     info = await _probe_video(input_video)
     width, height = info["width"], info["height"]
 
-    # Logo box from the mask glyph bbox (3592,2014,198,89 @ 3840×2160) + padding
-    # — fixed formula for the Veo glyph.
+    # Logo box: derive from the mask's white-region bbox so ANY logo position /
+    # user-drawn region works. Fall back to the fixed Veo glyph formula
+    # (3592,2014,198,89 @ 3840×2160) if the mask can't be read or is empty.
     logo_x = round(width * (3592 - 20) / 3840)
     logo_y = round(height * (2014 - 20) / 2160)
     logo_w = round(width * (198 + 40) / 3840)
     logo_h = round(height * (89 + 40) / 2160)
+    try:
+        from PIL import Image
+        import numpy as np
+        _m = Image.open(mask_src)
+        _a = (_m.convert("RGBA").getchannel("A")
+              if _m.mode in ("RGBA", "LA", "P") else _m.convert("L"))
+        _arr = np.array(_a)
+        _ys, _xs = np.where(_arr > 127)
+        if len(_xs) and len(_ys):
+            mw, mh = _a.size
+            sx, sy = width / mw, height / mh
+            pad = 20
+            x1 = round(int(_xs.min()) * sx)
+            y1 = round(int(_ys.min()) * sy)
+            x2 = round(int(_xs.max()) * sx)
+            y2 = round(int(_ys.max()) * sy)
+            logo_x = max(0, x1 - pad)
+            logo_y = max(0, y1 - pad)
+            logo_w = min(width - logo_x, (x2 - x1) + 2 * pad)
+            logo_h = min(height - logo_y, (y2 - y1) + 2 * pad)
+    except Exception:
+        pass
 
     mask_filter = (
         f"scale={width}:{height},format=rgba,alphaextract,gblur=sigma=3,"

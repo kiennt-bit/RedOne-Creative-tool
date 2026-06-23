@@ -29,6 +29,95 @@ const queue = new Map();   // id -> {file, name, size, status, progress, label, 
 let activeQueueId = null;
 let lamaStatusCache = null;
 
+// Region-mode state kept at MODULE level so it SURVIVES tab navigation (pages
+// re-render on every visit; locals would be wiped). Same pattern as the
+// generator tabs' `form` objects + the image-watermark `_st`.
+//
+// "Khoanh vùng tự chọn" supports BATCH: pick many videos, draw the region ONCE
+// on a representative frame, then erase that same region from every video. The
+// backend resizes the single mask to each clip (lama_inpaint `_find_crop_region`
+// → mask.resize(frame_size)), so one drawn region maps to the same RELATIVE
+// spot in every video — works best when the logo sits in the same place
+// (ideally same resolution/aspect ratio).
+const _rst = {
+  items: [],        // [{id, file, name, status, progress, url, path, error}] — items[0] = đại diện
+  boxes: [],        // [{x,y,w,h}] in representative-native px (mask is drawn here)
+  repW: 0, repH: 0, // representative native dims; mask PNG is generated at this size
+};
+let _vwmMode = 'veo';
+let _rNextId = 1;
+
+// In-flight batch run. Module-level so per-video progress survives tab switches;
+// the painters below re-target whatever DOM is currently mounted on each render.
+const _rrun = { active: false, activeId: null, jobId: null };
+let _rQueueEl = null;   // current render's #vwmr-queue (per-video rows)
+let _rGoBtnEl = null;   // current render's "Xóa watermark" button
+let _rOnRemove = null;  // current render's removeItem(id) (queue rows call it)
+
+function _rRowLabel(it) {
+  if (it.status === 'running') return `Đang xử lý… ${it.progress || 0}%`;
+  if (it.status === 'done') return 'Hoàn thành';
+  if (it.status === 'error') return '';
+  return 'Đang chờ';
+}
+
+// Full render of the per-video queue — one row per video, each with its OWN
+// status chip + progress bar + (when done) download. Called on structural
+// changes (add/remove/status transition). Progress % ticks within a running
+// row use _rUpdateRow to avoid flicker.
+function paintRegionQueue() {
+  const out = _rQueueEl;
+  if (!out) return;
+  clear(out);
+  const items = _rst.items;
+  if (!items.length) return;
+  out.appendChild(el('div', { class: 'field-help', style: { margin: '10px 0 6px' } },
+    items.length > 1 ? `${items.length} video — vùng khoanh áp cho tất cả` : '1 video'));
+  items.forEach((it, i) => {
+    const chipClass = it.status === 'done' ? 'chip-green' : it.status === 'error' ? 'chip-red' : it.status === 'running' ? 'chip-blue' : 'chip-yellow';
+    const chipText = it.status === 'done' ? 'Xong' : it.status === 'error' ? 'Lỗi' : it.status === 'running' ? 'Đang xử lý' : 'Chờ';
+    const row = el('div', { 'data-rqid': String(it.id),
+      style: { padding: '10px', marginBottom: '8px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)' } },
+      el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+        el('span', { class: `chip ${chipClass}` }, chipText),
+        el('div', { style: { flex: 1, minWidth: 0 } },
+          el('div', { style: { fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+            it.name, i === 0 ? el('span', { class: 'field-help', style: { marginLeft: '6px', fontWeight: 400 } }, '• đại diện') : null),
+          el('div', { 'data-role': 'rowlabel', class: 'field-help' }, _rRowLabel(it)),
+        ),
+        (!_rrun.active && it.status !== 'running') ? el('button', { class: 'btn btn-icon btn-ghost', title: 'Bỏ khỏi danh sách',
+          onclick: () => { if (_rOnRemove) _rOnRemove(it.id); } }, icon('x', 14)) : null,
+      ),
+      (it.status === 'running' || it.status === 'done')
+        ? el('div', { style: { marginTop: '8px', height: '6px', background: 'var(--bg-1)', borderRadius: '3px', overflow: 'hidden' } },
+            el('div', { 'data-role': 'bar', style: { height: '100%', width: (it.status === 'done' ? 100 : it.progress || 0) + '%', background: it.status === 'done' ? 'var(--green)' : 'var(--brand)', transition: 'width 0.3s' } }))
+        : null,
+      (it.status === 'done' && it.url)
+        ? el('div', { style: { marginTop: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+            el('a', { href: it.url, download: '', class: 'btn btn-sm btn-primary' }, icon('download', 14), 'Tải về'),
+            it.path ? el('button', { class: 'btn btn-sm btn-ghost', title: 'Mở thư mục',
+              onclick: async () => { try { await api.files.openFolder(it.path); } catch (e) { toast(e.message, 'error'); } } }, icon('folder', 14), 'Mở thư mục') : null)
+        : null,
+      (it.status === 'error' && it.error)
+        ? el('div', { style: { marginTop: '6px', color: 'var(--red)', fontSize: '11px' } }, it.error)
+        : null,
+    );
+    out.appendChild(row);
+  });
+}
+
+// Update ONE running row's bar + label in place (avoids flicker on % ticks).
+function _rUpdateRow(it) {
+  const out = _rQueueEl;
+  if (!out) return;
+  const row = out.querySelector(`[data-rqid="${it.id}"]`);
+  if (!row) { paintRegionQueue(); return; }
+  const bar = row.querySelector('[data-role="bar"]');
+  if (bar) bar.style.width = (it.progress || 0) + '%';
+  const lbl = row.querySelector('[data-role="rowlabel"]');
+  if (lbl) lbl.textContent = _rRowLabel(it);
+}
+
 
 export function renderVideoWatermark(root) {
   // Hero
@@ -41,6 +130,16 @@ export function renderVideoWatermark(root) {
         + 'Sequential processing — mỗi video ~10-60s tùy độ dài.'),
     ),
   ));
+
+  // ─── Mode toggle: Logo Veo (nhanh) | Chọn vùng (LaMa) ───
+  const modeVeoBtn = el('button', { class: 'btn btn-sm', onclick: () => setMode('veo') },
+    icon('sparkles', 15), 'Logo Veo (nhanh)');
+  const modeRegionBtn = el('button', { class: 'btn btn-sm', onclick: () => setMode('region') },
+    icon('image', 15), 'Khoanh vùng tự chọn');
+  root.appendChild(el('div', {
+    style: { display: 'inline-flex', gap: '4px', padding: '4px', marginBottom: '12px',
+             background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)' },
+  }, modeVeoBtn, modeRegionBtn));
 
   const layout = el('div', { class: 'gen-layout' });
   root.appendChild(layout);
@@ -388,6 +487,309 @@ export function renderVideoWatermark(root) {
     }
   });
 
+  // ─── Chế độ "Khoanh vùng tự chọn" — bố cục 2 cột, đồng bộ với các tab khác ──
+  // Tái dùng đúng gen-layout / gen-config / gen-results của tab "Logo Veo":
+  //   TRÁI (gen-config) = nguồn video + hàng đợi + nút Xóa watermark / Xóa hàng đợi
+  //   PHẢI (gen-results) = khung xử lý video đại diện để khoanh vùng
+  const regionWrap = el('div', { id: 'vwm-region', class: 'gen-layout', style: { display: 'none' } });
+  root.appendChild(regionWrap);
+
+  let rVideoEl = null, rCanvas = null, rOverlay = null;
+
+  const rStage = el('div', { id: 'vwmr-stage', style: { marginTop: '12px', position: 'relative', userSelect: 'none' } },
+    el('div', { class: 'empty' }, el('div', { class: 'empty-icon' }, icon('play', 32)), el('div', null, 'Chọn video bên trái để khoanh vùng')),
+  );
+  const rQueueEl = el('div', { id: 'vwmr-queue' });
+  const rUseFrameBtn = el('button', { class: 'btn btn-sm btn-ghost', disabled: true }, icon('image', 14), 'Chụp khung để khoanh vùng');
+  const rClearBtn = el('button', { class: 'btn btn-sm btn-ghost', disabled: true }, icon('trash', 14), 'Xóa vùng đã chọn');
+  const rGoBtn = el('button', { class: 'btn btn-primary', style: { flex: 1 }, disabled: true }, icon('sparkles'), 'Xóa watermark');
+  const rClearAllBtn = el('button', { class: 'btn btn-ghost', disabled: true }, icon('trash', 14), 'Xóa hàng đợi');
+
+  const rDz = el('div', { class: 'dropzone', style: { marginTop: '12px' } },
+    el('div', { class: 'dropzone-icon' }, icon('upload', 28)),
+    el('div', null, 'Kéo thả hoặc click chọn video (chọn được nhiều)'),
+    el('div', { class: 'field-help', style: { marginTop: '6px' } }, 'Hỗ trợ: .mp4, .mov, .webm, .mkv'),
+    el('input', { type: 'file', accept: 'video/*', multiple: 'true', id: 'vwmr-file', style: { display: 'none' } }),
+  );
+  const rFi = rDz.querySelector('#vwmr-file');
+  rDz.addEventListener('click', () => rFi.click());
+  ['dragover', 'dragleave', 'drop'].forEach(ev => rDz.addEventListener(ev, (e) => {
+    e.preventDefault(); rDz.classList.toggle('dragover', ev === 'dragover');
+    if (ev === 'drop' && e.dataTransfer.files.length) addRegionFiles([...e.dataTransfer.files]);
+  }));
+  rFi.addEventListener('change', () => { if (rFi.files.length) addRegionFiles([...rFi.files]); rFi.value = ''; });
+
+  // LEFT — nguồn video + hành động + hàng đợi
+  const rLeft = el('div', { class: 'gen-config' });
+  rLeft.appendChild(el('div', { class: 'card' },
+    el('h3', { class: 'card-title' }, 'Video nguồn'),
+    el('p', { class: 'card-subtitle' },
+      'Chọn nhiều video — vùng khoanh trên video đại diện áp cho tất cả. Logo nên ở cùng vị trí (tốt nhất cùng tỉ lệ).'),
+    rDz,
+    el('div', { style: { display: 'flex', gap: '8px', marginTop: '16px' } }, rGoBtn, rClearAllBtn),
+    rQueueEl,
+    el('div', { class: 'field-help', style: { marginTop: '12px' } },
+      'Tự chọn bộ xử lý tốt nhất có sẵn. Output lưu tại '
+      + 'outputs/video/watermark_removed/<ngày>/<tên> [RedOne].mp4'),
+  ));
+  regionWrap.appendChild(rLeft);
+
+  // RIGHT — khung xử lý video đại diện (khoanh vùng)
+  const rRight = el('div', { class: 'gen-results' });
+  rRight.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'card-header' },
+      el('div', null,
+        el('h3', { class: 'card-title' }, 'Khoanh vùng trên video đại diện'),
+        el('div', { class: 'card-subtitle' },
+          'Tua tới chỗ thấy rõ logo → "Chụp khung" → kéo chuột khoanh ô quanh logo (được nhiều ô).'),
+      ),
+    ),
+    rStage,
+    el('div', { style: { display: 'flex', gap: '8px', marginTop: '14px', flexWrap: 'wrap' } }, rUseFrameBtn, rClearBtn),
+  ));
+  regionWrap.appendChild(rRight);
+
+  function clearBoxes() {
+    _rst.boxes.length = 0;
+    if (rOverlay) [...rOverlay.querySelectorAll('[data-box]')].forEach(b => b.remove());
+  }
+
+  function showStageEmpty() {
+    clear(rStage);
+    rStage.appendChild(el('div', { class: 'empty' }, el('div', { class: 'empty-icon' }, icon('play', 32)), el('div', null, 'Chọn video bên trái để khoanh vùng')));
+  }
+
+  function updateGoLabel() {
+    const n = _rst.items.length;
+    rUseFrameBtn.disabled = n === 0;
+    rClearBtn.disabled = n === 0;
+    rClearAllBtn.disabled = _rrun.active || n === 0;
+    rGoBtn.disabled = _rrun.active || n === 0;
+    clear(rGoBtn);
+    rGoBtn.appendChild(icon('sparkles'));
+    rGoBtn.append(n > 1 ? ` Xóa watermark (${n} video)` : ' Xóa watermark');
+  }
+
+  // Xóa toàn bộ hàng đợi (giống nút "Xóa hàng đợi" của tab Logo Veo).
+  function clearAll() {
+    if (_rrun.active) return toast('Đang xử lý, không thể xóa hàng đợi', 'warning');
+    _rst.items.length = 0;
+    _rst.boxes.length = 0;
+    _rst.repW = _rst.repH = 0;
+    paintRegionQueue(); updateGoLabel(); showStageEmpty();
+  }
+
+  // Remove one video from the batch. If it was the representative (items[0]),
+  // reset the drawn region and reload the new representative for drawing.
+  function removeItem(id) {
+    if (_rrun.active) return toast('Đang xử lý, đợi xong đã nhé', 'warning');
+    const idx = _rst.items.findIndex(x => x.id === id);
+    if (idx < 0) return;
+    const wasRep = idx === 0;
+    _rst.items.splice(idx, 1);
+    if (wasRep) { _rst.boxes.length = 0; _rst.repW = _rst.repH = 0; }
+    paintRegionQueue(); updateGoLabel();
+    if (wasRep) { if (_rst.items.length) loadRep(); else showStageEmpty(); }
+  }
+
+  function addRegionFiles(files) {
+    if (_rrun.active) return toast('Đang xử lý, đợi xong đã nhé', 'warning');
+    const vids = files.filter(f => f.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi)$/i.test(f.name));
+    if (!vids.length) return toast('Không có video hợp lệ', 'warning');
+    const hadNone = _rst.items.length === 0;
+    for (const f of vids) _rst.items.push({ id: _rNextId++, file: f, name: f.name, status: 'queued', progress: 0, url: null, path: null, error: null });
+    paintRegionQueue(); updateGoLabel();
+    if (hadNone) loadRep();   // show the representative video so the user can draw
+  }
+
+  // Load the representative video (items[0]) into the stage for region drawing.
+  // Custom seek bar BELOW the video so the native control bar doesn't cover a
+  // logo sitting at the bottom edge.
+  function loadRep() {
+    const it0 = _rst.items[0];
+    if (!it0) return;
+    const file = it0.file;
+    rCanvas = null; rOverlay = null;
+    clear(rStage);
+    // Build the element WITHOUT src first, attach listeners, append to the
+    // (visible) stage, THEN set src + load(). Setting src inside el() let a fast
+    // blob 'loadedmetadata' fire before the listener attached AND sometimes left
+    // the first frame unpainted until the page re-rendered — that was the
+    // "phải sang tab khác rồi quay lại mới thấy video" bug. Append-first + load()
+    // last makes the representative frame appear immediately on selection.
+    rVideoEl = el('video', { preload: 'auto', muted: true, playsinline: true,
+      style: { maxWidth: '100%', maxHeight: '58vh', borderRadius: '8px', display: 'block', background: '#000' } });
+    const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; };
+    const playBtn = el('button', { class: 'btn btn-sm btn-ghost', style: { minWidth: '38px' } }, '▶');
+    const seek = el('input', { type: 'range', min: '0', max: '1000', value: '0', step: '1', style: { flex: 1 } });
+    const timeLbl = el('span', { class: 'field-help', style: { minWidth: '84px', textAlign: 'right' } }, '0:00 / 0:00');
+    playBtn.addEventListener('click', () => { if (rVideoEl.paused) rVideoEl.play(); else rVideoEl.pause(); });
+    rVideoEl.addEventListener('play', () => { playBtn.textContent = '⏸'; });
+    rVideoEl.addEventListener('pause', () => { playBtn.textContent = '▶'; });
+    rVideoEl.addEventListener('loadedmetadata', () => {
+      _rst.repW = rVideoEl.videoWidth; _rst.repH = rVideoEl.videoHeight;
+      timeLbl.textContent = `0:00 / ${fmt(rVideoEl.duration)}`;
+    });
+    // Force the first frame to actually paint (some browsers show a black box
+    // until a tiny seek) and backfill dims if loadedmetadata fired pre-listener.
+    rVideoEl.addEventListener('loadeddata', () => {
+      if (!_rst.repW) { _rst.repW = rVideoEl.videoWidth; _rst.repH = rVideoEl.videoHeight; }
+      try { if (rVideoEl.currentTime < 0.01) rVideoEl.currentTime = 0.03; } catch (_) { /* ignore */ }
+    });
+    rVideoEl.addEventListener('timeupdate', () => {
+      if (rVideoEl.duration) seek.value = String(Math.round(rVideoEl.currentTime / rVideoEl.duration * 1000));
+      timeLbl.textContent = `${fmt(rVideoEl.currentTime)} / ${fmt(rVideoEl.duration)}`;
+    });
+    seek.addEventListener('input', () => { if (rVideoEl.duration) rVideoEl.currentTime = (seek.value / 1000) * rVideoEl.duration; });
+    rStage.appendChild(rVideoEl);
+    rStage.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' } }, playBtn, seek, timeLbl));
+    // src LAST — element is now connected + visible, so load() reliably kicks
+    // off and the frame renders without a tab switch.
+    rVideoEl.src = URL.createObjectURL(file);
+    rVideoEl.load();
+  }
+
+  rUseFrameBtn.addEventListener('click', () => {
+    if (!rVideoEl || rVideoEl.readyState < 2) return toast('Đợi video tải xong rồi thử lại', 'warning');
+    _rst.repW = rVideoEl.videoWidth; _rst.repH = rVideoEl.videoHeight;
+    const cv = document.createElement('canvas'); cv.width = _rst.repW; cv.height = _rst.repH;
+    cv.getContext('2d').drawImage(rVideoEl, 0, 0, _rst.repW, _rst.repH);
+    Object.assign(cv.style, { maxWidth: '100%', maxHeight: '58vh', borderRadius: '8px', display: 'block', cursor: 'crosshair', pointerEvents: 'none' });
+    const container = el('div', { style: { position: 'relative', display: 'inline-block', maxWidth: '100%' } });
+    const overlay = el('div', { style: { position: 'absolute', inset: 0, cursor: 'crosshair', touchAction: 'none' } });
+    container.appendChild(cv); container.appendChild(overlay);
+    clear(rStage); rStage.appendChild(container);
+    rCanvas = cv; rOverlay = overlay; _rst.boxes.length = 0;
+
+    let drawing = false, startPt = null, tempBox = null;
+    const loc = (e) => { const r = overlay.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const mkBox = () => el('div', { 'data-box': '1', style: { position: 'absolute', border: '2px solid #00d4ff', background: 'rgba(0,212,255,0.18)', pointerEvents: 'none' } });
+    overlay.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); drawing = true; startPt = loc(e);
+      tempBox = mkBox(); overlay.appendChild(tempBox);
+      tempBox.style.left = startPt.x + 'px'; tempBox.style.top = startPt.y + 'px';
+      overlay.setPointerCapture(e.pointerId);
+    });
+    overlay.addEventListener('pointermove', (e) => {
+      if (!drawing) return; const p = loc(e);
+      tempBox.style.left = Math.min(p.x, startPt.x) + 'px';
+      tempBox.style.top = Math.min(p.y, startPt.y) + 'px';
+      tempBox.style.width = Math.abs(p.x - startPt.x) + 'px';
+      tempBox.style.height = Math.abs(p.y - startPt.y) + 'px';
+    });
+    overlay.addEventListener('pointerup', (e) => {
+      if (!drawing) return; drawing = false;
+      try { overlay.releasePointerCapture(e.pointerId); } catch (_) {}
+      const p = loc(e);
+      const dx = Math.min(p.x, startPt.x), dy = Math.min(p.y, startPt.y);
+      const dw = Math.abs(p.x - startPt.x), dh = Math.abs(p.y - startPt.y);
+      const scale = _rst.repW / cv.clientWidth;
+      if (dw * scale < 4 || dh * scale < 4) { if (tempBox) tempBox.remove(); return; }
+      _rst.boxes.push({ x: Math.round(dx * scale), y: Math.round(dy * scale), w: Math.round(dw * scale), h: Math.round(dh * scale) });
+    });
+    overlay.addEventListener('pointercancel', () => { drawing = false; if (tempBox) tempBox.remove(); });
+    toast('Kéo chuột khoanh ô quanh logo (khoanh được nhiều ô)', 'info');
+  });
+
+  rClearBtn.addEventListener('click', clearBoxes);
+  rClearAllBtn.addEventListener('click', clearAll);
+
+  rGoBtn.addEventListener('click', async () => {
+    if (!_rst.items.length) return toast('Chọn ít nhất 1 video', 'warning');
+    if (!_rst.boxes.length) return toast('Hãy chụp khung rồi khoanh vùng quanh logo', 'warning');
+    if (!_rst.repW || !_rst.repH) return toast('Chưa đọc được kích thước video đại diện', 'warning');
+
+    // Mask drawn ONCE at the representative's native size. The backend resizes
+    // it to each video, so the region lands at the same RELATIVE spot in every
+    // clip.
+    // The backend reads the mask's ALPHA channel for RGBA masks (the Veo mask
+    // encodes its glyph in alpha). So leave the background TRANSPARENT (alpha 0)
+    // and paint each region as OPAQUE WHITE (alpha 255) — the alpha channel then
+    // marks exactly the region to erase. (Filling a solid black background made
+    // the whole canvas opaque -> alpha 255 everywhere -> backend inpainted the
+    // ENTIRE frame -> the whole video came out gray/black.) White RGB + opaque
+    // also reads correctly if the PNG is interpreted as luminance.
+    const mc = document.createElement('canvas'); mc.width = _rst.repW; mc.height = _rst.repH;
+    const mx = mc.getContext('2d');
+    mx.clearRect(0, 0, _rst.repW, _rst.repH);   // transparent background
+    mx.fillStyle = '#fff';
+    for (const b of _rst.boxes) mx.fillRect(b.x, b.y, b.w, b.h);
+    const blob = await new Promise(res => mc.toBlob(res, 'image/png'));
+
+    // Reset every row to queued (supports a re-run). Run state is MODULE-level
+    // so each video's own progress bar survives tab switches.
+    for (const it of _rst.items) { it.status = 'queued'; it.progress = 0; it.url = null; it.path = null; it.error = null; }
+    _rrun.active = true; _rrun.activeId = null; _rrun.jobId = null;
+    updateGoLabel();
+    paintRegionQueue();
+
+    // WS progress routes to the row currently uploading (matched by job_id).
+    const offStart = ws.on('watermark_started', (d) => { _rrun.jobId = d.job_id; });
+    const offProg = ws.on('watermark_progress', (d) => {
+      if (_rrun.jobId && d.job_id !== _rrun.jobId) return;
+      const it = _rst.items.find(x => x.id === _rrun.activeId);
+      if (!it) return;
+      it.progress = Math.round(d.progress || 0);
+      _rUpdateRow(it);
+    });
+    try {
+      // Snapshot ids so the loop is stable even if the list re-renders.
+      const ids = _rst.items.map(x => x.id);
+      for (const id of ids) {
+        const it = _rst.items.find(x => x.id === id);
+        if (!it) continue;
+        _rrun.activeId = id; _rrun.jobId = null;
+        it.status = 'running'; it.progress = 0;
+        paintRegionQueue();   // status transition -> full row rebuild (shows the bar)
+        try {
+          const fd = new FormData();
+          fd.append('file', it.file);
+          fd.append('mask', blob, 'mask.png');
+          fd.append('use_default_mask', 'false');
+          fd.append('method', 'auto');
+          fd.append('device', 'auto');
+          const r = await api.media.videoWatermark(fd);
+          it.status = 'done'; it.progress = 100; it.url = r.url; it.path = r.path;
+        } catch (e) {
+          it.status = 'error'; it.error = e.message || 'Lỗi xử lý';
+        }
+        paintRegionQueue();
+      }
+      const ok = _rst.items.filter(x => x.status === 'done').length;
+      const err = _rst.items.filter(x => x.status === 'error').length;
+      if (err === 0) toast(`Đã xóa watermark ${ok} video`, 'success');
+      else toast(`${ok} OK / ${err} lỗi — xem chi tiết trong hàng đợi`, 'warning');
+    } finally {
+      _rrun.active = false; _rrun.activeId = null; _rrun.jobId = null;
+      offStart(); offProg();
+      updateGoLabel();                                  // same-render button
+      if (_rGoBtnEl) _rGoBtnEl.disabled = false;        // visible button after a tab switch
+      paintRegionQueue();   // drop remove buttons back in, etc.
+    }
+  });
+
+  function setMode(m) {
+    _vwmMode = m;
+    const region = m === 'region';
+    layout.style.display = region ? 'none' : '';
+    regionWrap.style.display = region ? '' : 'none';
+    modeVeoBtn.className = `btn btn-sm ${region ? 'btn-ghost' : 'btn-primary'}`;
+    modeRegionBtn.className = `btn btn-sm ${region ? 'btn-primary' : 'btn-ghost'}`;
+  }
+  // Bind the freshly-rendered DOM to module-level refs so a batch run started in
+  // a previous render's closure keeps painting into the now-visible elements.
+  _rQueueEl = rQueueEl;
+  _rGoBtnEl = rGoBtn;
+  _rOnRemove = removeItem;
+
+  // Khôi phục trạng thái chế độ khoanh vùng khi quay lại tab. paintRegionQueue
+  // tự vẽ lại từng dòng theo trạng thái hiện tại (đang chạy + % / đã xong + tải
+  // về / lỗi), nên một batch đang chạy dở cũng nối lại đúng tiến trình mỗi video.
+  updateGoLabel();
+  if (_rst.items.length) loadRep();   // re-show the representative video
+  paintRegionQueue();
+  setMode(_vwmMode);
+
   // ─── Load deps status ───────────────────────────────
   loadDepsStatus(root);
 }
@@ -415,16 +817,16 @@ async function loadDepsStatus(root, force = false) {
       wrap.appendChild(el('div', {
         class: 'chip chip-green',
         style: { fontSize: '12px', fontWeight: 600, marginBottom: '10px' },
-      }, '✓ Đang dùng OpenCV — sẵn sàng xóa watermark Veo'));
+      }, '✓ Sẵn sàng xóa watermark'));
 
       wrap.appendChild(el('div', { class: 'field-help', style: { marginBottom: '12px' } },
-        'Muốn chất lượng cao hơn cho watermark phức tạp? Cài LaMa AI '
-        + '(~700MB-1.5GB tùy hardware). Chỉ cài 1 lần, dùng mãi.'));
+        'Muốn chất lượng cao hơn cho watermark phức tạp? Cài thêm bộ xử lý AI '
+        + '(~700MB-1.5GB tùy máy). Chỉ cài 1 lần, dùng mãi.'));
 
       wrap.appendChild(el('button', {
         class: 'btn btn-warm', style: { width: '100%' },
         onclick: () => openLamaWizard(root),
-      }, icon('sparkles', 14), 'Nâng cấp lên LaMa AI'));
+      }, icon('sparkles', 14), 'Nâng cấp chất lượng cao'));
       return;
     }
 

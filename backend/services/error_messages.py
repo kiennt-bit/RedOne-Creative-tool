@@ -79,6 +79,20 @@ def friendly_error(raw: str) -> str:
             "gen lại y nguyên sẽ vẫn lỗi."
         )
 
+    # ── IP / copyright block on the INPUT (reference) image (PERMANENT) ──
+    # PUBLIC_ERROR_IP_INPUT_IMAGE / _OUTPUT_IMAGE — Google refuses because the
+    # REFERENCE image (or result) carries copyrighted / IP-protected content: a
+    # recognizable character, brand/logo, artwork, or a real public figure.
+    # Retrying the same image always fails — the user must swap the reference. ──
+    if has("ip_input_image", "ip_output_image", "public_error_ip_"):
+        return (
+            "Google chặn vì ẢNH THAM CHIẾU vi phạm bản quyền / sở hữu trí tuệ — "
+            "thường do ảnh có nhân vật, logo/thương hiệu, tác phẩm có bản quyền, "
+            "hoặc người nổi tiếng thật. Đổi sang ảnh tham chiếu khác (không chứa "
+            "nội dung có bản quyền / người thật) rồi gen lại — gen lại y nguyên "
+            "sẽ vẫn lỗi."
+        )
+
     # ── Safety / content-policy block (PERMANENT for this prompt) ──
     if has("safety", "blocked", "prohibited", "violat", "responsible ai",
            "content policy", "finish_reason", "image_safety", "person/face",
@@ -117,11 +131,14 @@ def friendly_error(raw: str) -> str:
             "model khác trong tab tạo rồi gen lại."
         )
 
-    # ── Timeout ──
-    if has("timeout", "timed out", "deadline", "deadline_exceeded", "etimedout"):
+    # ── Timeout — also Google's PUBLIC_ERROR_VIDEO_GENERATION_TIMED_OUT, whose
+    # raw spells it "timed_out" (underscore), NOT caught by "timed out". ──
+    if has("timeout", "timed out", "timed_out", "deadline", "deadline_exceeded",
+           "etimedout"):
         return (
-            "Quá thời gian chờ Google phản hồi (mạng chậm hoặc Google đang "
-            "quá tải). Bấm 'Gen lại' để thử lại."
+            "Google xử lý quá lâu nên hết thời gian chờ (máy chủ Google đang "
+            "quá tải hoặc nội dung phức tạp). Lỗi TẠM THỜI phía Google — bấm "
+            "'Gen lại' để thử lại."
         )
 
     # ── Network / connectivity ──
@@ -141,12 +158,14 @@ def friendly_error(raw: str) -> str:
             "hoặc lỗi ghi ổ đĩa). Bấm 'Gen lại' để thử lại."
         )
 
-    # ── Transient Google server errors ──
-    if has("internal error", "internal_error", "500", "503", "502",
+    # ── Transient Google server errors — also bare INTERNAL /
+    # PUBLIC_ERROR_INTERNAL, not caught by "internal error". Checked near the end
+    # so the more specific buckets above win first. ──
+    if has("internal error", "internal_error", "internal", "500", "503", "502",
            "unavailable", "try again", "backend error", "service is currently"):
         return (
-            "Google đang lỗi tạm thời ở phía máy chủ. Chờ vài giây rồi bấm "
-            "'Gen lại'."
+            "Google gặp lỗi nội bộ ở phía máy chủ. Lỗi TẠM THỜI — chờ vài giây "
+            "rồi bấm 'Gen lại'."
         )
 
     # ── Unsafe generation — RAI/content-safety block (PERMANENT for this
@@ -265,6 +284,17 @@ def friendly_shakker_error(raw: str) -> str:
         return (
             "Shakker đang lỗi tạm thời ở phía máy chủ. Chờ vài giây rồi bấm "
             "'Gen lại'."
+        )
+
+    # ── Generic generation failure — Shakker code 1020003 "Fail to generate the
+    # image due to unexpected reasons". Their catch-all when the pipeline fails
+    # for an unspecified reason: usually transient server-side, sometimes a
+    # prompt/model/LoRA combo. Retryable. ──
+    if has("1020003", "unexpected reason", "fail to generate", "failed to generate"):
+        return (
+            "Shakker tạo ảnh thất bại (lỗi phía máy chủ Shakker, thường tạm "
+            "thời). Bấm 'Gen lại' để thử lại. Nếu cùng prompt cứ lỗi lặp lại, "
+            "thử đổi/sửa prompt, đổi model hoặc LoRA."
         )
 
     # ── Download failed ──

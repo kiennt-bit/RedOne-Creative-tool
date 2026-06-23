@@ -69,16 +69,13 @@ function _upscaleBadge(it) {
 // storyboard items ARE image-task items with a media_id, so it just works).
 async function runBatchUpscale(itemIds, resolution) {
   const RES = resolution.toUpperCase();
-  const initial = toast(`Đang upscale ${itemIds.length} ảnh → ${RES}… (5-10s/ảnh)`, 'info', 0);
-  try {
-    const r = await api.image.upscaleBatch(itemIds, resolution);
-    const okN = (r.completed || []).length;
-    const errN = (r.errors || []).length;
-    if (errN === 0) toast(`Đã upscale ${okN} cảnh → ${RES}`, 'success');
-    else toast(`Upscale: ${okN} OK, ${errN} lỗi`, errN ? 'warning' : 'success');
-  } finally {
-    if (initial && typeof initial.remove === 'function') initial.remove();
-  }
+  // Upscale is now a queued task (pausable/cancellable in "Quản lý task").
+  await api.image.upscaleBatch(itemIds, resolution);
+  toast(
+    `Đã thêm ${itemIds.length} cảnh vào hàng đợi upscale → ${RES}. `
+    + `Vào "Quản lý task" để Tạm dừng / Tiếp tục / Hủy.`,
+    'success',
+  );
 }
 
 export function renderStoryboard(root) {

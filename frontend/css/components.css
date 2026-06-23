@@ -294,6 +294,48 @@
   background: var(--bg-3);
 }
 
+/* Child rows: an upscale task nested under its source task (mode flow_upscale).
+   Sidebar-tree hierarchy — a RECESSED background band (theme-aware, lighter/
+   subordinate vs the parent row) + a vertical guide line + a colored status dot
+   + indentation. Works in both light and dark mode. */
+.table tbody tr.tm-subrow td {
+  background: var(--subrow-bg);
+}
+.table tbody tr.tm-subrow:hover td {
+  background: var(--subrow-bg-hover);
+}
+.table tbody tr.tm-subrow td.tm-subname {
+  position: relative;
+  padding-left: 42px;
+}
+/* Continuous vertical tree line: each child cell draws it full-height so
+   consecutive children connect into one line, like the sidebar reference. */
+.table tbody tr.tm-subrow td.tm-subname::before {
+  content: '';
+  position: absolute;
+  left: 20px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.tm-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+/* Expand/collapse chevron on a parent task that has upscale children. */
+.tm-caret {
+  padding: 2px 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s ease, color 0.12s;
+}
+.tm-caret:hover {
+  color: var(--text);
+}
+
 /* Toasts */
 .toast-stack {
   position: fixed;

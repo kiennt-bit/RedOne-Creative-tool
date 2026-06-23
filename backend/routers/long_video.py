@@ -19,6 +19,7 @@ from ..config import (
 from ..queue_manager import queue
 from ..ws_hub import hub
 from ..services.ffmpeg_utils import concat_videos
+from ..services.error_messages import friendly_error
 
 log = logging.getLogger("redone.longvideo")
 router = APIRouter(prefix="/api/long-video", tags=["long_video"])
@@ -164,9 +165,12 @@ async def _run_long_video(task_id: int):
                                                credit_cost=_cost, prompt=item.get("prompt", ""),
                                                path=str(clip_path), is_video=True)
             except Exception as e:
-                db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=str(e))
+                raw = str(e)
+                friendly = friendly_error(raw)
+                db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=friendly)
                 await hub.broadcast("scene_failed", {
-                    "task_id": task_id, "scene": idx + 1, "item_id": item["id"], "error": str(e),
+                    "task_id": task_id, "scene": idx + 1, "item_id": item["id"],
+                    "error": friendly, "error_detail": raw,
                 })
                 try:
                     await hub_client.commit_result(locals().get("_rid"), "error", kind="video",

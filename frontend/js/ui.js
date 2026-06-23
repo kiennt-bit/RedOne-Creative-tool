@@ -197,6 +197,7 @@ export function icon(name, size = 16) {
     copy: '<path d="M8 4h10v14h-2V6H8z M4 8h10v12H4z" fill="none" stroke="currentColor" stroke-width="2"/>',
     check: '<path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2" fill="none"/>',
     x: '<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2"/>',
+    chevron: '<path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
     folder: '<path d="M3 6h6l2 2h10v12H3z" fill="none" stroke="currentColor" stroke-width="2"/>',
     image: '<path d="M3 5h18v14H3z M8 11l3 3 3-4 5 6H4z" fill="currentColor"/>',

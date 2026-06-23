@@ -182,6 +182,10 @@ async def _reenqueue_task(task_id: int, front: bool = False) -> dict:
         from . import long_video as lv_mod
         runner = lv_mod._run_long_video
         kind = "long_video"
+    elif mode == "flow_upscale":
+        from . import image as image_mod
+        runner = image_mod._process_upscale_task
+        kind = "image"
     else:  # t2v / i2v / fallback
         from . import content as content_mod
         runner = content_mod._process_task
@@ -288,7 +292,13 @@ async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = Fal
     # Storyboard tasks generate IMAGES (one per scene) → use the image
     # generator. Without this they'd fall through to the video branch and
     # KeyError on task["quality"] / write a .mp4 for an image scene.
-    if mode in ("image", "storyboard"):
+    if mode == "flow_upscale":
+        # Flow upscale task — retry failed upscales with the upscale item runner
+        # (not the image generator, which would try to re-generate the image).
+        gen_fn = image_mod.upscale_one_item
+        finalize = image_mod._maybe_finalize
+        pick = image_mod._pick_account
+    elif mode in ("image", "storyboard"):
         gen_fn = image_mod.generate_image_item
         finalize = image_mod._maybe_finalize
         pick = image_mod._pick_account

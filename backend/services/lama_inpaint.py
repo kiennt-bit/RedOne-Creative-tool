@@ -332,11 +332,20 @@ def run_lama(input_dir, mask_path, output_dir, device_mode='auto', gpu_ratio=70,
         print(json.dumps({"error": "No image frames found"}))
         sys.exit(1)
 
-    # Detect if frames are already pre-cropped (small crop frames from FFmpeg)
+    # Detect if frames are already pre-cropped (small crop frames from FFmpeg).
+    # IMPORTANT: do NOT treat "mask same size as frame" as pre-cropped. The
+    # video pipeline (watermark_video.py) always extracts FULL frames and may
+    # pass a FULL-resolution mask — e.g. the user-drawn region mask is generated
+    # at the video's native size, and the Veo mask can match a 4K frame. Using
+    # the size-equality heuristic there wrongly enabled pre-cropped mode, which
+    # ran LaMa over the WHOLE frame and SAVED the whole-frame output (overwriting
+    # everything) instead of inpainting just the masked region and pasting it
+    # back onto the original frame -> the entire video came out black/garbled.
+    # Genuine pre-cropped frames are tiny (a watermark crop), caught by <500.
     first_frame = Image.open(frames[0]).convert('RGB')
     fw, fh = first_frame.size
     mask_w, mask_h = mask_img.size
-    pre_cropped = (fw == mask_w and fh == mask_h) or (fw < 500 and fh < 500)
+    pre_cropped = (fw < 500 and fh < 500)
     if pre_cropped:
         # Frames are already cropped to watermark region; the whole frame IS the crop
         crop_box = (0, 0, fw, fh)

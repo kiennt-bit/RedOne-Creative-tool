@@ -5,7 +5,7 @@ REM ------------------------------------------------------------
 REM   Prereq:
 REM     1) Inno Setup 6 da cai:  winget install -e --id JRSoftware.InnoSetup
 REM     2) Da build app:         build.bat  (-> dist\RedOne Creative\)
-REM   Output: dist\RedOne-Creative-Setup-v1.4.4.exe
+REM   Output: dist\RedOne-Creative-Setup-v1.4.5.exe
 REM ============================================================
 cd /d "%~dp0"
 
@@ -41,7 +41,7 @@ if errorlevel 1 (
 
 echo.
 echo ============================================================
-echo XONG! Bo cai: %CD%\dist\RedOne-Creative-Setup-v1.4.4.exe
+echo XONG! Bo cai: %CD%\dist\RedOne-Creative-Setup-v1.4.5.exe
 echo   - Member chay file nay (Yes o UAC) -^> cai app + extension.
 echo   - Sau cai: dong/mo lai Chrome de extension tu ve.
 echo ============================================================

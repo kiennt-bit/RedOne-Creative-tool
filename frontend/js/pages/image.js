@@ -313,30 +313,17 @@ export function renderImage(root) {
   // streams WS events (`upscale_started` / `_completed` / `_error`) which
   // tasks_store translates into per-item `upscale_status` flags — the
   // gallery chips re-render automatically via the normal notify path.
-  // When the batch finishes, auto-download all the upscaled files.
+  // Upscale now runs as a QUEUED TASK (pausable/cancellable in "Quản lý task").
+  // The call returns immediately with a task_id; per-card badges + the toolbar
+  // "Đang upscale N/M" update live via WS as the task runs.
   async function runBatchUpscale(itemIds, resolution) {
-    const initial = toast(
-      `Đang upscale ${itemIds.length} ảnh → ${resolution.toUpperCase()}… `
-      + `(có thể mất 5-10s/ảnh)`,
-      'info', 0,   // sticky toast — won't auto-dismiss
+    const RES = resolution.toUpperCase();
+    await api.image.upscaleBatch(itemIds, resolution);
+    toast(
+      `Đã thêm ${itemIds.length} ảnh vào hàng đợi upscale → ${RES}. `
+      + `Vào "Quản lý task" để Tạm dừng / Tiếp tục / Hủy.`,
+      'success',
     );
-    try {
-      const r = await api.image.upscaleBatch(itemIds, resolution);
-      // No auto-download — upscaled files are saved server-side and each
-      // finished card shows a "Tải <res>" button + a clickable badge, so the
-      // user downloads only the ones they want, when they want.
-      const RES = resolution.toUpperCase();
-      const okN = (r.completed || []).length;
-      const errN = (r.errors || []).length;
-      if (errN === 0) {
-        toast(`Đã upscale ${okN} ảnh → ${RES}. Bấm "Tải ${RES}" ở ảnh để lưu về.`, 'success');
-      } else {
-        toast(`Upscale: ${okN} OK, ${errN} lỗi`, errN ? 'warning' : 'success');
-      }
-    } finally {
-      // Dismiss the sticky toast
-      if (initial && typeof initial.remove === 'function') initial.remove();
-    }
   }
 
   async function clearCurrentTask() {

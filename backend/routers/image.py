@@ -466,6 +466,128 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
     }
 
 
+async def upscale_one_item(client, task: dict, item: dict) -> bool:
+    """Upscale ONE queued upscale-item. Mirrors generate_image_item's contract
+    (updates DB + broadcasts, returns True/False, re-raises SessionDeadError) so
+    it is reused by BOTH the batch runner and the failed-item retry runner.
+
+    The item's extra_json points at the SOURCE image being upscaled:
+      {src_item_id, media_id, resolution, src_task_id, src_task_name}
+    Results attach to the ORIGINAL image card via the same upscale_* WS events
+    (item_id = src_item_id), so the gallery display is unchanged."""
+    from ..services import flow_client as fc_mod
+    from ..services.error_messages import friendly_error
+    task_id = task["id"]
+    iid = item["id"]
+    ex = json.loads(item.get("extra_json") or "{}")
+    src_item_id = ex.get("src_item_id") or iid
+    media_id = ex.get("media_id")
+    resolution = (ex.get("resolution") or "4k").lower()
+    src_task = {"id": ex.get("src_task_id") or task_id, "name": ex.get("src_task_name") or task.get("name")}
+
+    c0 = _count_items_img(task_id)
+    db.update_item(iid, status=ItemStatus.GENERATING.value, error_message=None)
+    await hub.broadcast("upscale_started", {
+        "item_id": src_item_id, "resolution": resolution,
+        "index": min(c0["total"], c0["done"] + c0["error"] + 1), "total": c0["total"],
+    })
+    try:
+        if not media_id:
+            raise RuntimeError("Thiếu media_id — ảnh tạo trước khi tool hỗ trợ upscale")
+        r = await _do_upscale_one(client, src_item_id, media_id, resolution, src_task)
+        db.update_item(iid, status=ItemStatus.COMPLETED.value, output_path=r["path"])
+        c = await _broadcast_progress_img(task_id)
+        await hub.broadcast("upscale_completed", {
+            "item_id": src_item_id, "resolution": resolution,
+            "path": r["path"], "url": r["url"],
+            "index": c["done"], "total": c["total"],
+        })
+        return True
+    except fc_mod.SessionDeadError:
+        raise
+    except Exception as e:
+        friendly = friendly_error(str(e))
+        log.warning(f"Upscale item={iid} (src={src_item_id}) failed: {e}")
+        db.update_item(iid, status=ItemStatus.ERROR.value, error_message=friendly)
+        c = await _broadcast_progress_img(task_id)
+        await hub.broadcast("upscale_error", {
+            "item_id": src_item_id, "resolution": resolution, "error": friendly,
+            "index": c["done"] + c["error"], "total": c["total"],
+        })
+        return False
+
+
+async def _process_upscale_task(task_id: int):
+    """Queue runner for a Flow upscale TASK (mode='flow_upscale'). Sequential
+    (concurrent=1) because Google's reCAPTCHA gets stricter on bursts. Goes
+    through the SAME queue/pause/cancel/resume machinery as normal gen — pause
+    bails at item boundaries (leaving the item PENDING), cancel propagates the
+    CancelledError which the queue worker turns into CANCELLED."""
+    task = db.get_task(task_id)
+    items = db.get_task_items(task_id)
+    if not task or not items:
+        return
+    # Upscale = bridge priority class 1 (above normal gen=2, below regen=0).
+    from ..services.browser_bridge import set_gen_priority, next_gen_seq
+    set_gen_priority(1, next_gen_seq())
+    db.update_task(task_id, status=TaskStatus.RUNNING.value, started_at=str(time.time()))
+    cfg = json.loads(task.get("character_images_json") or "{}")
+    resolution = (cfg.get("resolution") or "4k").lower()
+    await hub.broadcast("task_started", {"task_id": task_id, "kind": "image"})
+    await hub.broadcast("upscale_batch_started", {
+        "total": task.get("total_count") or len(items),
+        "resolution": resolution, "task_id": task_id,
+    })
+
+    acc = _pick_account()
+    if not acc:
+        db.update_task(task_id, status=TaskStatus.ERROR.value)
+        await hub.broadcast("task_error", {"task_id": task_id, "error": "Không có account khả dụng"})
+        return
+
+    client = None
+    try:
+        from ..services import flow_client as fc_mod
+        from ..services.flow_factory import make_flow_client, get_page_for_account
+        page = await get_page_for_account(acc)
+        client = make_flow_client(
+            page=page,
+            cookie_path=acc.get("cookie_path") or "",
+            account_email=acc["email"],
+        )
+        try:
+            await client.ensure_token()
+        except fc_mod.SessionDeadError as sde:
+            await _handle_session_dead_img(task_id, acc, sde)
+            return
+
+        pending = [it for it in items if it.get("status") != ItemStatus.COMPLETED.value]
+        for it in pending:
+            if queue.is_paused(task_id):
+                await queue.mark_paused(task_id)
+                return
+            try:
+                await upscale_one_item(client, task, it)
+            except fc_mod.SessionDeadError as sde:
+                await _handle_session_dead_img(task_id, acc, sde)
+                return
+
+        await hub.broadcast("upscale_batch_done", {"resolution": resolution, "task_id": task_id})
+        await _maybe_finalize(task_id)
+    except fc_mod.SessionDeadError as sde:
+        await _handle_session_dead_img(task_id, acc, sde)
+    except Exception as e:
+        log.exception("Upscale task crashed")
+        db.update_task(task_id, status=TaskStatus.ERROR.value)
+        await hub.broadcast("task_error", {"task_id": task_id, "error": str(e)})
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+
 @router.post("/upscale/{item_id}")
 async def upscale_existing(item_id: int, resolution: str = "4k"):
     """Upscale a single already-generated image to 2K/4K via Google Labs."""
@@ -523,34 +645,25 @@ class UpscaleBatchRequest(BaseModel):
 
 @router.post("/upscale-batch")
 async def upscale_batch(body: UpscaleBatchRequest):
-    """Upscale multiple already-generated images sequentially.
+    """Upscale multiple images — runs as a QUEUED TASK (mode='flow_upscale') so
+    it can be Paused / Resumed / Cancelled from "Quản lý task", exactly like
+    Shakker upscale. Returns a task_id immediately; per-image results stream
+    back over the same upscale_* WS events (the gallery updates the ORIGINAL
+    cards), and the task shows in the queue with pause/cancel/resume buttons.
 
-    Sequential rather than parallel because Google's reCAPTCHA gets stricter
-    when we hit the API in rapid bursts from one account — burnt this lesson
-    on generate_image already. Each upscale is sync (~5-10s), and the frontend
-    shows live toast progress so the wait is OK.
-
-    Broadcasts WebSocket events per item so the gallery can update the
-    upscale-status chip in realtime:
-      • upscale_started      {item_id, resolution}
-      • upscale_completed    {item_id, resolution, path, url}
-      • upscale_error        {item_id, resolution, error}
+    Sequential (concurrent=1) because Google's reCAPTCHA gets stricter on bursts.
     """
-    # Upscale = bridge priority class 1: above normal gen (2), below regen (0).
-    from ..services.browser_bridge import set_gen_priority, next_gen_seq
-    set_gen_priority(1, next_gen_seq())
     if body.resolution.lower() not in ("2k", "4k"):
         raise HTTPException(400, "resolution phải là '2k' hoặc '4k'")
     if not body.item_ids:
         raise HTTPException(400, "item_ids rỗng")
 
-    # Resolve all items + media_ids up-front; reject batch if any item has
-    # no media_id rather than partially failing mid-way.
+    # Resolve src items + media_ids up-front; skip ones with no media_id.
     resolved: list[tuple[dict, dict, str]] = []
     skipped: list[dict] = []
     for iid in body.item_ids:
-        task, item = _find_item(iid)
-        if not item or not task:
+        src_task, item = _find_item(iid)
+        if not item or not src_task:
             skipped.append({"item_id": iid, "error": "Không tìm thấy item"})
             continue
         extra = json.loads(item.get("extra_json") or "{}")
@@ -558,7 +671,7 @@ async def upscale_batch(body: UpscaleBatchRequest):
         if not mid:
             skipped.append({"item_id": iid, "error": "Thiếu media_id (ảnh tạo trước khi tool support upscale)"})
             continue
-        resolved.append((task, item, mid))
+        resolved.append((src_task, item, mid))
 
     if not resolved:
         raise HTTPException(
@@ -567,89 +680,43 @@ async def upscale_batch(body: UpscaleBatchRequest):
             "tính năng upscale chỉ áp dụng cho ảnh tạo từ phiên bản 1.0.3 trở đi."
         )
 
-    acc = _pick_account()
-    if not acc:
-        raise HTTPException(400, "Không có account khả dụng")
-
-    completed: list[dict] = []
-    errors: list[dict] = []
-
-    client = None
-    try:
-        from ..services import flow_client as fc_mod
-        from ..services.flow_factory import make_flow_client, get_page_for_account
-        page = await get_page_for_account(acc)
-        client = make_flow_client(
-            page=page,
-            cookie_path=acc.get("cookie_path") or "",
-            account_email=acc["email"],
-        )
-        try:
-            await client.ensure_token()
-        except fc_mod.SessionDeadError as sde:
-            db.update_account(acc["id"], enabled=0)
-            await hub.broadcast("account_session_dead", {
-                "account_id": acc["id"], "email": acc["email"], "reason": sde.reason,
-            })
-            raise HTTPException(401, f"Session {acc['email']} hết hạn — login lại")
-
-        total = len(resolved)
-        await hub.broadcast("upscale_batch_started", {
-            "total": total, "resolution": body.resolution,
+    res = body.resolution.lower()
+    from ..services import hub_client
+    # Name the upscale task after the SOURCE task: "<tên task gốc>_upscale 4K".
+    # (Batches are normally from one gen task; fall back to a generic name if the
+    # source task has no name.)
+    _src_name = (resolved[0][0].get("name") or "").strip()
+    task_name = f"{_src_name}_upscale {res.upper()}" if _src_name else f"Upscale {res.upper()} ({len(resolved)} ảnh)"
+    task_id = db.create_task(
+        name=task_name,
+        mode="flow_upscale",
+        image_model=f"upscale_{res}",
+        aspect_ratio="",
+        concurrent=1,                 # sequential — reCAPTCHA
+        total_count=len(resolved),
+        status=TaskStatus.PENDING.value,
+        character_images_json=json.dumps({
+            "upscale": True, "resolution": res,
+            "parent_task_id": resolved[0][0]["id"],   # task gốc → lồng cha-con trong Quản lý task
+        }),
+        user_email=hub_client.current_user_email(),
+    )
+    for (src_task, item, mid) in resolved:
+        db.add_task_item(task_id, f"Upscale {res.upper()}", extra={
+            "src_item_id": item["id"],
+            "media_id": mid,
+            "resolution": res,
+            "src_task_id": src_task["id"],
+            "src_task_name": src_task.get("name"),
         })
 
-        for idx, (task, item, mid) in enumerate(resolved, 1):
-            iid = item["id"]
-            await hub.broadcast("upscale_started", {
-                "item_id": iid, "resolution": body.resolution,
-                "index": idx, "total": total,
-            })
-            try:
-                r = await _do_upscale_one(client, iid, mid, body.resolution, task)
-                completed.append(r)
-                await hub.broadcast("upscale_completed", {
-                    "item_id": iid, "resolution": body.resolution,
-                    "path": r["path"], "url": r["url"],
-                    "index": idx, "total": total,
-                })
-            except fc_mod.SessionDeadError as sde:
-                db.update_account(acc["id"], enabled=0)
-                await hub.broadcast("account_session_dead", {
-                    "account_id": acc["id"], "email": acc["email"], "reason": sde.reason,
-                })
-                errors.append({"item_id": iid, "error": f"Session hết hạn: {sde.reason}"})
-                # Stop batch — without a working session, the rest will also fail
-                break
-            except Exception as e:
-                log.warning(f"Upscale item={iid} failed: {e}")
-                errors.append({"item_id": iid, "error": str(e)})
-                await hub.broadcast("upscale_error", {
-                    "item_id": iid, "resolution": body.resolution,
-                    "error": str(e),
-                    "index": idx, "total": total,
-                })
-
-        await hub.broadcast("upscale_batch_done", {
-            "total": total,
-            "completed": len(completed),
-            "errors": len(errors),
-            "resolution": body.resolution,
-        })
-
-        return {
-            "ok": True,
-            "completed": completed,
-            "errors": errors + skipped,
-            "resolution": body.resolution,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.exception("Upscale batch crashed")
-        raise HTTPException(500, str(e))
-    finally:
-        if client is not None:
-            try:
-                await client.close()
-            except Exception:
-                pass
+    position = await queue.enqueue("image", task_id, _process_upscale_task)
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "items": len(resolved),
+        "skipped": skipped,
+        "queue_position": position,
+        "queued": position > 0,
+        "resolution": res,
+    }

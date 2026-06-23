@@ -344,8 +344,13 @@ export function renderLongVideo(root) {
       if (it.status === 'done' && it.output_url) {
         thumb.appendChild(el('video', { src: it.output_url, controls: true, style: { width: '100%', height: '100%' } }));
       } else if (it.status === 'error') {
-        thumb.appendChild(el('div', { style: { color: 'var(--red)', fontSize: '11px', padding: '8px' } },
-          (it.error || 'Lỗi').slice(0, 60)));
+        // Show the FULL friendly message (no 60-char truncation) + raw in tooltip,
+        // matching content.js / storyboard.js so long messages aren't cut off.
+        thumb.appendChild(el('div', {
+          class: 'scene-error',
+          title: it.error_detail || it.error || 'Lỗi',
+          style: { color: 'var(--red)', fontSize: '11px', padding: '8px', textAlign: 'center', lineHeight: '1.35', overflowY: 'auto', maxHeight: '100%' },
+        }, it.error || 'Lỗi'));
       } else {
         thumb.appendChild(el('div', { class: 'spinner' }));
       }
