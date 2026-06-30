@@ -202,6 +202,10 @@ export function icon(name, size = 16) {
     folder: '<path d="M3 6h6l2 2h10v12H3z" fill="none" stroke="currentColor" stroke-width="2"/>',
     image: '<path d="M3 5h18v14H3z M8 11l3 3 3-4 5 6H4z" fill="currentColor"/>',
     sparkles: '<path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5z M5 16l.7 2 2 .7-2 .7L5 22l-.7-2-2-.7 2-.7z M19 14l1 2.7 2.7 1-2.7 1L19 21l-1-2.3-2.7-1 2.7-1z" fill="currentColor"/>',
+    apps: '<path d="M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z" fill="none" stroke="currentColor" stroke-width="2"/>',
+    movie: '<path d="M3 6h18v12H3z M3 10h18 M7 6v4 M12 6v4 M17 6v4" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+    package: '<path d="M12 3l8 4v10l-8 4-8-4V7z M4 7l8 4 8-4 M12 11v10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>',
+    wand: '<path d="M4 20l9-9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M15 3L16.1 5.9 19 7 16.1 8.1 15 11 13.9 8.1 11 7 13.9 5.9z" fill="currentColor"/>',
   };
   const wrapper = document.createElement('span');
   wrapper.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${paths[name] || paths.play}</svg>`;

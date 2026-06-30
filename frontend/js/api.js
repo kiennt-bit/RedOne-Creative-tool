@@ -28,11 +28,20 @@ async function request(method, path, { body, form, params } = {}) {
 export const api = {
   get: (p, params) => request('GET', p, { params }),
   post: (p, body) => request('POST', p, { body }),
+  put: (p, body) => request('PUT', p, { body }),
   postForm: (p, form) => request('POST', p, { form }),
   del: (p) => request('DELETE', p),
 
   // Domain-specific
   health: () => request('GET', '/api/health'),
+
+  // Kho tính năng (feature store)
+  features: {
+    catalog: () => request('GET', '/api/features/catalog'),
+    installed: () => request('GET', '/api/features/installed'),
+    install: (id) => request('POST', '/api/features/install', { body: { id } }),
+    uninstall: (id) => request('POST', '/api/features/uninstall', { body: { id } }),
+  },
 
   accounts: {
     list: () => request('GET', '/api/accounts'),
@@ -125,6 +134,22 @@ export const api = {
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
     resizePresets: () => request('GET', '/api/media/resize-presets'),
     batchResize: (form) => request('POST', '/api/media/batch-resize', { form }),
+  },
+
+  // Trình dựng video (Part B)
+  videoEditor: {
+    projects: () => request('GET', '/api/video-editor/projects'),
+    project: (id) => request('GET', `/api/video-editor/projects/${id}`),
+    createProject: (name) => request('POST', '/api/video-editor/projects', { body: { name } }),
+    saveProject: (id, name, data) => request('PUT', `/api/video-editor/projects/${id}`, { body: { name, data } }),
+    deleteProject: (id) => request('DELETE', `/api/video-editor/projects/${id}`),
+    myMedia: (type = 'all') => request('GET', '/api/video-editor/my-media', { params: { type } }),
+    upload: (file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return request('POST', '/api/video-editor/upload', { form: fd });
+    },
+    render: (payload) => request('POST', '/api/video-editor/render', { body: payload }),
   },
 
   settings: {

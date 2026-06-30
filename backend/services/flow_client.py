@@ -896,12 +896,17 @@ class FlowClient:
             image_data = result["encodedImage"]
             raw_bytes = b64.b64decode(image_data)
             
-            # Detect dimensions from JPEG header or use resolution-based defaults
-            res_dims = {
-                "2k": (2048, 1152),  # approximate
-                "4k": (3840, 2160),
-            }
-            width, height = res_dims.get(resolution.lower(), (3840, 2160))
+            # Read the ACTUAL dimensions from the returned image. Google's 4K
+            # upscale now returns a larger, source-aspect image (e.g. 5504x3072),
+            # not a fixed 3840x2160 — so never assume; detect from the bytes.
+            width, height = 0, 0
+            try:
+                import io as _io
+                from PIL import Image as _Image
+                with _Image.open(_io.BytesIO(raw_bytes)) as _im:
+                    width, height = _im.size
+            except Exception:
+                width, height = {"2k": (2560, 1440), "4k": (3840, 2160)}.get(resolution.lower(), (3840, 2160))
             
             log.info(f"[{self._account_email}] Upscaled to {resolution}: {len(raw_bytes)} bytes (encoded image)")
             

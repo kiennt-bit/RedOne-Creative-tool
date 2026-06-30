@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.5.0"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -38,9 +38,25 @@ DATA_DIR = USER_DATA_ROOT / "data"
 OUTPUT_DIR = USER_DATA_ROOT / "outputs"
 COOKIES_DIR = DATA_DIR / "cookies"
 DB_PATH = DATA_DIR / "navtools.db"
+# Kho tính năng (feature store): downloaded "frontend"/"asset" features land
+# here (next to the .exe so they survive app updates) and are served via the
+# /extensions static mount. Must be writable — the installer grants Modify.
+EXT_DIR = USER_DATA_ROOT / "extensions"
 
-for d in (DATA_DIR, OUTPUT_DIR, COOKIES_DIR, OUTPUT_DIR / "video", OUTPUT_DIR / "image"):
+for d in (DATA_DIR, OUTPUT_DIR, COOKIES_DIR, OUTPUT_DIR / "video", OUTPUT_DIR / "image", EXT_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+# ── Kho tính năng (feature catalog, A1111-style remote index) ─────────
+# The catalog is an index.json hosted on GitHub (editable centrally, no app
+# rebuild needed). Override with env REDONE_FEATURES_URL. Downloads are
+# restricted to this host allowlist + a declared sha256 (see feature_installer).
+FEATURES_INDEX_URL = os.getenv("REDONE_FEATURES_URL", "").strip() or (
+    "https://raw.githubusercontent.com/kiennt-bit/RedOne-Creative-tool/main/features/index.json"
+)
+FEATURES_ALLOWED_HOSTS = (
+    "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com", "codeload.github.com",
+)
 
 
 # ── RedOne Hub (multi-user management server) ─────────────────────────

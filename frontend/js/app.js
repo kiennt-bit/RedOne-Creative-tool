@@ -9,7 +9,7 @@
 
 import { api } from './api.js';
 import { ws } from './ws.js';
-import { $, $$, el, clear, toast } from './ui.js';
+import { $, $$, el, clear, toast, icon } from './ui.js';
 // Side-effect import: wires WS → global tasks store BEFORE page modules import it.
 import './tasks_store.js';
 
@@ -32,6 +32,9 @@ import { renderSettings } from './pages/settings.js';
 import { renderTasksManager } from './pages/tasks_manager.js';
 import { renderTeam } from './pages/team.js';
 import { renderAdmin } from './pages/admin.js';
+import { renderFeatureStore } from './pages/feature_store.js';
+import { loadCatalog, getFeature, getCatalog } from './features/catalog.js';
+import * as featureState from './features/state.js';
 
 // Build-id banner so you can verify which build is loaded
 try {
@@ -57,6 +60,7 @@ const PAGES = {
   'tasks':         { title: 'Quản lý Task',      subtitle: 'Theo dõi tiến độ + hàng đợi tất cả tác vụ',              render: renderTasksManager },
   'accounts':      { title: 'Tài Khoản',         subtitle: 'Quản lý Google account & credits',                       render: renderAccounts },
   'settings':      { title: 'Cài Đặt',           subtitle: 'API keys, thư mục, tùy chọn',                            render: renderSettings },
+  'feature-store': { title: 'Kho tính năng',     subtitle: 'Cài thêm tính năng nặng khi cần — máy yếu có thể bỏ qua để nhẹ hơn', render: renderFeatureStore },
   'team':          { title: 'Team',              subtitle: 'Theo dõi task & credit của thành viên dưới quyền',       render: renderTeam },
   'admin':         { title: 'Quản trị',          subtitle: 'Người dùng, nhóm, hạn mức credit nội bộ (Hub)',          render: renderAdmin },
 };
@@ -68,13 +72,14 @@ export const store = {
   totalCredits: 0,
 };
 
-export function navigate(pageId, opts = {}) {
-  const page = PAGES[pageId];
+export async function navigate(pageId, opts = {}) {
+  // Static page first; otherwise an installed Kho feature (lazy-loaded).
+  const staticPage = PAGES[pageId];
+  const feature = !staticPage ? getFeature(pageId) : null;
+  const page = staticPage || (feature ? featureToPage(feature) : null);
   if (!page) return;
   // Optional deep-link to a specific task — pages that show task gallery
   // (content, image, long-video) consume this on mount, then clear it.
-  // Used by Tasks Manager's "eye" button so clicking an older task takes
-  // the user to the page WITH that task loaded, not the latest one.
   if (opts.taskId != null) {
     window.__app._pendingTaskId = opts.taskId;
   }
@@ -85,20 +90,43 @@ export function navigate(pageId, opts = {}) {
   clear(container);
   container.classList.add('fade-in');
   setTimeout(() => container.classList.remove('fade-in'), 350);
-  try {
-    page.render(container);
-  } catch (e) {
-    console.error('Page render error:', e);
-    container.appendChild(el('div', { class: 'card' }, `Lỗi render trang: ${e.message}`));
-  }
   history.replaceState(null, '', `#${pageId}`);
 
-  // Eye-icon deep-link (Tasks Manager) → bring the task's RESULTS gallery into
-  // view so the user lands on the output, not the top of a long prompt form.
-  // The gallery is already rendered (page.render is synchronous + consumes
-  // _pendingTaskId); rAF just lets layout settle before scrolling. Harmless
-  // when results are already on screen — scrollIntoView then barely moves.
-  if (opts.taskId != null) {
+  try {
+    if (page.loader) {
+      // Lazy feature (Kho tính năng): import its module on demand so heavy
+      // code/assets (e.g. fabric.js) only load when the user opens it.
+      const token = (navigate._t = (navigate._t || 0) + 1);
+      container.appendChild(el('div', {
+        class: 'card', style: { textAlign: 'center', color: 'var(--text-muted)' },
+      }, el('span', { class: 'spinner' }), ' Đang tải tính năng…'));
+      let mod;
+      try {
+        mod = await page.loader();
+      } catch (e) {
+        if (navigate._t !== token) return;
+        clear(container);
+        container.appendChild(el('div', { class: 'card' },
+          `Không tải được tính năng: ${e.message}. Thử mở lại từ "Kho tính năng".`));
+        return;
+      }
+      if (navigate._t !== token) return;   // user navigated away mid-load
+      clear(container);
+      const fn = mod[page.renderName] || mod.render || mod.default;
+      if (typeof fn !== 'function') throw new Error('Module tính năng không có hàm render');
+      fn(container);
+    } else {
+      page.render(container);
+    }
+  } catch (e) {
+    console.error('Page render error:', e);
+    clear(container);
+    container.appendChild(el('div', { class: 'card' }, `Lỗi render trang: ${e.message}`));
+  }
+
+  // Eye-icon deep-link (Tasks Manager) → scroll to results gallery. Static
+  // pages only; features have no task gallery.
+  if (opts.taskId != null && staticPage) {
     const RESULTS_SEL = {
       content: '#cnt-results',
       image: '#img-results',
@@ -113,6 +141,74 @@ export function navigate(pageId, opts = {}) {
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
+  }
+}
+
+// ── Kho tính năng — lazy routing + dynamic sidebar tabs ───────────────
+// Map a catalog feature → a page-like object with an async module loader.
+function featureToPage(f) {
+  if (!featureState.isInstalled(f)) return null;
+  if (f.kind === 'builtin') {
+    const mod = f.module || f.id;
+    return {
+      title: f.name, subtitle: f.description || '',
+      loader: () => import(`./pages/${mod}.js`),
+      renderName: f.renderName || 'render',
+    };
+  }
+  // frontend (downloaded bundle under /extensions/<id>/)
+  const entry = (f.download && f.download.entry) || 'index.js';
+  return {
+    title: f.name, subtitle: f.description || '',
+    loader: () => import(`/extensions/${f.id}/${entry}`),
+    renderName: f.renderName || 'render',
+  };
+}
+
+function _featuresList() {
+  try { const c = getCatalog(); return (c && c.features) || []; } catch { return []; }
+}
+
+function findNavGroup(label) {
+  if (!label) return null;
+  for (const g of $$('.sidebar-nav .nav-group')) {
+    const lab = $('.nav-label', g);
+    if (lab && lab.textContent.trim() === label) return g;
+  }
+  return null;
+}
+
+// Inject sidebar tabs for installed features. Idempotent — clears prior
+// feature items first, then re-adds installed ones into their declared group.
+function renderFeatureNav() {
+  $$('.nav-item[data-feature="1"]').forEach(n => n.remove());
+  for (const f of _featuresList()) {
+    if (!featureState.isInstalled(f)) continue;
+    const group = findNavGroup(f.group);
+    if (!group) continue;
+    const svg = icon(f.icon || 'sparkles', 20);
+    svg.classList.add('ni');
+    const btn = el('button', { class: 'nav-item', 'data-page': f.id, 'data-feature': '1' },
+      svg, el('span', null, f.name));
+    btn.addEventListener('click', () => navigate(f.id));
+    group.appendChild(btn);
+  }
+  const cur = (location.hash || '').slice(1);
+  $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === cur));
+}
+
+async function initFeatures() {
+  try {
+    await loadCatalog();
+    featureState.initBuiltinDefaults();
+    renderFeatureNav();
+    featureState.onChange(renderFeatureNav);
+    // If the boot hash points to an installed feature, render it now that the
+    // catalog is available (boot navigated to a static page meanwhile).
+    const h = (location.hash || '').slice(1);
+    if (h && getFeature(h) && featureState.isInstalled(h)) navigate(h);
+  } catch (e) {
+    console.warn('initFeatures failed:', e);
   }
 }
 
@@ -773,6 +869,9 @@ async function init() {
   loadGithubLinks();   // fire-and-forget; buttons have a fallback URL meanwhile
   setupAuthUI();
   setupSidebar();
+  // Kho tính năng: load catalog + render dynamic feature tabs. Non-blocking so
+  // a slow/offline catalog never delays boot (backend falls back instantly).
+  initFeatures();
   setupWS();
 
   // First-run setup wizard. Blocks the rest of init() until the user
@@ -819,4 +918,4 @@ if (document.readyState === 'loading') {
   init();
 }
 
-window.__app = { store, navigate, refreshAccounts, refreshShakkerPower, refreshHubStatus };
+window.__app = { store, navigate, refreshAccounts, refreshShakkerPower, refreshHubStatus, refreshFeatureNav: renderFeatureNav };

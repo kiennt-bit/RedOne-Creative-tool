@@ -437,24 +437,22 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
     else:
         out_path = _save_upscaled(item_id, resolution, raw, task)
 
-    # Giữ ĐÚNG tỉ lệ ảnh gốc — chỉ scale lên theo "cạnh dài" 2K=2560 / 4K=3840.
-    # (Code cũ crop cứng về 16:9 nên ảnh 1:1, 9:16... bị méo/cắt khi so sánh.)
+    # Chuẩn hóa ra ĐÚNG kích thước 16:9 tiêu chuẩn: 2K=2560x1440, 4K=3840x2160.
+    # Xoay theo hướng ảnh (ngang→2560x1440/3840x2160, dọc→1440x2560/2160x3840).
+    # Cover-crop: scale phủ kín rồi cắt giữa phần dư → ĐÚNG kích thước, KHÔNG méo
+    # (ảnh Google ~16:9 chỉ bị cắt vài chục px). Ảnh vuông sẽ bị cắt về 16:9.
     up_w, up_h = r.get("width"), r.get("height")
-    _LONG_EDGE = {"2k": 2560, "4k": 3840}.get(resolution.lower(), 3840)
+    _long, _short = {"2k": (2560, 1440), "4k": (3840, 2160)}.get(resolution.lower(), (3840, 2160))
     try:
         from ..services.image_utils import crop_cover_inplace
         from PIL import Image
         with Image.open(out_path) as _im:
             sw, sh = _im.size
-        if sw >= sh:
-            tw, th = _LONG_EDGE, max(1, round(_LONG_EDGE * sh / sw))
-        else:
-            tw, th = max(1, round(_LONG_EDGE * sw / sh)), _LONG_EDGE
-        # tw:th khớp tỉ lệ gốc → crop_cover chỉ scale (không cắt) → không méo.
+        tw, th = (_long, _short) if sw >= sh else (_short, _long)
         crop_cover_inplace(out_path, width=tw, height=th)
         up_w, up_h = tw, th
     except Exception as e:
-        log.warning(f"Resize upscale (giữ tỉ lệ gốc) failed: {e}")
+        log.warning(f"Chuẩn hóa kích thước upscale thất bại: {e}")
 
     rel = out_path.relative_to(OUTPUT_DIR).as_posix()
     return {

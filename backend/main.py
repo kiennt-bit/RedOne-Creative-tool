@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 # Unique build id per server start — used to bust ES module caches.
 BUILD_ID = f"{int(time.time())}-{secrets.token_hex(4)}"
 
-from .config import APP_NAME, APP_VERSION, OUTPUT_DIR, DATA_DIR, BASE_DIR, SERVER_PORT
+from .config import APP_NAME, APP_VERSION, OUTPUT_DIR, DATA_DIR, BASE_DIR, SERVER_PORT, EXT_DIR
 from .database import db
 from .ws_hub import hub
 from .routers import (
@@ -26,6 +26,8 @@ from .routers import (
     shakker as shakker_router,
     storyboard as storyboard_router,
     hub as hub_router,
+    features as features_router,
+    video_editor as video_editor_router,
 )
 from .queue_manager import queue as task_queue, shakker_queue
 
@@ -225,6 +227,8 @@ app.include_router(system_router.router)
 app.include_router(sync_router.router)
 app.include_router(auth_router.router)
 app.include_router(hub_router.router)
+app.include_router(features_router.router)
+app.include_router(video_editor_router.router)
 
 
 @app.get("/api/health")
@@ -246,6 +250,11 @@ async def websocket_endpoint(ws: WebSocket):
 
 # Static file serving for generated outputs
 app.mount("/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
+
+# Kho tính năng: downloaded "frontend" feature bundles live under EXT_DIR and
+# are imported by the SPA as /extensions/<id>/<entry>.js. Mounted BEFORE the
+# catch-all SPA route so it takes precedence.
+app.mount("/extensions", StaticFiles(directory=str(EXT_DIR)), name="extensions")
 
 # Frontend
 FRONTEND_DIR = BASE_DIR / "frontend"

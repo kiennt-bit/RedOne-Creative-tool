@@ -103,6 +103,9 @@ class Database:
         self._add_column_if_missing("tasks", "duration", "INTEGER DEFAULT 8")
         self._add_column_if_missing("tasks", "user_email", "TEXT")
         self._add_column_if_missing("shakker_accounts", "webid", "TEXT")
+        # Trình dựng video (Part B): editor state JSON + last-saved time.
+        self._add_column_if_missing("projects", "data_json", "TEXT")
+        self._add_column_if_missing("projects", "updated_at", "TEXT")
 
     def _add_column_if_missing(self, table: str, column: str, decl: str):
         try:
@@ -296,6 +299,46 @@ class Database:
                 f"UPDATE task_items SET {keys} WHERE id=?",
                 (*fields.values(), item_id),
             )
+            self.conn.commit()
+
+    # ---------------------- Projects (Trình dựng video) ----------------------
+    def create_project(self, name: str, data_json: str = "{}") -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO projects(name, data_json, updated_at) VALUES(?,?,datetime('now'))",
+                (name, data_json),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def get_project(self, project_id: int) -> Optional[dict]:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def list_projects(self) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, name, created_at, updated_at FROM projects ORDER BY id DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_project(self, project_id: int, **fields):
+        if not fields:
+            return
+        keys = ",".join(f"{k}=?" for k in fields)
+        with self._lock:
+            self.conn.execute(
+                f"UPDATE projects SET {keys} WHERE id=?",
+                (*fields.values(), project_id),
+            )
+            self.conn.commit()
+
+    def delete_project(self, project_id: int):
+        with self._lock:
+            self.conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
             self.conn.commit()
 
     # ---------------------- Settings ----------------------

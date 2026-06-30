@@ -186,6 +186,10 @@ async def _reenqueue_task(task_id: int, front: bool = False) -> dict:
         from . import image as image_mod
         runner = image_mod._process_upscale_task
         kind = "image"
+    elif mode == "video_render":
+        from . import video_editor as ve_mod
+        runner = ve_mod._process_video_render_task
+        kind = "video_render"
     else:  # t2v / i2v / fallback
         from . import content as content_mod
         runner = content_mod._process_task
