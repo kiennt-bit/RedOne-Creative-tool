@@ -28,7 +28,7 @@ log = logging.getLogger("redone.features")
 router = APIRouter(prefix="/api/features", tags=["features"])
 
 _CACHE_FILE = DATA_DIR / "features_cache.json"
-_FALLBACK = BASE_DIR / "backend" / "data" / "features.fallback.json"
+_FALLBACK = BASE_DIR / "backend" / "resources" / "features.fallback.json"
 _CACHE_TTL = 300.0
 _cache: dict = {"ts": 0.0, "data": None}
 
