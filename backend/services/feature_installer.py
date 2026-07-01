@@ -9,7 +9,7 @@ client-side (no backend call). Security:
   - a hard size cap guards against runaway downloads
 We NEVER download or execute Python — only static assets the frontend imports.
 
-Installed state lives in `extensions/installed.json`:
+Installed state lives in `addons/installed.json`:
     { "<feature-id>": {"kind": "frontend", "version": "1.0.0", "entry": "index.js"},
       "<feature-id>": {"kind": "asset", "version": "1.0.0", "files": ["models/x.pt"]} }
 """
@@ -30,6 +30,26 @@ log = logging.getLogger("redone.features")
 INSTALLED_JSON = EXT_DIR / "installed.json"
 _CHUNK = 64 * 1024
 _MAX_BYTES = 600 * 1024 * 1024   # 600 MB hard cap per file
+
+# ── Migration: extensions/ → addons/ (v1.5.1+) ──────────────────────
+# Renamed to avoid user confusion with the Chrome "extension/" folder.
+# If the old directory exists and the new one is empty, move contents over.
+_OLD_EXT_DIR = USER_DATA_ROOT / "extensions"
+try:
+    if _OLD_EXT_DIR.exists() and _OLD_EXT_DIR.is_dir():
+        # Only migrate if old dir has actual content (not just an empty dir)
+        old_contents = list(_OLD_EXT_DIR.iterdir())
+        if old_contents:
+            EXT_DIR.mkdir(parents=True, exist_ok=True)
+            for item in old_contents:
+                dest = EXT_DIR / item.name
+                if not dest.exists():
+                    shutil.move(str(item), str(dest))
+            log.info("Migrated feature store: extensions/ → addons/")
+        # Remove old dir (now empty or fully migrated)
+        shutil.rmtree(_OLD_EXT_DIR, ignore_errors=True)
+except Exception as _mig_err:
+    log.warning("extensions→addons migration failed: %s", _mig_err)
 
 # progress(percent: float, stage: str, message: str)
 ProgressCb = Callable[[float, str, str], None]

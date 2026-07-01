@@ -252,9 +252,9 @@ async def websocket_endpoint(ws: WebSocket):
 app.mount("/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
 
 # Kho tính năng: downloaded "frontend" feature bundles live under EXT_DIR and
-# are imported by the SPA as /extensions/<id>/<entry>.js. Mounted BEFORE the
+# are imported by the SPA as /addons/<id>/<entry>.js. Mounted BEFORE the
 # catch-all SPA route so it takes precedence.
-app.mount("/extensions", StaticFiles(directory=str(EXT_DIR)), name="extensions")
+app.mount("/addons", StaticFiles(directory=str(EXT_DIR)), name="addons")
 
 # Frontend
 FRONTEND_DIR = BASE_DIR / "frontend"

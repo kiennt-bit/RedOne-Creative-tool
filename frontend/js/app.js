@@ -156,11 +156,11 @@ function featureToPage(f) {
       renderName: f.renderName || 'render',
     };
   }
-  // frontend (downloaded bundle under /extensions/<id>/)
+  // frontend (downloaded bundle under /addons/<id>/)
   const entry = (f.download && f.download.entry) || 'index.js';
   return {
     title: f.name, subtitle: f.description || '',
-    loader: () => import(`/extensions/${f.id}/${entry}`),
+    loader: () => import(`/addons/${f.id}/${entry}`),
     renderName: f.renderName || 'render',
   };
 }

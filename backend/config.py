@@ -40,8 +40,10 @@ COOKIES_DIR = DATA_DIR / "cookies"
 DB_PATH = DATA_DIR / "navtools.db"
 # Kho tính năng (feature store): downloaded "frontend"/"asset" features land
 # here (next to the .exe so they survive app updates) and are served via the
-# /extensions static mount. Must be writable — the installer grants Modify.
-EXT_DIR = USER_DATA_ROOT / "extensions"
+# /addons static mount. Must be writable — the installer grants Modify.
+# NOTE: renamed from "extensions" → "addons" (v1.5.1+) to avoid user
+# confusion with the Chrome "extension" folder that sits alongside.
+EXT_DIR = USER_DATA_ROOT / "addons"
 
 for d in (DATA_DIR, OUTPUT_DIR, COOKIES_DIR, OUTPUT_DIR / "video", OUTPUT_DIR / "image", EXT_DIR):
     d.mkdir(parents=True, exist_ok=True)

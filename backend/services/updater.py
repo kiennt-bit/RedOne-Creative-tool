@@ -461,6 +461,41 @@ def apply_update_and_exit(extracted_dir: Path) -> None:
     except Exception as e:
         log.warning(f"Could not prune staged extension/: {e}")
 
+    # ── Strip data/ from staged bundle — prevent dev session leaking ──
+    # If the release zip accidentally contains a data/ folder (e.g. the
+    # dev forgot to clean dist/ before zipping), it would get xcopy'd
+    # into the user's install dir, OVERWRITING their auth_session.json,
+    # navtools.db, cookies, etc. with the dev's personal data. Symptom:
+    # user updates → suddenly logged in as the developer's email.
+    #
+    # Fix: always nuke data/ from the staged extract before the batch
+    # runs. The user's existing data/ is OUTSIDE the staged bundle and
+    # is never touched by the batch (xcopy only adds, doesn't delete
+    # pre-existing files). By removing staged data/, xcopy simply
+    # leaves the user's data/ intact.
+    try:
+        data_staged = extracted_dir / "data"
+        if data_staged.exists():
+            shutil.rmtree(data_staged, ignore_errors=True)
+            log.info(
+                "Auto-update: stripped data/ from staged bundle "
+                "(prevents dev session from leaking into user's install)"
+            )
+    except Exception as e:
+        log.warning(f"Could not prune staged data/: {e}")
+
+    # ── Strip addons/ (and legacy extensions/) from staged bundle ────
+    # User's installed features live in addons/ next to the EXE. The
+    # release zip should never contain this, but guard defensively.
+    for _addon_name in ("addons", "extensions"):
+        try:
+            _addon_staged = extracted_dir / _addon_name
+            if _addon_staged.exists():
+                shutil.rmtree(_addon_staged, ignore_errors=True)
+                log.info(f"Auto-update: stripped {_addon_name}/ from staged bundle")
+        except Exception as e:
+            log.warning(f"Could not prune staged {_addon_name}/: {e}")
+
     bat = write_install_batch(extracted_dir, install_dir)
 
     _UPDATE_STATE.update({
