@@ -25,58 +25,6 @@
         "entry": "video_editor.js",
         "sha256": "3dfe2a1122f1deda8b6e8f65a0ab143fb59cf53571fee06d67f02bc50feab597"
       }
-    },
-    {
-      "id": "ai-music",
-      "name": "Tạo nhạc AI",
-      "description": "Tạo nhạc nền, hiệu ứng âm thanh bằng AI — tích hợp trực tiếp vào timeline.",
-      "group": "Xử lý video",
-      "icon": "music_note",
-      "tags": ["ai", "video"],
-      "kind": "frontend",
-      "version": "0.1.0",
-      "defaultInstalled": false,
-      "comingSoon": true,
-      "minAppVersion": "1.6.0"
-    },
-    {
-      "id": "auto-subtitle",
-      "name": "Phụ đề tự động",
-      "description": "Tự động nhận dạng giọng nói và thêm phụ đề vào video (Speech-to-Text).",
-      "group": "Xử lý video",
-      "icon": "subtitles",
-      "tags": ["ai", "video"],
-      "kind": "frontend",
-      "version": "0.1.0",
-      "defaultInstalled": false,
-      "comingSoon": true,
-      "minAppVersion": "1.6.0"
-    },
-    {
-      "id": "lip-sync",
-      "name": "Lip Sync / Nhân vật nói",
-      "description": "Đồng bộ miệng nhân vật với giọng nói — tạo avatar nói chuyện từ ảnh tĩnh.",
-      "group": "Xử lý video",
-      "icon": "record_voice_over",
-      "tags": ["ai", "video", "heavy"],
-      "kind": "frontend",
-      "version": "0.1.0",
-      "defaultInstalled": false,
-      "comingSoon": true,
-      "minAppVersion": "1.6.0"
-    },
-    {
-      "id": "video-templates",
-      "name": "Kho template video",
-      "description": "Template video có sẵn — chỉ cần thay ảnh/text là xuất được video hoàn chỉnh.",
-      "group": "Xử lý video",
-      "icon": "dashboard",
-      "tags": ["video"],
-      "kind": "frontend",
-      "version": "0.1.0",
-      "defaultInstalled": false,
-      "comingSoon": true,
-      "minAppVersion": "1.6.0"
     }
   ]
 }
