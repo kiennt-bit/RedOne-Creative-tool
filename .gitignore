@@ -11,6 +11,9 @@ build/
 dist/
 *.spec.bak
 
+# Addon bundles (build artifacts — source is in frontend/js/pages/)
+features/bundles/
+
 # Local user data (per-machine)
 data/
 outputs/
