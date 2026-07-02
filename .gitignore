@@ -14,6 +14,10 @@ dist/
 # Addon bundles (build artifacts — source is in frontend/js/pages/)
 features/bundles/
 
+# ECC reference repo + agent config (local only, not part of project)
+ecc/
+.agents/
+
 # Local user data (per-machine)
 data/
 outputs/
