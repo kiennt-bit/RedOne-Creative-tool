@@ -674,18 +674,20 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
                 })
 
                 def emit(pct: float, stage: str, msg: str):
-                    asyncio.run_coroutine_threadsafe(
-                        hub.broadcast("video_upscale_progress", {
-                            "batch_id": batch_id,
-                            "index": idx,
-                            "total": total,
-                            "percent": round(pct, 1),
-                            "stage": stage,
-                            "message": msg,
-                            "video_path": vp_str,
-                        }),
-                        loop,
-                    )
+                    coro = hub.broadcast("video_upscale_progress", {
+                        "batch_id": batch_id,
+                        "index": idx,
+                        "total": total,
+                        "percent": round(pct, 1),
+                        "stage": stage,
+                        "message": msg,
+                        "video_path": vp_str,
+                    })
+                    try:
+                        asyncio.get_running_loop()
+                        asyncio.create_task(coro)
+                    except RuntimeError:
+                        asyncio.run_coroutine_threadsafe(coro, loop)
 
                 output = await upscale_video(
                     input_path=vp_str,

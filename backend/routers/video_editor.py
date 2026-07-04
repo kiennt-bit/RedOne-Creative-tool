@@ -138,21 +138,26 @@ def _scan_media_sync(type_str: str, limit: int) -> dict:
     items: list[dict] = []
     base = OUTPUT_DIR.resolve()
     
-    # Target specific folders to avoid slow recursive traversing
-    dirs_to_scan = []
+    # Target folders to scan recursively based on type
+    paths_to_scan = []
     if "video" in wanted:
-        dirs_to_scan.append(base / "video")
+        paths_to_scan.append((base / "video", True))
+        paths_to_scan.append((base / "video_editor" / "uploads", True))
     if "image" in wanted:
-        dirs_to_scan.append(base / "image")
-    dirs_to_scan.append(base / "video_editor" / "uploads")
-    dirs_to_scan.append(base)  # outputs root
+        paths_to_scan.append((base / "image", True))
+    if "audio" in wanted:
+        paths_to_scan.append((base / "audio", True))
+    
+    # Also scan outputs root shallowly
+    paths_to_scan.append((base, False))
     
     seen_paths = set()
-    for d in dirs_to_scan:
+    for d, recursive in paths_to_scan:
         if not d.exists() or not d.is_dir():
             continue
         try:
-            for p in d.iterdir():
+            iterator = d.rglob("*") if recursive else d.iterdir()
+            for p in iterator:
                 if not p.is_file() or p in seen_paths:
                     continue
                 seen_paths.add(p)
