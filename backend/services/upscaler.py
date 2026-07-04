@@ -63,39 +63,80 @@ def is_upscaler_available() -> bool:
 
 
 async def get_video_info(video_path: str) -> dict:
-    """Get video info (duration, fps, resolution) via ffprobe."""
+    """Get video info (duration, fps, resolution) via ffprobe, falls back to ffmpeg."""
     ffprobe = _find_ffprobe()
-    if not ffprobe:
+    if ffprobe:
+        try:
+            from .ffmpeg_utils import subprocess_no_window_kwargs
+            proc = await asyncio.create_subprocess_exec(
+                ffprobe, "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                str(video_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **subprocess_no_window_kwargs(),
+            )
+            stdout, _ = await proc.communicate()
+            import json
+            data = json.loads(stdout.decode())
+            stream = (data.get("streams") or [{}])[0]
+            fmt = data.get("format") or {}
+            # Parse frame rate like "30/1"
+            fps_str = stream.get("r_frame_rate", "30/1")
+            parts = fps_str.split("/")
+            fps = float(parts[0]) / float(parts[1]) if len(parts) == 2 else 30.0
+            return {
+                "width": stream.get("width", 0),
+                "height": stream.get("height", 0),
+                "fps": round(fps, 2),
+                "duration": float(fmt.get("duration", 0)),
+                "nb_frames": int(stream.get("nb_frames", 0)),
+            }
+        except Exception as e:
+            log.warning("ffprobe failed: %s", e)
+
+    # Fallback to ffmpeg -i parsing
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
         return {}
     try:
+        from .ffmpeg_utils import subprocess_no_window_kwargs
         proc = await asyncio.create_subprocess_exec(
-            ffprobe, "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
-            "-show_entries", "format=duration",
-            "-of", "json",
-            str(video_path),
-            stdout=asyncio.subprocess.PIPE,
+            ffmpeg, "-i", str(video_path),
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            **subprocess_no_window_kwargs(),
         )
-        stdout, _ = await proc.communicate()
-        import json
-        data = json.loads(stdout.decode())
-        stream = (data.get("streams") or [{}])[0]
-        fmt = data.get("format") or {}
-        # Parse frame rate like "30/1"
-        fps_str = stream.get("r_frame_rate", "30/1")
-        parts = fps_str.split("/")
-        fps = float(parts[0]) / float(parts[1]) if len(parts) == 2 else 30.0
+        _, stderr_data = await proc.communicate()
+        import re
+        text = (stderr_data or b"").decode("utf-8", errors="replace")
+        dim_m = re.search(r"(\d{3,5})x(\d{3,5})", text)
+        fps_m = re.search(r"(\d+(?:\.\d+)?)\s*fps", text)
+        dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+        
+        width = int(dim_m.group(1)) if dim_m else 0
+        height = int(dim_m.group(2)) if dim_m else 0
+        fps = float(fps_m.group(1)) if fps_m else 25.0
+        
+        duration = 0.0
+        if dur_m:
+            h, m, s = float(dur_m.group(1)), float(dur_m.group(2)), float(dur_m.group(3))
+            duration = h * 3600 + m * 60 + s
+            
+        nb_frames = int(duration * fps) if duration > 0 else 0
+        
         return {
-            "width": stream.get("width", 0),
-            "height": stream.get("height", 0),
+            "width": width,
+            "height": height,
             "fps": round(fps, 2),
-            "duration": float(fmt.get("duration", 0)),
-            "nb_frames": int(stream.get("nb_frames", 0)),
+            "duration": duration,
+            "nb_frames": nb_frames,
         }
     except Exception as e:
-        log.warning("ffprobe failed: %s", e)
+        log.warning("ffmpeg probe fallback failed: %s", e)
         return {}
 
 
