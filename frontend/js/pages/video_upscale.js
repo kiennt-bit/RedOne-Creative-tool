@@ -152,6 +152,7 @@ export async function renderVideoUpscale(root) {
 
 // ── Upload Logic ──
 async function handleUploads(files) {
+  const filesArray = Array.from(files);
   const fill = document.getElementById('upload-fill');
   const text = document.getElementById('upload-text');
   const progress = document.querySelector('.upload-progress');
@@ -159,21 +160,21 @@ async function handleUploads(files) {
   progress.style.display = 'block';
   fill.style.width = '0%';
   
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    text.textContent = `Đang tải lên: ${file.name} (${i+1}/${files.length})`;
+  for (let i = 0; i < filesArray.length; i++) {
+    const file = filesArray[i];
+    text.textContent = `Đang tải lên: ${file.name} (${i+1}/${filesArray.length})`;
     const fd = new FormData();
     fd.append('file', file);
     
     try {
-      fill.style.width = `${((i) / files.length) * 100 + 10}%`;
+      fill.style.width = `${((i) / filesArray.length) * 100 + 10}%`;
       const res = await api.postForm('/api/video-editor/upload', fd);
       toast(`Đã tải lên: ${file.name}`, 'success');
       addVideoToQueue({ path: res.path, name: file.name });
     } catch (e) {
       toast(`Lỗi tải lên ${file.name}: ${e.message}`, 'error');
     }
-    fill.style.width = `${((i+1) / files.length) * 100}%`;
+    fill.style.width = `${((i+1) / filesArray.length) * 100}%`;
   }
   
   setTimeout(() => { progress.style.display = 'none'; }, 1000);
