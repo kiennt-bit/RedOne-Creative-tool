@@ -206,10 +206,14 @@ async function initFeatures() {
     featureState.initBuiltinDefaults();
     renderFeatureNav();
     featureState.onChange(renderFeatureNav);
-    // If the boot hash points to an installed feature, render it now that the
-    // catalog is available (boot navigated to a static page meanwhile).
+    // If the boot hash points to an installed feature, render it now.
     const h = (location.hash || '').slice(1);
-    if (h && getFeature(h) && featureState.isInstalled(h)) navigate(h);
+    if (h && getFeature(h) && featureState.isInstalled(h)) {
+      navigate(h);
+    } else if (!PAGES[h]) {
+      // Not a valid static page nor an installed feature -> fallback to content
+      navigate('content');
+    }
   } catch (e) {
     console.warn('initFeatures failed:', e);
   }
@@ -908,7 +912,9 @@ async function init() {
   autoScanAccounts();
 
   const initialPage = (location.hash || '#content').slice(1);
-  navigate(PAGES[initialPage] ? initialPage : 'content');
+  if (PAGES[initialPage]) {
+    navigate(initialPage);
+  }
 
   // Non-blocking update check
   checkForUpdate();
