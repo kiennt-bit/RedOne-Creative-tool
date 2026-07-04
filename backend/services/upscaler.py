@@ -143,8 +143,11 @@ async def upscale_video(
         scale = 2
 
     if output_path is None:
+        from ..config import OUTPUT_DIR
+        out_dir = OUTPUT_DIR / "video"
+        out_dir.mkdir(parents=True, exist_ok=True)
         stem = vp.stem
-        output_path = str(vp.parent / f"{stem}_upscaled_x{scale}{vp.suffix}")
+        output_path = str(out_dir / f"{stem}_upscaled_x{scale}{vp.suffix}")
 
     _emit = progress or (lambda *_: None)
 

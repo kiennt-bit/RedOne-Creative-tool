@@ -129,41 +129,64 @@ async def delete_project(project_id: int):
 
 # ─────────────────────────── Media library ──────────────────────────
 
-@router.get("/my-media")
-async def my_media(type: str = "all", limit: int = 300):
-    """List the user's own media (app outputs + editor uploads), newest first.
-
-    `type` = all | video | image | audio. Scans OUTPUT_DIR for media extensions.
-    """
+def _scan_media_sync(type_str: str, limit: int) -> dict:
     wanted = {
         "all": {"video", "image", "audio"},
         "video": {"video"}, "image": {"image"}, "audio": {"audio"},
-    }.get(type, {"video", "image", "audio"})
+    }.get(type_str, {"video", "image", "audio"})
+    
     items: list[dict] = []
     base = OUTPUT_DIR.resolve()
-    for p in base.rglob("*"):
-        if not p.is_file():
-            continue
-        ext = p.suffix.lower()
-        if ext not in MEDIA_EXTS:
-            continue
-        mt = _media_type(p)
-        if mt not in wanted:
+    
+    # Target specific folders to avoid slow recursive traversing
+    dirs_to_scan = []
+    if "video" in wanted:
+        dirs_to_scan.append(base / "video")
+    if "image" in wanted:
+        dirs_to_scan.append(base / "image")
+    dirs_to_scan.append(base / "video_editor" / "uploads")
+    dirs_to_scan.append(base)  # outputs root
+    
+    seen_paths = set()
+    for d in dirs_to_scan:
+        if not d.exists() or not d.is_dir():
             continue
         try:
-            st = p.stat()
+            for p in d.iterdir():
+                if not p.is_file() or p in seen_paths:
+                    continue
+                seen_paths.add(p)
+                ext = p.suffix.lower()
+                if ext not in MEDIA_EXTS:
+                    continue
+                mt = _media_type(p)
+                if mt not in wanted:
+                    continue
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                items.append({
+                    "path": str(p),
+                    "url": _rel_url(p),
+                    "name": p.name,
+                    "type": mt,
+                    "mtime": st.st_mtime,
+                    "size": st.st_size,
+                })
         except OSError:
             continue
-        items.append({
-            "path": str(p),
-            "url": _rel_url(p),
-            "name": p.name,
-            "type": mt,
-            "mtime": st.st_mtime,
-            "size": st.st_size,
-        })
+            
     items.sort(key=lambda x: x["mtime"], reverse=True)
     return {"media": items[: max(1, min(limit, 2000))], "total": len(items)}
+
+
+@router.get("/my-media")
+async def my_media(type: str = "all", limit: int = 300):
+    """List the user's own media (app outputs + editor uploads), newest first.
+    Runs filesystem I/O in a thread to keep the event loop responsive.
+    """
+    return await asyncio.to_thread(_scan_media_sync, type, limit)
 
 
 @router.post("/upload")
