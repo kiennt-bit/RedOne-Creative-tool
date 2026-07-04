@@ -16,6 +16,7 @@ let _root = null;
 let _upscaling = false;
 let _selectedPaths = []; // Array of { path, name }
 let _mediaObserver = null;
+let _galleryItems = [];
 
 export async function renderVideoUpscale(root) {
   _root = root;
@@ -83,11 +84,21 @@ export async function renderVideoUpscale(root) {
     el('h3', { className: 'card-title' }, 'Thư viện video'),
     el('button', { className: 'btn btn-icon btn-ghost', title: 'Làm mới', onclick: () => loadGallery() }, icon('refresh', 16))
   );
+  const gallerySearch = el('input', { 
+    class: 'input', 
+    id: 'gallery-search', 
+    placeholder: 'Tìm kiếm video theo tên...', 
+    style: { width: '100%', marginBottom: '12px' } 
+  });
   const galleryGrid = el('div', { className: 'media-gallery', id: 'media-gallery' }, 
     el('div', { className: 'field-help' }, 'Đang tải danh sách video...')
   );
   
-  mediaCol.append(dropZone, galleryHeader, galleryGrid);
+  mediaCol.append(dropZone, galleryHeader, gallerySearch, galleryGrid);
+
+  gallerySearch.addEventListener('input', (e) => {
+    renderGalleryGrid(e.target.value.trim().toLowerCase());
+  });
 
   // ── RIGHT COLUMN (Settings & Controls) ──
   const settingsCol = el('div', { className: 'upscale-col settings-col' });
@@ -199,47 +210,64 @@ async function loadGallery() {
   if (!gallery) return;
   gallery.innerHTML = '<div class="field-help">Đang tải danh sách video...</div>';
   
+  try {
+    const res = await api.get('/api/video-editor/my-media?type=video');
+    _galleryItems = res.media || [];
+    
+    // Reset search input value
+    const searchInput = document.getElementById('gallery-search');
+    if (searchInput) searchInput.value = '';
+    
+    renderGalleryGrid('');
+  } catch (e) {
+    gallery.innerHTML = `<div class="field-help text-danger" style="color:var(--red)">Lỗi tải danh sách video: ${e.message}</div>`;
+  }
+}
+
+function renderGalleryGrid(q) {
+  const gallery = document.getElementById('media-gallery');
+  if (!gallery) return;
+  
   if (_mediaObserver) {
     _mediaObserver.disconnect();
     _mediaObserver = null;
   }
   
-  try {
-    const res = await api.get('/api/video-editor/my-media?type=video');
-    const items = res.media || [];
-    gallery.innerHTML = '';
-    
-    if (items.length === 0) {
-      gallery.innerHTML = '<div class="field-help">Chưa có video nào. Kéo thả file lên trên hoặc chọn video đã tạo từ tab khác.</div>';
-      return;
-    }
-
-    items.forEach(item => {
-      const isSelected = _selectedPaths.some(p => p.path === item.path);
-      const card = el('div', { 
-        className: `media-card ${isSelected ? 'selected' : ''}`,
-        onclick: () => toggleVideoSelection(item, card)
-      });
-      
-      const thumb = el('div', { className: 'media-thumb' });
-      const vid = el('video', { 'data-src': item.url, muted: true, preload: 'none' });
-      thumb.append(vid);
-      
-      const info = el('div', { className: 'media-info' },
-        el('div', { className: 'media-name', title: item.name }, item.name),
-        el('div', { className: 'media-meta field-help' }, formatBytes(item.size))
-      );
-      
-      const check = el('div', { className: 'check-circle' }, icon('check', 14));
-      card.append(thumb, info, check);
-      gallery.append(card);
-    });
-
-    _mediaObserver = makeLazyVideoObserver(gallery, { rootMargin: '300px' });
-    gallery.querySelectorAll('video[data-src]').forEach((v) => _mediaObserver.observe(v));
-  } catch (e) {
-    gallery.innerHTML = `<div class="field-help text-danger" style="color:var(--red)">Lỗi tải danh sách video: ${e.message}</div>`;
+  gallery.innerHTML = '';
+  
+  let items = _galleryItems;
+  if (q) {
+    items = items.filter(item => (item.name || '').toLowerCase().includes(q));
   }
+  
+  if (items.length === 0) {
+    gallery.innerHTML = '<div class="field-help">Không tìm thấy video nào.</div>';
+    return;
+  }
+
+  items.forEach(item => {
+    const isSelected = _selectedPaths.some(p => p.path === item.path);
+    const card = el('div', { 
+      className: `media-card ${isSelected ? 'selected' : ''}`,
+      onclick: () => toggleVideoSelection(item, card)
+    });
+    
+    const thumb = el('div', { className: 'media-thumb' });
+    const vid = el('video', { 'data-src': item.url, muted: true, preload: 'none' });
+    thumb.append(vid);
+    
+    const info = el('div', { className: 'media-info' },
+      el('div', { className: 'media-name', title: item.name }, item.name),
+      el('div', { className: 'media-meta field-help' }, formatBytes(item.size))
+    );
+    
+    const check = el('div', { className: 'check-circle' }, icon('check', 14));
+    card.append(thumb, info, check);
+    gallery.append(card);
+  });
+
+  _mediaObserver = makeLazyVideoObserver(gallery, { rootMargin: '300px' });
+  gallery.querySelectorAll('video[data-src]').forEach((v) => _mediaObserver.observe(v));
 }
 
 function formatBytes(bytes) {
