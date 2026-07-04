@@ -184,15 +184,15 @@ async function handleUploads(files) {
     
     try {
       // simulate progress
-      fill.style.width = \`\${((i) / files.length) * 100 + 10}%\`;
+      fill.style.width = `${((i) / files.length) * 100 + 10}%`;
       const res = await api.postForm('/api/video-editor/upload', fd);
-      toast('success', \`Đã tải lên: \${file.name}\`);
+      toast('success', `Đã tải lên: ${file.name}`);
       // Auto-add to selected list
       addVideoToQueue({ path: res.path, name: file.name });
     } catch (e) {
-      toast('error', \`Lỗi tải lên \${file.name}: \${e.message}\`);
+      toast('error', `Lỗi tải lên ${file.name}: ${e.message}`);
     }
-    fill.style.width = \`\${((i+1) / files.length) * 100}%\`;
+    fill.style.width = `${((i+1) / files.length) * 100}%`;
   }
   
   setTimeout(() => { progress.style.display = 'none'; }, 1000);
@@ -217,7 +217,7 @@ async function loadGallery() {
     items.forEach(item => {
       const isSelected = _selectedPaths.some(p => p.path === item.path);
       const card = el('div', { 
-        className: \`media-card \${isSelected ? 'selected' : ''}\`,
+        className: `media-card ${isSelected ? 'selected' : ''}`,
         onclick: () => toggleVideoSelection(item, card)
       });
       
@@ -236,7 +236,7 @@ async function loadGallery() {
       gallery.append(card);
     });
   } catch (e) {
-    gallery.innerHTML = \`<div class="empty-state text-danger">Lỗi tải danh sách video: \${e.message}</div>\`;
+    gallery.innerHTML = `<div class="empty-state text-danger">Lỗi tải danh sách video: ${e.message}</div>`;
   }
 }
 
@@ -349,7 +349,7 @@ async function startUpscale() {
       denoise,
     });
   } catch (e) {
-    toast('error', \`Lỗi bắt đầu: \${e.message || e}\`);
+    toast('error', `Lỗi bắt đầu: ${e.message || e}`);
     _upscaling = false;
     if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">rocket_launch</span> Bắt đầu Upscale'; }
   }
@@ -360,8 +360,8 @@ function onProgress(d) {
   const fill = document.getElementById('upscale-fill');
   const pct = document.getElementById('upscale-percent');
   const msg = document.getElementById('upscale-msg');
-  if (fill) fill.style.width = \`\${d.percent}%\`;
-  if (pct) pct.textContent = \`\${Math.round(d.percent)}%\`;
+  if (fill) fill.style.width = `${d.percent}%`;
+  if (pct) pct.textContent = `${Math.round(d.percent)}%`;
   if (msg) msg.textContent = d.message;
 }
 
@@ -377,7 +377,7 @@ function onCompleted(d) {
       el('span', { className: 'text-success' }, icon('check_circle', 14), ' Hoàn tất')
     ),
     el('a', {
-      href: \`/outputs/video/\${name}\`,
+      href: `/outputs/video/${name}`,
       download: name,
       className: 'btn btn-outline',
       title: 'Tải về'
@@ -392,7 +392,7 @@ function onCompleted(d) {
 }
 
 function onError(d) {
-  toast('error', \`Upscale thất bại: \${d.error}\`);
+  toast('error', `Upscale thất bại: ${d.error}`);
 }
 
 function onBatchDone(d) {
@@ -402,14 +402,14 @@ function onBatchDone(d) {
   const msg = document.getElementById('upscale-msg');
   const iconEl = document.querySelector('.active-task-card .material-symbols-outlined');
   
-  if (msg) msg.textContent = \`Hoàn tất \${d.results?.length || 0}/\${d.total} video!\`;
+  if (msg) msg.textContent = `Hoàn tất ${d.results?.length || 0}/${d.total} video!`;
   if (iconEl) {
     iconEl.textContent = 'check_circle';
     iconEl.classList.remove('spin', 'text-primary');
     iconEl.classList.add('text-success');
   }
   
-  toast('success', \`Upscale xong \${d.results?.length || 0} video.\`);
+  toast('success', `Upscale xong ${d.results?.length || 0} video.`);
   loadGallery(); // refresh gallery to show new files
 }
 
@@ -418,7 +418,7 @@ function _addStyles() {
   if (document.getElementById('upscale-styles-v2')) return;
   const style = document.createElement('style');
   style.id = 'upscale-styles-v2';
-  style.textContent = \`
+  style.textContent = `
     /* Premium Layout & Glassmorphism */
     .upscale-header-premium {
       display: flex; align-items: center; gap: 16px; margin-bottom: 24px;
@@ -563,6 +563,6 @@ function _addStyles() {
     }
     .spin { animation: spin 1.5s linear infinite; }
     @keyframes spin { 100% { transform: rotate(360deg); } }
-  \`;
+  `;
   document.head.append(style);
 }
