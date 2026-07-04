@@ -155,7 +155,11 @@ def install_frontend(feature: dict, progress: ProgressCb) -> dict:
 
 
 def install_asset(feature: dict, progress: ProgressCb) -> dict:
-    """Download model/binary assets to their declared dest (under USER_DATA_ROOT)."""
+    """Download model/binary assets to their declared dest (under USER_DATA_ROOT).
+
+    If an asset has an ``extract_to`` key, the downloaded file is treated as a
+    zip archive and extracted to that directory (relative to USER_DATA_ROOT).
+    """
     fid = feature["id"]
     assets = feature.get("assets") or []
     if not assets:
@@ -175,7 +179,21 @@ def install_asset(feature: dict, progress: ProgressCb) -> dict:
             progress((_i * 100 + p) / n, s, m)
 
         _download(a["url"], dest, a.get("sha256"), _scoped, rel)
-        files.append(rel)
+
+        # If extract_to is specified, treat as zip and extract
+        extract_to = a.get("extract_to")
+        if extract_to and str(dest).lower().endswith(".zip"):
+            extract_dir = (USER_DATA_ROOT / extract_to).resolve()
+            if not str(extract_dir).startswith(str(root)):
+                raise ValueError(f"extract_to không an toàn: {extract_to}")
+            progress((_scoped and (i * 100 + 95)) / n, "extracting",
+                     f"Đang giải nén {rel}...")
+            _safe_extract_zip(dest, extract_dir)
+            dest.unlink(missing_ok=True)  # remove zip after extraction
+            files.append(extract_to)
+        else:
+            files.append(rel)
+
     rec = {"kind": "asset", "version": feature.get("version", ""), "files": files}
     inst = load_installed()
     inst[fid] = rec

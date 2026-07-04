@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RedOne GenFill</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-brand">
+      <svg class="header-logo" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+      </svg>
+      <span class="header-title">RedOne GenFill</span>
+    </div>
+    <div class="header-status" id="connection-status">
+      <span class="status-dot offline"></span>
+      <span class="status-text">Đang kết nối…</span>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="main">
+    <!-- Document Info -->
+    <section class="section doc-info" id="doc-info">
+      <div class="info-row">
+        <span class="info-label">Document:</span>
+        <span class="info-value" id="doc-name">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Size:</span>
+        <span class="info-value" id="doc-size">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Selection:</span>
+        <span class="info-value" id="selection-status">—</span>
+      </div>
+    </section>
+
+    <!-- Model Selection -->
+    <section class="section">
+      <label class="field-label" for="model-select">Model</label>
+      <select id="model-select" class="field-select">
+        <option value="nano_banana_pro" selected>Nano Banana Pro</option>
+        <option value="nano_banana_2">Nano Banana 2</option>
+        <option value="imagen_4">Imagen 4</option>
+      </select>
+      <div style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="upscale-4k" checked>
+        <label for="upscale-4k" style="font-size: 13px;">Upscale 4K (High Quality)</label>
+      </div>
+    </section>
+
+    <!-- Prompt -->
+    <section class="section">
+      <label class="field-label" for="prompt-input">Prompt</label>
+      <textarea id="prompt-input" class="field-textarea"
+        placeholder="Mô tả nội dung muốn tạo trong vùng chọn…"
+        rows="3"></textarea>
+    </section>
+
+    <!-- Generate Button -->
+    <section class="section">
+      <button id="btn-generate" class="btn-primary" disabled>
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/>
+        </svg>
+        <span>Tạo GenFill</span>
+      </button>
+    </section>
+
+    <!-- Progress -->
+    <section class="section progress-section" id="progress-section" style="display:none;">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <div class="progress-text" id="progress-text">Đang xử lý…</div>
+    </section>
+
+    <!-- Result Preview -->
+    <section class="section result-section" id="result-section" style="display:none;">
+      <div class="result-header">
+        <span class="field-label">Kết quả</span>
+        <span class="result-meta" id="result-meta"></span>
+      </div>
+      <div class="result-preview">
+        <img id="result-image" class="result-img" alt="GenFill result" />
+      </div>
+      <div class="result-actions">
+        <button id="btn-apply" class="btn-secondary">
+          <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+          </svg>
+          Apply vào PS
+        </button>
+        <button id="btn-regenerate" class="btn-outline">
+          <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+          </svg>
+          Tạo lại
+        </button>
+      </div>
+    </section>
+
+    <!-- Error -->
+    <section class="section error-section" id="error-section" style="display:none;">
+      <div class="error-box">
+        <span class="error-icon">⚠</span>
+        <span class="error-text" id="error-text"></span>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>RedOne GenFill v1.0 • Standalone Plugin</span>
+  </footer>
+
+  <script src="js/CSInterface.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

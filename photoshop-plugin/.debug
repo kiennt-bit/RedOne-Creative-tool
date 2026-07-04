@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Debug configuration for CEP extension development.
+     Place this file at the extension root to enable debugging.
+     Connect Chrome DevTools to the specified port to debug the panel. -->
+<ExtensionList>
+  <Extension Id="com.redone.genfill.panel">
+    <HostList>
+      <!-- Port for Chrome DevTools debugging -->
+      <Host Name="PHXS" Port="8098"/>
+      <Host Name="PHSP" Port="8098"/>
+    </HostList>
+  </Extension>
+</ExtensionList>

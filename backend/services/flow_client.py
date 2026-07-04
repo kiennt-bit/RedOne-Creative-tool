@@ -817,6 +817,170 @@ class FlowClient:
             log.error(f"Image download error: {e}")
         return False
     
+    # ── Generative Fill (image + mask → generate) ───────────
+
+    async def generate_image_with_mask(
+        self,
+        prompt: str,
+        base_image_id: str,
+        mask_image_id: str,
+        model_key: str = "nano_banana_pro",
+        seed: int | None = None,
+    ) -> dict:
+        """Generate an image using generative fill (mask-based editing).
+
+        Takes a base image and a black/white mask (white = area to fill)
+        and generates new content in the masked region guided by the prompt.
+        Used by the Photoshop GenFill plugin.
+
+        Args:
+            prompt: Text prompt describing what to generate in the masked area
+            base_image_id: media_id of the uploaded base image
+            mask_image_id: media_id of the uploaded mask image (white = fill)
+            model_key: Model key (nano_banana_pro, nano_banana_2)
+            seed: Random seed (auto-generated if None)
+
+        Returns:
+            dict with keys: media_id, download_url, seed, width, height
+        """
+        await self.ensure_token()
+
+        import random
+        if seed is None:
+            seed = random.randint(100000, 999999)
+
+        # Resolve model name — mask editing uses same model map
+        model_name = self.IMAGE_MODEL_MAP.get(model_key, model_key)
+
+        # Build imageInputs — both are REFERENCE type
+        # The applet config (flowSdkInfo) tells the API which is base vs mask
+        image_inputs = [
+            {
+                "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE",
+                "name": base_image_id,
+            },
+            {
+                "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE",
+                "name": mask_image_id,
+            },
+        ]
+
+        # Augment prompt with mask context (matches the mask magic tool)
+        full_prompt = (
+            f"Task: {prompt}. Blend naturally into the background. "
+            "The mask indicates the edit area.. Match the exact aspect ratio "
+            "and framing of the reference image."
+        )
+
+        # Get reCAPTCHA token
+        recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+
+        # Build client context
+        client_context = {
+            "projectId": self.project_id,
+            "tool": "PINHOLE",
+            "sessionId": f";{int(time.time() * 1000)}",
+        }
+        if recaptcha_token:
+            client_context["recaptchaContext"] = {
+                "token": recaptcha_token,
+                "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+            }
+
+        # Build request — matches the mask magic tool's exact payload structure
+        request_item = {
+            "clientContext": client_context,
+            "imageModelName": model_name,
+            "imageAspectRatio": "IMAGE_ASPECT_RATIO_UNSPECIFIED",
+            "structuredPrompt": {
+                "parts": [{"text": full_prompt}]
+            },
+            "seed": seed,
+            "imageInputs": image_inputs,
+            "requestContext": {
+                "flowSdkInfo": {
+                    "appletId": "54ee85a4-a175-4d14-a699-544f4bf86a21",
+                    "appletVersionId": "4bde581b-6813-4639-9b72-337222808bbc",
+                }
+            },
+        }
+
+        payload = {
+            "clientContext": client_context,
+            "mediaGenerationContext": {
+                "batchId": os.urandom(16).hex()[:8] + "-" +
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(4).hex()[:4] + "-" +
+                           os.urandom(12).hex()[:12],
+            },
+            "useNewMedia": True,
+            "requests": [request_item],
+        }
+
+        endpoint = f"projects/{self.project_id}/flowMedia:batchGenerateImages"
+
+        log.info(f"[{self._account_email}] GenFill: model={model_name}, "
+                 f"base={base_image_id[:12]}…, mask={mask_image_id[:12]}…, seed={seed}")
+
+        # Retry loop (same pattern as generate_image)
+        import random as _rand
+        result = None
+        for attempt in range(5):
+            if attempt > 0:
+                await asyncio.sleep(_rand.uniform(1.5, 3.0))
+                recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+                if recaptcha_token:
+                    client_context["recaptchaContext"] = {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                    }
+
+            result = await self._browser_sandbox_request(endpoint, payload, is_text_plain=True)
+
+            if "error" in result:
+                err_str = str(result.get("text", result.get("error", "")))
+                err_lc = err_str.lower()
+                is_recaptcha = (
+                    "403" in err_str or "recaptcha" in err_lc
+                    or "permission_denied" in err_lc or "unusual_activity" in err_lc
+                )
+                is_throttled = (
+                    "429" in err_str
+                    or "resource_exhausted" in err_lc
+                    or "throttled" in err_lc
+                    or "user_requests_throttled" in err_lc
+                    or "rate" in err_lc and "limit" in err_lc
+                )
+                if is_throttled and attempt < 4:
+                    delay = min(60, (5 * (attempt + 1)) + _rand.uniform(2, 8))
+                    log.warning(
+                        f"[{self._account_email}] GenFill throttled 429 "
+                        f"(attempt {attempt + 1}/5) — backing off {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if is_recaptcha and attempt < 4:
+                    log.warning(
+                        f"[{self._account_email}] GenFill reCAPTCHA rejected "
+                        f"(attempt {attempt + 1}/5) — reloading page to reset score..."
+                    )
+                    try:
+                        await self.renew_token()
+                    except Exception as e:
+                        log.warning(f"renew_token during genfill retry failed: {e}")
+                    continue
+                log.error(f"[{self._account_email}] GenFill failed: {result}")
+                raise ValueError(err_str)
+
+            break
+        else:
+            err_str = str(result.get("text", result.get("error", "Unknown Error")))
+            log.error(f"[{self._account_email}] GenFill failed after 5 attempts: {result}")
+            raise ValueError(err_str)
+
+        return self._extract_image_result(result)
+
     # ── Upscale Image (2K / 4K) ──────────────────────────────
     
     UPSCALE_RESOLUTION_MAP = {

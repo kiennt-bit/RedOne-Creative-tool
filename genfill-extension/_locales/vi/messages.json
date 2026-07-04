@@ -1,0 +1,10 @@
+{
+  "appName": {
+    "message": "RedOne Auth Helper",
+    "description": "Extension name"
+  },
+  "appDescription": {
+    "message": "Bridge giữa RedOne Creative và Chrome thật của bạn — harvest reCAPTCHA + proxy API calls để tránh bị Google flag 403.",
+    "description": "Extension description"
+  }
+}

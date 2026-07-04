@@ -99,6 +99,42 @@ class BridgeFlowClient(FlowClient):
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         )
+        # Per-account proxy (G-Labs #8) — loaded from config
+        from ..config import ACCOUNT_PROXIES
+        self._proxy: str = ACCOUNT_PROXIES.get(account_email, "")
+        # Per-account error tracking (G-Labs #5)
+        self._consecutive_errors: int = 0
+        self._consecutive_403_count: int = 0
+        self._last_request_status: str = "ok"
+        self._total_errors: int = 0
+        self._total_success: int = 0
+
+    def _record_success(self) -> None:
+        """Mark a successful API call."""
+        self._consecutive_errors = 0
+        self._consecutive_403_count = 0
+        self._last_request_status = "ok"
+        self._total_success += 1
+
+    def _record_error(self, error_type: str = "unknown") -> None:
+        """Mark a failed API call and trigger session commands if needed."""
+        self._consecutive_errors += 1
+        self._total_errors += 1
+        self._last_request_status = error_type
+        if "403" in error_type:
+            self._consecutive_403_count += 1
+
+    def get_health_stats(self) -> dict:
+        """Return per-account health metrics."""
+        return {
+            "email": self._account_email,
+            "consecutive_errors": self._consecutive_errors,
+            "consecutive_403": self._consecutive_403_count,
+            "last_status": self._last_request_status,
+            "total_errors": self._total_errors,
+            "total_success": self._total_success,
+            "should_disable": self._consecutive_errors >= 10,
+        }
 
     # ── Auth / token ────────────────────────────────────────────────
 
@@ -180,10 +216,24 @@ class BridgeFlowClient(FlowClient):
             )
 
     async def renew_token(self):
-        """Force a fresh /fx/api/auth/session. No page reload needed —
-        cookies live in user's Chrome, not in our state."""
+        """Force a fresh /fx/api/auth/session. If 403s have cascaded
+        (3+ consecutive), push session commands to clear cookies and
+        reload the tab (G-Labs _applyThemeUpdates strategy)."""
         log.info(f"[{self._account_email}] (bridge) renewing token...")
         self._token = None
+
+        # Aggressive reset when 403s cascade
+        if self._consecutive_403_count >= 3:
+            log.warning(
+                f"[{self._account_email}] 403 cascade ({self._consecutive_403_count}x) "
+                "→ pushing session commands: clear_cookies + reload_tab"
+            )
+            bridge.push_session_command("clear_cookies")
+            bridge.push_session_command("delay", {"ms": 2000})
+            bridge.push_session_command("reload_tab")
+            bridge.push_session_command("delay", {"ms": 3000})
+            self._consecutive_403_count = 0
+
         await self.ensure_token()
 
     # ── Sandbox HTTP calls (route via bridge) ───────────────────────
@@ -250,11 +300,13 @@ class BridgeFlowClient(FlowClient):
                 else:
                     err_text = r.get("body_text", "")[:200]
                 log.warning(f"(bridge) {endpoint}: HTTP {status}: {err_text[:100]}")
-                # reCAPTCHA-flavored 403 — don't bother renewing token,
+                # reCAPTCHA-flavored 403 — track + don't bother renewing token,
                 # surface the error so circuit breaker can handle.
                 low = err_text.lower()
                 if "recaptcha" in low or "unusual_activity" in low:
+                    self._record_error(f"403_recaptcha")
                     return {"error": f"HTTP {status}", "text": err_text}
+                self._record_error(f"{status}")
                 try:
                     await self.renew_token()
                 except SessionDeadError:
@@ -275,6 +327,7 @@ class BridgeFlowClient(FlowClient):
                     )
 
             if 200 <= status < 300:
+                self._record_success()
                 body = r.get("body")
                 if isinstance(body, dict):
                     return body

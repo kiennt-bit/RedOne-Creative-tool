@@ -21,10 +21,34 @@
       "minAppVersion": "1.5.0",
       "size": "~33 KB",
       "download": {
-        "url": "https://github.com/kiennt-bit/RedOne-Creative-tool/releases/download/addons-v1/video-editor-v1.0.0.zip",
+        "url": "https://github.com/kiennt-bit/RedOne-Creative-tool-Addon/releases/download/addons-v1/video-editor-v1.0.0.zip",
         "entry": "video_editor.js",
         "sha256": "3dfe2a1122f1deda8b6e8f65a0ab143fb59cf53571fee06d67f02bc50feab597"
       }
+    },
+    {
+      "id": "video-upscale",
+      "name": "Video Upscale (AI)",
+      "description": "Nâng cấp chất lượng video bằng Real-ESRGAN AI — hỗ trợ GPU Intel/AMD/NVIDIA.",
+      "group": "Xử lý video",
+      "icon": "trending_up",
+      "tags": ["video", "ai", "heavy"],
+      "kind": "asset",
+      "module": "video_upscale",
+      "renderName": "renderVideoUpscale",
+      "version": "1.0.0",
+      "defaultInstalled": false,
+      "comingSoon": false,
+      "minAppVersion": "1.5.0",
+      "size": "~43 MB",
+      "assets": [
+        {
+          "url": "https://github.com/kiennt-bit/RedOne-Creative-tool-Addon/releases/download/addons-v1/realesrgan-ncnn-vulkan-windows.zip",
+          "dest": "addons/video-upscale/realesrgan-ncnn-vulkan-windows.zip",
+          "extract_to": "addons/video-upscale",
+          "sha256": ""
+        }
+      ]
     }
   ]
 }

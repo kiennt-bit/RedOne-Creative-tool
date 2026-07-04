@@ -23,7 +23,7 @@
 //     Multi-tab routing comes later.
 //   - Same XOR key (0x5A) for protocol parity with the backend.
 
-const BRIDGE_HOST = "http://127.0.0.1:8000";
+const BRIDGE_HOSTS = ["http://127.0.0.1:8000", "http://127.0.0.1:8099", "http://127.0.0.1:8098"];
 const POLL_INTERVAL_MS = 1500;
 // When we just claimed a task AND still have spare capacity, poll again
 // almost immediately so a batch of N parallel items fans out in a few
@@ -45,6 +45,16 @@ let _inFlight = 0;          // tasks currently executing (not yet result-posted)
 let _connected = false;
 let _tokenCount = 0;
 let _lastSuccessAt = null;
+
+// Anti-idle mouse jiggle — mimics human cursor activity on labs.google tab
+// when tasks are running. Reduces reCAPTCHA risk score accumulation during
+// long batch runs. Inspired by G-Labs Automation's grokKeepAlive pattern.
+let _lastJiggleAt = 0;
+
+// Automatic tab prefetch — auto-open labs.google tab if none found.
+// 60s cooldown prevents spamming tabs on repeated failures.
+let _lastPrefetchAt = 0;
+const _PREFETCH_COOLDOWN_MS = 60000;
 
 // Shakker bridge state — set when content_shakker.js sends SHAKKER_SYNC.
 // Restored from chrome.storage at SW wake so the popup shows correct
@@ -71,17 +81,56 @@ chrome.storage.local.get(
 // otherwise). Three different alarm intervals to cover edge cases.
 chrome.alarms.create("poll", { periodInMinutes: 0.5 });
 chrome.alarms.create("heartbeat", { periodInMinutes: 0.25 });
+// Anti-idle: inject mouse/scroll activity every ~2.5min to keep reCAPTCHA
+// risk score low during long batch runs.
+chrome.alarms.create("antiIdle", { periodInMinutes: 2.5 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === "poll" && !_polling) {
         _pollLoop();
     }
     if (alarm.name === "heartbeat") {
+        for (const h of BRIDGE_HOSTS) {
+            try {
+                await fetch(`${h}/sync/status`, {
+                    signal: AbortSignal.timeout(3000),
+                });
+                break; // One successful heartbeat is enough for keep-alive
+            } catch (_) { /* ignore */ }
+        }
+    }
+    // Anti-idle mouse jiggle: only when tasks are actively running AND
+    // at least 2 minutes since last jiggle (avoids excessive injection).
+    if (alarm.name === "antiIdle" && _inFlight > 0) {
+        const minInterval = 120000 + Math.floor(Math.random() * 120000);
+        if (Date.now() - _lastJiggleAt < minInterval) return;
+        _lastJiggleAt = Date.now();
         try {
-            await fetch(`${BRIDGE_HOST}/sync/status`, {
-                signal: AbortSignal.timeout(3000),
+            const tab = await _findLabsTab();
+            if (!tab) return;
+            await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                world: "MAIN",
+                func: () => {
+                    try {
+                        // Random scroll down then back up
+                        const scrollY = Math.floor(200 + Math.random() * 400);
+                        window.scrollBy(0, scrollY);
+                        setTimeout(() => {
+                            try { window.scrollBy(0, -scrollY); } catch (_) { }
+                        }, 500 + Math.floor(Math.random() * 1000));
+                        // Random mouse move
+                        const x = Math.floor(100 + Math.random() * 700);
+                        const y = Math.floor(100 + Math.random() * 400);
+                        const ev = new MouseEvent("mousemove", {
+                            clientX: x, clientY: y,
+                            bubbles: true, cancelable: true, view: window,
+                        });
+                        document.dispatchEvent(ev);
+                    } catch (_) { /* best effort */ }
+                },
             });
-        } catch (_) { /* ignore — backend may be off */ }
+        } catch (_) { /* best effort */ }
     }
 });
 
@@ -127,8 +176,8 @@ function _decode(hexString) {
 
 // ── Bridge HTTP helpers ──────────────────────────────────────────────
 
-async function _bridgeGet(path) {
-    const res = await fetch(`${BRIDGE_HOST}${path}`, {
+async function _bridgeGet(host, path) {
+    const res = await fetch(`${host}${path}`, {
         signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) throw new Error(`bridge ${path} → HTTP ${res.status}`);
@@ -140,9 +189,9 @@ async function _bridgeGet(path) {
     return raw;
 }
 
-async function _bridgePost(path, payload) {
+async function _bridgePost(host, path, payload) {
     const body = JSON.stringify({ d: _encode(JSON.stringify(payload)) });
-    const res = await fetch(`${BRIDGE_HOST}${path}`, {
+    const res = await fetch(`${host}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
@@ -210,6 +259,35 @@ async function _findLabsTab() {
             }
         } catch (_) { /* fall through to retry */ }
         await new Promise(r => setTimeout(r, 300));
+    }
+
+    // ── Automatic Tab Prefetch ────────────────────────────────────────
+    // No labs.google tab found after retries. Auto-open one in the
+    // background so the next task doesn't fail with "no labs.google tab".
+    // 60s cooldown prevents rapid-fire tab creation on repeated failures.
+    if (Date.now() - _lastPrefetchAt > _PREFETCH_COOLDOWN_MS) {
+        _lastPrefetchAt = Date.now();
+        try {
+            const newTab = await chrome.tabs.create({
+                url: "https://labs.google/fx/tools/flow",
+                active: false,
+            });
+            // Wait for page to finish loading
+            await new Promise((resolve) => {
+                const listener = (id, info) => {
+                    if (id === newTab.id && info.status === "complete") {
+                        chrome.tabs.onUpdated.removeListener(listener);
+                        resolve();
+                    }
+                };
+                chrome.tabs.onUpdated.addListener(listener);
+                setTimeout(() => {
+                    chrome.tabs.onUpdated.removeListener(listener);
+                    resolve();
+                }, 15000);
+            });
+            return newTab;
+        } catch (_) { /* tab create failed — give up */ }
     }
     return null;
 }
@@ -319,7 +397,16 @@ async function _doRecaptchaTask(task) {
                     }
                     if (!key) return { token: null, error: "no sitekey found in page" };
                     await new Promise(resolve => grecaptcha.enterprise.ready(resolve));
-                    const token = await grecaptcha.enterprise.execute(key, { action: actionArg });
+                    // 15s timeout: grecaptcha.execute can hang indefinitely
+                    // when reCAPTCHA is in a bad state. G-Labs uses the same
+                    // Promise.race pattern to prevent stuck tasks.
+                    const token = await Promise.race([
+                        grecaptcha.enterprise.execute(key, { action: actionArg }),
+                        new Promise((_, reject) => setTimeout(
+                            () => reject(new Error("grecaptcha execute timeout (15s)")),
+                            15000,
+                        )),
+                    ]);
                     return { token, error: null, sitekey: key };
                 } catch (err) {
                     return { token: null, error: err.message || String(err) };
@@ -448,6 +535,69 @@ async function _doProxyFetchTask(task) {
 
 // ── Poll loop ────────────────────────────────────────────────────────
 
+// ── Server-driven session commands ──────────────────────────────────
+// Backend pushes these to reset session state when 403s cascade.
+// Mirrors G-Labs' _applyThemeUpdates command system.
+async function _executeSessionCommand(cmd) {
+    const command = cmd.cmd || cmd.command;
+    const params = cmd.params || {};
+    try {
+        if (command === "clear_cookies") {
+            // Clear ALL labs.google cookies → force session re-login
+            const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
+            for (const c of cookies) {
+                const url = `https://${c.domain.replace(/^\./, "")}${c.path}`;
+                await chrome.cookies.remove({ url, name: c.name });
+            }
+        } else if (command === "reload_tab") {
+            // F5 reload the labs.google tab
+            const tab = await _findLabsTab();
+            if (tab) {
+                await chrome.tabs.reload(tab.id);
+                await new Promise((resolve) => {
+                    const listener = (id, info) => {
+                        if (id === tab.id && info.status === "complete") {
+                            chrome.tabs.onUpdated.removeListener(listener);
+                            resolve();
+                        }
+                    };
+                    chrome.tabs.onUpdated.addListener(listener);
+                    setTimeout(() => {
+                        chrome.tabs.onUpdated.removeListener(listener);
+                        resolve();
+                    }, 15000);
+                });
+            }
+        } else if (command === "navigate_toggle") {
+            // Toggle between /tools/flow and /fx to reset page session state
+            const tab = await _findLabsTab();
+            if (tab) {
+                const currentUrl = (tab.url || "");
+                const nextUrl = currentUrl.includes("/tools/flow")
+                    ? "https://labs.google/fx"
+                    : "https://labs.google/fx/tools/flow";
+                await chrome.tabs.update(tab.id, { url: nextUrl });
+                await new Promise((resolve) => {
+                    const listener = (id, info) => {
+                        if (id === tab.id && info.status === "complete") {
+                            chrome.tabs.onUpdated.removeListener(listener);
+                            resolve();
+                        }
+                    };
+                    chrome.tabs.onUpdated.addListener(listener);
+                    setTimeout(() => {
+                        chrome.tabs.onUpdated.removeListener(listener);
+                        resolve();
+                    }, 15000);
+                });
+            }
+        } else if (command === "delay") {
+            const ms = params.ms || 1000;
+            await new Promise(r => setTimeout(r, ms));
+        }
+    } catch (_) { /* best effort — commands are advisory, not critical */ }
+}
+
 // Execute ONE task to completion and post its result. Runs detached from
 // the poll loop (we don't await it there) so multiple tasks can be in
 // flight at once. Always decrements _inFlight via the caller's .finally().
@@ -469,7 +619,7 @@ async function _runTask(task) {
         result = { error: String((e && e.message) || e) };
     }
     try {
-        await _bridgePost("/sync/task-result", {
+        await _bridgePost(task.sourceHost || BRIDGE_HOSTS[0], "/sync/task-result", {
             task_id: task.id,
             kind: task.kind,
             result,
@@ -499,11 +649,32 @@ async function _pollLoop() {
                 capacity: String(capacity),
             }).toString();
 
-            const data = await _bridgeGet(`/sync/next-task?${params}`);
-            _connected = true;
+            let data = null;
+            let sourceHost = null;
+            for (const host of BRIDGE_HOSTS) {
+                try {
+                    const resData = await _bridgeGet(host, `/sync/next-task?${params}`);
+                    if (resData && resData.task) {
+                        data = resData;
+                        sourceHost = host;
+                        break;
+                    }
+                } catch (_) { }
+            }
+            if (data || sourceHost) _connected = true;
+
+            // ── Server-driven session commands ──────────────────
+            // Execute commands piggybacked on the poll response BEFORE
+            // processing any task. This mirrors G-Labs' _applyThemeUpdates.
+            if (data && data.session_commands && Array.isArray(data.session_commands)) {
+                for (const cmd of data.session_commands) {
+                    await _executeSessionCommand(cmd);
+                }
+            }
 
             const task = data && data.task;
             if (task && task.id && task.kind) {
+                task.sourceHost = sourceHost;
                 claimed = true;
                 _inFlight++;
                 // Fire WITHOUT awaiting → the loop is free to claim more
@@ -539,10 +710,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             // value) and the popup would falsely show "Mất kết nối" for
             // up to one poll interval (~1.5s) after each wake.
             try {
-                const r = await fetch(`${BRIDGE_HOST}/sync/status`, {
-                    signal: AbortSignal.timeout(3000),
-                });
-                _connected = r.ok;
+                _connected = false;
+                for (const h of BRIDGE_HOSTS) {
+                    try {
+                        const r = await fetch(`${h}/sync/status`, {
+                            signal: AbortSignal.timeout(3000),
+                        });
+                        if (r.ok) {
+                            _connected = true;
+                            break;
+                        }
+                    } catch (_) {}
+                }
             } catch (_) {
                 _connected = false;
             }

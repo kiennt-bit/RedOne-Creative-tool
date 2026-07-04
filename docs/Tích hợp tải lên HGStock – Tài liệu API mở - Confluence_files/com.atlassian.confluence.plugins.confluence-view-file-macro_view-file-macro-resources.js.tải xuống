@@ -1,0 +1,43 @@
+WRMCB=function(e){var c=console;if(c&&c.log&&c.error){c.log('Error running batched script.');c.error(e);}}
+;
+try {
+/* module-key = 'com.atlassian.confluence.plugins.confluence-view-file-macro:view-file-macro-resources', location = '/js/vfm.js' */
+require([
+    "jquery",
+    "ajs",
+    "skate",
+    "vfm/components/embedded-file-view"
+],
+function (
+    $,
+    AJS,
+    skate,
+    embeddedFileView
+) {
+    "use strict";
+
+    // prevent click event on file placeholder of unknown attachment
+    $(document).on("click", ".confluence-embedded-file.unknown-attachment", function (e) {
+        e.preventDefault();
+    });
+
+    function skateComponentAlreadyDefined(componentName) {
+        if (!__skate || !__skate.registry) {
+            return false;
+        }
+
+        return __skate.registry[componentName] !== undefined;
+    }
+
+    var MACRO_CLASS_NAME = 'confluence-embedded-file-wrapper';
+    if (!skateComponentAlreadyDefined(MACRO_CLASS_NAME)) {
+        skate(MACRO_CLASS_NAME, {
+            type: skate.types.CLASS,
+
+            attached: function(el) {
+                embeddedFileView.render({ el: el });
+            }
+        })
+    }
+});
+}catch(e){WRMCB(e)};

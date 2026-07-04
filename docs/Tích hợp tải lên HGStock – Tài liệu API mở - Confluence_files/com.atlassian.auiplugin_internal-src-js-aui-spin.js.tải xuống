@@ -1,0 +1,8 @@
+WRMCB=function(e){var c=console;if(c&&c.log&&c.error){c.log('Error running batched script.');c.error(e);}}
+;
+try {
+/* module-key = 'com.atlassian.auiplugin:internal-src-js-aui-spin', location = 'src/js/aui/spin.js' */
+("undefined"===typeof window?global:window).__a70b4fb4c9c2b1f756504f809274d9f9=function(){"use strict";var f="function"===typeof Symbol&&"symbol"===typeof Symbol.iterator?function(a){return typeof a}:function(a){return a&&"function"===typeof Symbol&&a.constructor===Symbol&&a!==Symbol.prototype?"symbol":typeof a},b=__9be3f454a87dfa12e64a40a8f483ace3,c=b&&b.__esModule?b:{"default":b};__68cc4c82652b08f36f43adf1463855f6;var g=(b=__3fc3683fc4aae94d9d5e29d2ae00dbae)&&b.__esModule?b:{"default":b},b=__7a49532771c5910a7b233af9a02dfe09;
+c.default.fn.spin=(0,b.fn)(function(a,b){var d={size:"small"};if("object"===("undefined"===typeof b?"undefined":f(b)))d=c.default.extend(d,b);if("object"===("undefined"===typeof a?"undefined":f(a)))d=c.default.extend(d,a);"string"===typeof a&&(d.size=a);return"boolean"===typeof a&&!1===a?this.spinStop():this.each(function(){if(this&&this.nodeType){var a=(0,c.default)(this),b=a.data();if(b){var e=(0,c.default)("<aui-spinner filled></aui-spinner>");e.attr("size",d.size);e.css("color",d.color);a.spinStop();
+a.append(e);g.default.init(this);b.spinner=e}}})},"jQuery.fn.spin",{sinceVersion:"7.9.4",removeInVersion:"9",alternativeName:"<aui-spinner>"});c.default.fn.spinStop=(0,b.fn)(function(){return this.each(function(){if(this&&this.nodeType){var a=(0,c.default)(this).data();a&&a.spinner&&(a.spinner.remove(),delete a.spinner)}})},"jQuery.fn.spinStop",{sinceVersion:"7.9.4",removeInVersion:"9",alternativeName:"<aui-spinner>"});return{}}.call(this);
+}catch(e){WRMCB(e)};

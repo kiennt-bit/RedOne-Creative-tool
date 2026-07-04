@@ -53,12 +53,61 @@ for d in (DATA_DIR, OUTPUT_DIR, COOKIES_DIR, OUTPUT_DIR / "video", OUTPUT_DIR / 
 # rebuild needed). Override with env REDONE_FEATURES_URL. Downloads are
 # restricted to this host allowlist + a declared sha256 (see feature_installer).
 FEATURES_INDEX_URL = os.getenv("REDONE_FEATURES_URL", "").strip() or (
-    "https://raw.githubusercontent.com/kiennt-bit/RedOne-Creative-tool/main/features/index.json"
+    "https://raw.githubusercontent.com/kiennt-bit/RedOne-Creative-tool-Addon/main/features/index.json"
 )
 FEATURES_ALLOWED_HOSTS = (
     "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
     "release-assets.githubusercontent.com", "codeload.github.com",
 )
+
+# ── HG Stock upload integration ───────────────────────────────────────
+# API endpoints for uploading images/videos/audio to HG Stock.
+# Client credentials stored in private_config.py (gitignored).
+HGSTOCK_API_URL = {
+    "dev": "https://stock-api.hgmedia.dev",
+    "prod": "https://stock-api.hgmedia.app",
+}
+HGSTOCK_IDENTITY_URL = {
+    "dev": "https://accounts.hgmedia.dev",
+    "prod": "https://accounts.hgmedia.app",
+}
+HGSTOCK_ADMIN_URL = {
+    "dev": "https://stock-admin.hgmedia.dev",
+    "prod": "https://stock-admin.hgmedia.app",
+}
+
+
+def _resolve_hgstock() -> dict:
+    """Read HG Stock credentials from private_config.py (gitignored)."""
+    defaults = {
+        "env": "dev",
+        "client_id": "",
+        "client_secret": "",
+        "scope": "",
+        "user_id": "",
+    }
+    try:
+        from . import private_config as _pc  # type: ignore
+        defaults["env"] = str(getattr(_pc, "HGSTOCK_ENV", "dev") or "dev").strip()
+        defaults["client_id"] = str(getattr(_pc, "HGSTOCK_CLIENT_ID", "") or "").strip()
+        defaults["client_secret"] = str(getattr(_pc, "HGSTOCK_CLIENT_SECRET", "") or "").strip()
+        defaults["scope"] = str(getattr(_pc, "HGSTOCK_SCOPE", "") or "").strip()
+        defaults["user_id"] = str(getattr(_pc, "HGSTOCK_USER_ID", "") or "").strip()
+    except Exception:
+        pass
+    return defaults
+
+
+HGSTOCK_CREDS = _resolve_hgstock()
+
+# Preset project names for the upload UI — user can also type a custom name.
+HGSTOCK_PROJECT_PRESETS = [
+    "Relax", "Techno", "Sóng Âm", "Giáng Sinh", "Lofi", "Deep House",
+    "Jazz", "Classical", "Piano Cover", "Afro House", "Focus", "Blues",
+]
+
+# Default folder ID on HG Stock — all uploads go here unless overridden.
+HGSTOCK_DEFAULT_FOLDER_ID = "f2dc51a3-3b37-46fe-b6b2-e493297f44ca"
 
 
 # ── RedOne Hub (multi-user management server) ─────────────────────────
@@ -170,6 +219,19 @@ X_CLIENT_DATA = "CIa2yQEIprbJAQipncoBCLb9ygEIlqHLAQiFoM0BCNmqzwEY/qXPARikqM8BGMO
 X_BROWSER_VALIDATION = "AKIAtsVHZoiKbPixy+qSK1BgKWo="
 
 DEFAULT_ACCOUNT_EXPIRY_DAYS = 30
+
+# ── Per-account Proxy (G-Labs #8) ────────────────────────────
+# Map email → proxy URL (e.g. "http://user:pass@host:port").
+# Loaded from private_config.py (gitignored) to keep credentials safe.
+# Example in private_config.py:
+#   ACCOUNT_PROXIES = {
+#       "account1@gmail.com": "http://user:pass@proxy1.example.com:8080",
+#       "account2@gmail.com": "socks5://user:pass@proxy2.example.com:1080",
+#   }
+try:
+    from private_config import ACCOUNT_PROXIES  # type: ignore[import-untyped]
+except (ImportError, ModuleNotFoundError):
+    ACCOUNT_PROXIES: dict[str, str] = {}
 
 
 def cost_for_model_key(model_key: str) -> int:

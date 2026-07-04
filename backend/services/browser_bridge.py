@@ -155,6 +155,10 @@ class BrowserBridge:
         self._ext_last_ready_poll: float = 0.0
         self._ext_last_status: str = "unknown"  # "ready" | "no_tab" | "no_login" | "unknown"
         self._ext_last_url: str = ""
+        # Server-driven session commands — queued by backend, consumed by
+        # extension on next poll. Commands: clear_cookies, reload_tab,
+        # navigate_toggle, delay.
+        self._session_commands: list[dict] = []
 
     # ── State / diagnostics ─────────────────────────────────────────
 
@@ -194,7 +198,34 @@ class BrowserBridge:
             "last_tab_url": self._ext_last_url,
             "pending_tasks": self._pending.qsize(),
             "in_flight_tasks": len(self._in_flight),
+            "pending_session_commands": len(self._session_commands),
         }
+
+    # ── Server-driven session commands ──────────────────────────────
+
+    def push_session_command(self, command: str, params: dict | None = None) -> None:
+        """Queue a session command for the extension to execute on next poll.
+
+        Commands (inspired by G-Labs _applyThemeUpdates):
+            - "clear_cookies": Clear all labs.google cookies → force re-login
+            - "reload_tab": F5 reload the labs.google tab
+            - "navigate_toggle": Toggle /tools/flow ↔ /fx (resets page state)
+            - "delay": Wait params["ms"] milliseconds before next command
+        """
+        self._session_commands.append({
+            "cmd": command,
+            "params": params or {},
+            "ts": time.time(),
+        })
+        log.info(f"Session command queued: {command} (params={params})")
+
+    def pop_session_commands(self) -> list[dict]:
+        """Return and clear all pending session commands."""
+        if not self._session_commands:
+            return []
+        cmds = self._session_commands[:]
+        self._session_commands.clear()
+        return cmds
 
     # ── Extension-facing (called from routers/sync.py) ──────────────
 

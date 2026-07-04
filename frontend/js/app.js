@@ -33,6 +33,7 @@ import { renderTasksManager } from './pages/tasks_manager.js';
 import { renderTeam } from './pages/team.js';
 import { renderAdmin } from './pages/admin.js';
 import { renderFeatureStore } from './pages/feature_store.js';
+import { renderHGStock } from './pages/hgstock.js';
 import { loadCatalog, getFeature, getCatalog } from './features/catalog.js';
 import * as featureState from './features/state.js';
 
@@ -61,6 +62,7 @@ const PAGES = {
   'accounts':      { title: 'Tài Khoản',         subtitle: 'Quản lý Google account & credits',                       render: renderAccounts },
   'settings':      { title: 'Cài Đặt',           subtitle: 'API keys, thư mục, tùy chọn',                            render: renderSettings },
   'feature-store': { title: 'Kho tính năng',     subtitle: 'Cài thêm tính năng nặng khi cần — máy yếu có thể bỏ qua để nhẹ hơn', render: renderFeatureStore },
+  'hgstock':       { title: 'HG Stock',          subtitle: 'Upload ảnh/video/audio lên HG Stock — gắn tag, chọn dự án',       render: renderHGStock },
   'team':          { title: 'Team',              subtitle: 'Theo dõi task & credit của thành viên dưới quyền',       render: renderTeam },
   'admin':         { title: 'Quản trị',          subtitle: 'Người dùng, nhóm, hạn mức credit nội bộ (Hub)',          render: renderAdmin },
 };
@@ -148,7 +150,8 @@ export async function navigate(pageId, opts = {}) {
 // Map a catalog feature → a page-like object with an async module loader.
 function featureToPage(f) {
   if (!featureState.isInstalled(f)) return null;
-  if (f.kind === 'builtin') {
+  if (f.kind === 'builtin' || f.kind === 'asset') {
+    // builtin: code ships in the app; asset: binary downloaded, but tab JS is in pages/
     const mod = f.module || f.id;
     return {
       title: f.name, subtitle: f.description || '',
@@ -892,6 +895,9 @@ async function init() {
   // Reveal Team/Quản trị tabs if this user is a Hub lead/admin (no-op when
   // the Hub is disabled). Fire-and-forget so a slow Hub never blocks boot.
   refreshHubStatus();
+
+  // HG Stock: show sidebar tab if user has upload permission (fire-and-forget).
+  import('./pages/hgstock.js').then(m => m.checkHGStockNav && m.checkHGStockNav()).catch(() => {});
 
   // After an update, remind the user to reload the Chrome extension (Chrome
   // doesn't hot-reload unpacked extensions — new manifest needs a manual ↻).

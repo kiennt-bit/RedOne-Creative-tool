@@ -1,0 +1,1472 @@
+Tích hợp tải lên HGStock – Tài liệu API mở - Confluence
+
+    
+    
+    
+
+        
+        
+                        
+    
+                        
+    
+                        
+    
+
+    
+
+        
+
+    
+    
+
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+    
+        
+
+            
+    
+        
+            
+        
+
+    
+
+        
+
+            
+
+                
+                                
+
+        
+
+        
+
+            
+
+            
+
+    
+    
+    
+
+Hãy dùng thử Confluence miễn phí!(mở trong cửa sổ mới)
+
+Tài liệu về tích hợp tải lên HGStock – API mở
+
+Par Anh Can Viet (Unlicensed)
+
+Ngày 08 tháng 01 năm 2026
+
+Xác thực
+
+Tất cả các request REST Admin API đều yêu cầu token hợp lệ để có thể truy xuất thông tin.
+
+Sử dụng token trong header Authorization trong tất cả các API requests.
+
+curl -X GET https://stock-api.hgmedia.app/demo-api \
+ -H 'Content-Type: application/json' \
+ -H 'Authorization: Bearer {token}'
+
+Với quy trình xác thực khách hàng 
+
+curl -X POST {identity-server-url}/connect/token \
+     -H "Content-Type: application/x-www-form-urlencoded" \
+     -d "grant_type=client_credentials" \
+     -d "client_id={client_id}" \
+     -d "client_secret={client_secret}" \
+     -d "scope={scope}"
+
+client_idvà client_secret, scopephải được admin HGStock cung cấp trước.
+
+ Với Implicit Flow
+
+curl "{identity-server-url}/connect/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=token&scope={scope}"
+
+client_secret không bắt buộc trong Implicit Flow.
+
+ Thông số chung:
+
+identity-server-url: URL của Identity Server, thay đổi tùy theo môi trường sản phẩm.
+
+Môi trường Development: https://accounts.hgmedia.dev
+
+Môi trường Production: https://accounts.hgmedia.app
+
+scope: 
+
+client_id: 
+
+Môi trường Development:  
+
+Môi trường Production:  
+
+client_secret: 
+
+Môi trường Development:  
+
+Môi trường Production:  
+
+Lỗi
+
+Mã lỗi
+
+400 Bad Request: data format không đúng định dạng.
+
+401 Unauthorized: client không có thông tin xác thực hợp lệ
+
+403 Forbidden: server từ chối phản hồi. Trường hợp chủ yếu là do ứng dụng sử dụng token vào các api không được cấp quyền.
+
+404 Not Found: tài nguyên được yêu cầu không tìm thấy, tuy nhiên có thể tìm thấy trong tương lai.
+
+429 Too Many Requests: client vượt quá ngưỡng giới hạn request
+
+5xx Errors: lỗi hệ thống nội bộ.
+
+Định dạng dữ liệu
+
+Ngày giờ :
+
+Tuân thủ theo chuẩn ISO-8601 với timezone UTC.
+
+Tất cả các dữ liệu datetime trong request và response của REST API đều tuân thủ theo quy chuẩn này
+
+Ví dụ:
+
+Lời yêu cầu
+
+{
+  "resourceFile": {
+    "createdDate": "2002-11-04T08:05:03Z"
+  }
+}
+
+Phản ứng
+
+{
+  "resourceFile": {
+    "updatedDate": "2002-11-04T08:05:03Z"
+  }
+}
+
+API chứng khoán
+
+Thông số chung:
+
+domain_url: URL của Stock BE, thay đổi tùy theo môi trường sản phẩm.
+
+Môi trường Development: https://stock-api.hgmedia.dev
+
+Môi trường Production: https://stock-api.hgmedia.app
+
+Tiêu đề
+
+X-Time-Zone: Timezone của client, ví dụ: Asia/Bangkok
+
+Authenticantion: Mã thông báo người mang
+ Với client sử dụng Client Credentials Flow, userId được gửi qua query param, ví dụ:
+
+curl -X GET https://stock-api.hgmedia.app/demo-api?userId=1123xxx \
+ -H 'Content-Type: application/json' \
+ -H 'Authorization: Bearer {token}'
+
+Danh sách các điểm cuối:
+
+POST /api/v1/external/get-presigned-url
+
+POST /api/v1/external/file-info/complete-multipart-upload
+
+POST /api/v1/external/file-info/create
+
+POST /api/v1/external/file-info/meta-data
+
+PUT   /api/v1/external/file-info/update
+
+POST /api/v1/external/get-presigned-url
+
+Description: Tạo presigned url để upload tệp lên server lưu trữ
+
+Lời yêu cầu
+
+curl -X 'POST' \
+  '{domain_url}/api/v1/external/get-presigned-url' \
+  -H 'accept: */*' \
+  -H 'X-Time-Zone: Asia/Bangkok' \
+  -H 'Authorization: Bearer {token}' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "folderId": "72e3d4b6-f1c8-4c34-b225-0c88ec6f7b35",
+  "fileName": "One-Chance_HGFA9F548F394AE4471EA49B67B8E37B8987_ff921013.mp3",
+  "hash": "5001c2efcc67b6ff64f11b761e03167d2a21eca6ed992ec9190fb8ecb2e33e8a",
+  "fileExtension": "mp3",
+  "mediaType": 1,
+  "size": 44620702
+}'
+
+Nội dung yêu cầu:
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+folderId
+ | 
+sợi dây
+ | 
+(Bắt buộc) Id của folder được tải lên
+
+ | 
+mediaType
+ | 
+số nguyên
+ | 
+(Bắt buộc) Loại tài nguyên:
+
+0: hình ảnh
+
+1: âm thanh
+
+2: video
+
+ | 
+tên tệp
+ | 
+sợi dây
+ | 
+(Bắt buộc) Tên tệp cần upload
+
+ | 
+phần mở rộng tệp
+ | 
+sợi dây
+ | 
+(Bắt buộc) Phần mở rộng của tệp
+
+ | 
+băm
+ | 
+sợi dây
+ | 
+(Bắt buộc) Mã hash duy nhất của tệp, được tạo ra theo hàm bên dưới
+
+ | 
+kích cỡ
+ | 
+dài
+ | 
+(Bắt buộc nếu tải tệp có kích thước > 2GB) Kích thước của tệp tính theo byte
+
+Phản ứng:
+
+Mã trạng thái: 200
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+ | 
+ 
+
+ | 
+đã tồn tại
+ | 
+boolean
+ | 
+True: nếu file đã tồn tại trong kho HG Stock
+
+False: nếu file chưa tồn tại trong kho HG Stock
+ | 
+ 
+
+ | 
+uploadType
+ | 
+số nguyên
+ | 
+Phương thức upload được chọn:
+0: upload thông thường với với duy nhất preSignedUrl
+1: upload multipart nếu file với danh sách preSignedUrls được nhận
+ | 
+ 
+
+ | 
+preSignedUrl
+ | 
+sợi dây
+ | 
+(Upload thông thường) Đường dẫn upload lên storage server nếu file chưa tồn tại trong kho HG Stock
+ | 
+ 
+
+ | 
+URL đã ký trước
+ | 
+mảng chuỗi
+ | 
+(Upload multipart) Danh sách các dường dẫn upload lên storage server nếu file chưa tồn tại trong kho HG Stock.
+Danh sách này đã được sắp xếp theo thứ tự
+ | 
+ 
+
+ | 
+kích thước phần
+ | 
+dài
+ | 
+(Upload multipart) Kích thước mỗi part
+ | 
+ 
+
+ | 
+uploadId
+ | 
+sợi dây
+ | 
+(Upload multipart) ID duy nhất đại diện cho 1 phiên multipart upload
+ | 
+ 
+
+ | 
+resourceFileId
+ | 
+sợi dây
+ | 
+Mã định danh duy nhất của file
+ | 
+ 
+
+ | 
+cephServerId
+
+objectKey
+
+tên tệp
+
+phần mở rộng tệp
+
+băm
+ | 
+sợi dây
+ | 
+Thông tin cần thiết khi tạo file-info tại /api/v1/external/file-info/create
+ | 
+ 
+
+ Với upload multipart, các part được upload thành công, server sẽ trả ra danh sách ETag trong header, lưu lại uploadId cùng danh sách ETag với PartNumber tương ứng để sử dụng API /api/v1/external/file-info/complete-multipart-upload →  xác nhận việc upload có thành công hay không.
+
+POST /api/v1/external/file-info/complete-multipart-upload
+
+Description: Xác nhận việc upload multipart thành công.
+
+Lời yêu cầu
+
+curl -X 'POST' \
+  '{domain_url}/api/v1/external/complete-multipart-upload' \
+  -H 'accept: */*' \
+  -H 'X-Time-Zone: Asia/Bangkok' \
+  -H 'Authorization: Bearer {token}' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "uploadId": "72e3d4b6",
+  "objectKey": "demo.mp3",
+  "cephServerId": "id-server",
+  "parts": [
+    {
+      "partNumber": 0,
+      "eTag": "etag1"
+    },
+    {
+      "partNumber": 1,
+      "eTag": "etag2"
+    }
+  ]
+}'
+
+Nội dung yêu cầu:
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+uploadId
+ | 
+sợi dây
+ | 
+(Bắt buộc) Id của folder được tải lên
+
+ | 
+objectKey
+ | 
+số nguyên
+ | 
+(Bắt buộc) Object key được tải lên
+
+ | 
+cephServerId
+ | 
+sợi dây
+ | 
+(Bắt buộc) Id của server lưu trữ
+
+ | 
+các bộ phận
+ | 
+mảng các đối tượng
+ | 
+(Bắt buộc) Danh sách eTag tương ứng với partNumber.
+
+Phản ứng
+
+200: nếu xác nhận thành công
+
+POST /api/v1/external/file-info/create
+
+Description: Tạo thông tin file trên HG Stock
+
+Lời yêu cầu
+
+curl -X 'POST' \
+  '{domain_url}/api/v1/external/file-info/create' \
+  -H 'accept: */*' \
+  -H 'X-Time-Zone: Asia/Bangkok' \
+  -H 'Authorization: Bearer {access_token}' \
+  -H 'Content-Type: application/json' \
+  -d '
+
+{
+  "folderId": "72e3d4b6-f1c8-4c34-b225-0c88ec6f7b35",
+  "title": "file external title",
+  "description": "no des",
+  "note": "no note",
+  "mediaType": 1,
+  "isAIProduct": true,
+  "source": 1,
+  "publisher": "IT publisher",
+  "isCopyright": true,
+  "requiredCredit": true,
+  "credit": "Nội dung credit",
+  "cidActivationStatus": 2,
+  "netTurnOnCID": "net turn on external",
+  "handlingCopyIssues": [
+    1, 2
+  ],
+  "tags": [
+    "tag_test"
+  ],
+  "subGenre": "text",
+  "usageForm": 1,
+  "resourceFile": {
+    "id": "HGFAB4B7D2F316A44707B88F235AE9605084",
+    "fileName": "One-Chance_HGFA9F548F394AE4471EA49B67B8E37B8987_ff921013.mp3",
+    "fileExtension": "mp3",
+    "note": "string",
+    "hash": "5001c2efcc67b6ff64f11b761e03167d2a21eca6ed992ec9190fb8ecb2e33e8a",
+    "cephServerId": "144f3427-4160-400b-83b9-fbcb4f0e24bc",
+    "objectKey": "HGFAB4B7D2F316A44707B88F235AE9605084.mp3",
+    "link": "https://tst.com"
+  },
+  "isSfx": true,
+  "isrc": "isrc",
+  "audioReleaseType": 1,
+  "audioVersionType": 1,
+  "albumTitle": "string",
+  "releaseDate": "2025-07-03T07:57:29.738Z",
+  "audioArtists": [
+    "artist_name"
+  ],
+  "audioAlbumArtists": [
+    "artist_name"
+  ],
+  "originalArtists": [
+    "artist_name"
+  ],
+  "distributor": "distributor",
+  "recorder": "recorder",
+  "upscaleRequest": [
+    0, 1, 2
+  ]
+}'
+
+Nội dung yêu cầu:
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+folderId
+ | 
+sợi dây
+ | 
+(Bắt buộc) Id của folder được tải lên
+
+ | 
+tiêu đề
+ | 
+sợi dây
+ | 
+(Bắt buộc) Tiêu đề của tệp được hiển thị trên HG Stock
+
+ | 
+Sự miêu tả
+ | 
+sợi dây
+ | 
+Mô tả của tệp
+
+ | 
+ghi chú
+ | 
+sợi dây
+ | 
+Ghi chú của tệp
+
+ | 
+mediaType
+ | 
+số nguyên
+ | 
+(Bắt buộc) Loại tài nguyên:
+
+0: hình ảnh
+
+1: âm thanh
+
+2: video
+
+ | 
+isAIProduct
+ | 
+boolean
+ | 
+True nếu tệp là tài nguyên do AI tạo
+
+ | 
+nguồn
+ | 
+số nguyên
+ | 
+Nguồn:
+
+HG Thu mua độc quyền
+
+HG Thu mua không độc quyền
+
+HG Sản xuất
+
+MKT Thu mua
+
+MKT sản xuất
+
+Nền tảng
+
+ | 
+nhà xuất bản
+ | 
+sợi dây
+ | 
+Nhà cung cấp/ phát hành
+
+ | 
+isCopyright
+ | 
+boolean
+ | 
+Tác quyền
+
+ | 
+Tín dụng bắt buộc
+ | 
+boolean
+ | 
+Cần credit
+
+ | 
+tín dụng
+ | 
+sợi dây
+ | 
+Nội dung credit
+
+ | 
+cIDActivationStatus
+ | 
+số nguyên
+ | 
+Tình trạng bật CID:
+
+1: chưa bật (default)
+2: đã bật
+3: không bật
+4: đã bị gỡ
+
+ | 
+netTurnOnCID
+ | 
+sợi dây
+ | 
+Bên bật CID
+
+ | 
+xử lý các vấn đề sao chép
+ | 
+mảng số nguyên
+ | 
+Thông tin về cách xử lý vấn đề bản quyền của tài nguyên, bao gồm:
+ 1: Không claim
+ 2: Gỡ claim theo video
+ 3: Whitelist kênh
+
+ | 
+thẻ
+ | 
+mảng chuỗi
+ | 
+Danh sách tag của tệp
+
+ | 
+Thể loại phụ
+ | 
+sợi dây
+ | 
+Thể loại phụ
+
+ | 
+Biểu mẫu sử dụng
+ | 
+số nguyên
+ | 
+Hình thức sử dụng:
+
+1: Chung
+2: Độc quyền
+
+ | 
+isSfx
+ | 
+boolean
+ | 
+(Với audio) True: nếu là hiệu ứng âm thanh
+
+ | 
+ISRC
+ | 
+sợi dây
+ | 
+(Với audio) Mã ISRC
+
+ | 
+audioReleaseType
+ | 
+số nguyên
+ | 
+(Với audio) Loại phát hành:
+
+1: đĩa đơn 
+2: album 
+3: EP
+
+ | 
+audioVersionType
+ | 
+số nguyên
+ | 
+(Với audio) Phiên bản:
+
+1: Bản gốc 
+2: Bản cover Top Hits 
+3: Bản cover PD
+
+ | 
+Tên album
+ | 
+sợi dây
+ | 
+(Với audio) Tên album
+
+ | 
+Ngày phát hành
+ | 
+ngày giờ
+ | 
+(Với audio) Ngày phát hành (null nếu không có)
+
+ | 
+Nghệ sĩ âm thanh
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ phát hành
+
+ | 
+Nghệ sĩ album âm thanh
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ album
+
+ | 
+Nghệ sĩ gốc
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ sản xuất
+
+ | 
+nhà phân phối
+ | 
+sợi dây
+ | 
+(Với audio) Nhà phân phối
+
+ | 
+máy ghi âm
+ | 
+sợi dây
+ | 
+(Với audio) Hãng thu
+
+ | 
+yêu cầu nâng cấp
+ | 
+mảng số nguyên
+ | 
+Yêu cầu tăng chất lượng chất lượng video:
+0: HD
+1: 2K
+2: 4K
+
+ | 
+resourceFile.id
+ | 
+sợi dây
+ | 
+(Bắt buộc) Thông tin “resourceFileId” trả ra từ API đăng ký presigned-url
+
+ | 
+resourceFile.fileName
+ | 
+sợi dây
+ | 
+(Bắt buộc)
+
+Thông tin “fileName” trả ra từ API đăng ký presigned-url
+
+ | 
+resourceFile.cephServerId
+ | 
+sợi dây
+ | 
+(Bắt buộc)
+
+Thông tin “cephServerId” trả ra từ API đăng ký presigned-url
+
+ | 
+resourceFile.objectKey
+ | 
+sợi dây
+ | 
+(Bắt buộc)
+
+Thông tin “objectKey” trả ra từ API đăng ký presigned-url
+
+ | 
+resourceFile.hash
+ | 
+sợi dây
+ | 
+(Bắt buộc) Mã hash của tệp
+
+ | 
+resourceFile.link
+ | 
+sợi dây
+ | 
+Link gốc tài nguyên
+
+Phản ứng:
+
+Mã trạng thái: 200
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+nhận dạng
+ | 
+sợi dây
+ | 
+Id của tệp trên HG Stock
+
+ | 
+mã số
+ | 
+sợi dây
+ | 
+Mã duy nhất của tệp
+
+ | 
+phần mở rộng tệp
+ | 
+sợi dây
+ | 
+Phần mở rộng của tệp
+
+ | 
+mediaType
+ | 
+số nguyên
+ | 
+Loại tài nguyên: 0: image, 1: audio, 2: video
+
+ | 
+fileUserContentUrl
+ | 
+sợi dây
+ | 
+Link đến tài nguyên trong trang user
+
+ | 
+fileContentUrl
+ | 
+sợi dây
+ | 
+Link đến tài nguyên trong trang admin
+
+ | 
+folderContentUrl
+ | 
+sợi dây
+ | 
+Link đến thư mục chứa tài nguyên trong trang admin
+
+ | 
+Đường dẫn tệp thu nhỏ nhỏ
+ | 
+sợi dây
+ | 
+Small thumb url của tài nguyên (nếu có)
+
+ | 
+Đường dẫn tệp thu nhỏ trung bình
+ | 
+sợi dây
+ | 
+Medium thumb url của tài nguyên (nếu có)
+
+ | 
+previewFilePath
+ | 
+sợi dây
+ | 
+Preview url của tài nguyên (nếu có)
+
+Ví dụ:
+
+{
+  "id": "string",
+  "code": "string",
+  "fileExtension": "string",
+  "mediaType": 0,
+  "fileUserContentUrl": "string",
+  "fileContentUrl": "string",
+  "folderContentUrl": "string"
+}
+
+POST /api/v1/external/file-info/meta-data
+
+Description: Lấy thông tin về thumb, preview của tệp được lưu trên HG Stock
+
+Lời yêu cầu
+
+curl -X POST "{domain_url}/api/v1/external/file-info/meta-data" \
+     -H "X-Time-Zone: Asia/Bangkok" \
+     -H "Authorization: Bearer {bearer_token}" \
+     -H "Content-Type: application/json" \
+     -d '["dd7a6529-c7c8-4b70-b927-ebf63b9a87cd"]'
+
+Request body: <array of string> - id của tệp đã được upload
+
+Phản ứng:
+
+Mã trạng thái: 200
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+nhận dạng
+ | 
+sợi dây
+ | 
+Id của tệp trên HG Stock
+
+ | 
+mã số
+ | 
+sợi dây
+ | 
+Mã duy nhất của tệp
+
+ | 
+phần mở rộng tệp
+ | 
+sợi dây
+ | 
+Phần mở rộng của tệp
+
+ | 
+mediaType
+ | 
+số nguyên
+ | 
+Loại tài nguyên: 0: image, 1: audio, 2: video
+
+ | 
+Đường dẫn tệp thu nhỏ nhỏ
+ | 
+sợi dây
+ | 
+Small thumb url của tài nguyên (nếu có)
+
+ | 
+Đường dẫn tệp thu nhỏ trung bình
+ | 
+sợi dây
+ | 
+Medium thumb url của tài nguyên (nếu có)
+
+ | 
+previewFilePath
+ | 
+sợi dây
+ | 
+Preview url của tài nguyên (nếu có)
+
+Ví dụ:
+
+{
+  "id": "string",
+  "code": "string",
+  "fileExtension": "string",
+  "mediaType": 0,
+  "smallThumbFilePath": "string",
+  "mediumThumbFilePath": "string",
+  "previewFilePath": "string"
+}
+
+PUT /api/v1/external/file-info/update
+
+Description: Cập nhật thông tin được hiển thị trên HGStock
+
+Lời yêu cầu
+
+curl --location --request PUT '{domain_url}/api/v1/external/file-info/update' \
+--header 'accept: */*' \
+--header 'X-Time-Zone: Asia/Bangkok' \
+--header 'Authorization: Bearer {token}' \
+--header 'Content-Type: application/json' \
+--data '{
+    "fileInfoId": "dd7a6529-c7c8-4b70-b927-ebf63b9a87cd",
+    "title": "file external title",
+    "description": "no des",
+    "note": "no note",
+    "mediaType": 1,
+    "isAIProduct": true,
+    "source": 1,
+    "publisher": "IT publisher",
+    "isCopyright": true,
+    "requiredCredit": true,
+    "credit": "Nội dung credit",
+    "cidActivationStatus": 2,
+    "netTurnOnCID": "net turn on external",
+    "handlingCopyIssues": [
+        1,
+        2
+    ],
+    "tags": [
+        "tag_test"
+    ],
+    "subGerne": "text",
+    "usageForm": 1,
+    "isSfx": true,
+    "isrc": "isrc",
+    "audioReleaseType": 1,
+    "audioVersionType": 1,
+    "albumTitle": "string",
+    "releaseDate": "2025-07-03T07:57:29.738Z",
+    "audioArtists": [
+        "string"
+    ],
+    "audioAlbumArtists": [
+        "string"
+    ],
+    "originalArtists": [
+        "string"
+    ],
+    "distributor": "distributor",
+    "recorder": "recorder"
+}'
+
+Nội dung yêu cầu:
+
+ | 
+Tên thuộc tính
+ | 
+Kiểu dữ liệu
+ | 
+Mô tả
+
+ | 
+fileInfoId
+ | 
+sợi dây
+ | 
+(Bắt buộc) Id của tệp cần chỉnh sửa
+
+ | 
+tiêu đề
+ | 
+sợi dây
+ | 
+(Bắt buộc) Tiêu đề của tệp được hiển thị trên HG Stock
+
+ | 
+Sự miêu tả
+ | 
+sợi dây
+ | 
+Mô tả của tệp
+
+ | 
+ghi chú
+ | 
+sợi dây
+ | 
+Ghi chú của tệp
+
+ | 
+isAIProduct
+ | 
+boolean
+ | 
+True nếu tệp là tài nguyên do AI tạo
+
+ | 
+nguồn
+ | 
+số nguyên
+ | 
+Nguồn:
+
+HG Thu mua độc quyền
+
+HG Thu mua không độc quyền
+
+HG Sản xuất
+
+MKT Thu mua
+
+MKT sản xuất
+
+Nền tảng
+
+ | 
+nhà xuất bản
+ | 
+sợi dây
+ | 
+Nhà cung cấp/ phát hành
+
+ | 
+isCopyright
+ | 
+boolean
+ | 
+Tác quyền
+
+ | 
+Tín dụng bắt buộc
+ | 
+boolean
+ | 
+Cần credit
+
+ | 
+tín dụng
+ | 
+sợi dây
+ | 
+Nội dung credit
+
+ | 
+cIDActivationStatus
+ | 
+số nguyên
+ | 
+Tình trạng bật CID:
+
+1: chưa bật (default)
+2: đã bật
+3: không bật
+4: đã bị gỡ
+
+ | 
+netTurnOnCID
+ | 
+sợi dây
+ | 
+Bên bật CID
+
+ | 
+xử lý các vấn đề sao chép
+ | 
+mảng số nguyên
+ | 
+Thông tin về cách xử lý vấn đề bản quyền của tài nguyên, bao gồm:
+ 1: Không claim
+ 2: Gỡ claim theo video
+ 3: Whitelist kênh
+
+ | 
+thẻ
+ | 
+mảng chuỗi
+ | 
+Danh sách tag của tệp
+
+ | 
+Thể loại phụ
+ | 
+sợi dây
+ | 
+Thể loại phụ
+
+ | 
+Biểu mẫu sử dụng
+ | 
+số nguyên
+ | 
+Hình thức sử dụng:
+
+1: Chung
+2: Độc quyền
+
+ | 
+isSfx
+ | 
+boolean
+ | 
+(Với audio) True: nếu là hiệu ứng âm thanh
+
+ | 
+iSRC
+ | 
+sợi dây
+ | 
+(Với audio) Mã ISRC
+
+ | 
+audioReleaseType
+ | 
+số nguyên
+ | 
+(Với audio) Loại phát hành:
+
+1: đĩa đơn 
+2: album 
+3: EP
+
+ | 
+audioVersionType
+ | 
+số nguyên
+ | 
+(Với audio) Phiên bản:
+
+1: Bản gốc 
+2: Bản cover Top Hits 
+3: Bản cover PD
+
+ | 
+Tên album
+ | 
+sợi dây
+ | 
+(Với audio) Tên album
+
+ | 
+Ngày phát hành
+ | 
+ngày giờ
+ | 
+(Với audio) Ngày phát hành (null nếu không có)
+
+ | 
+Nghệ sĩ âm thanh
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ phát hành
+
+ | 
+Nghệ sĩ album âm thanh
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ album
+
+ | 
+Nghệ sĩ gốc
+ | 
+mảng chuỗi
+ | 
+(Với audio) Nghệ sĩ sản xuất
+
+ | 
+nhà phân phối
+ | 
+sợi dây
+ | 
+(Với audio) Nhà phân phối
+
+ | 
+máy ghi âm
+ | 
+sợi dây
+ | 
+(Với audio) Hãng thu
+
+Phản ứng:
+
+Mã trạng thái: 200
+
+Quy trình tải lên tệp
+
+Description: Mô tả luồng sử dụng các API khi tải tài nguyên lên HG Stock trực tiếp từ client
+
+Mở ảnh image-20250707-092701.png
+
+Luồng tích hợp tính năng upload trên HGStock
+
+Hàm tạo hash: 
+
+Description: tạo ra mã duy nhất cho tệp
+
+Kiểm tra dữ liệu:
+
+Băng hình:video-sample.mp4Hiển thị bản xem trước 
+
+Mã: a8229f683bf7245271d0460bf873c815b8161c8a9c6714c6589eba5e58e9bc6b
+
+Hình ảnh:image-sample.jpgHiển thị bản xem trước  
+
+Mã: 38b823878344ee12759600adec5dbe320925945017d9fa8e32c3065ec4866bf4
+
+Ví dụ mã (CSharp)
+
+  private static async Task<string> ReadChunkAsync(Stream fileStream, long start, int size)
+        {
+            byte[] buffer = new byte[size];
+            fileStream.Seek(start, SeekOrigin.Begin);
+            int bytesRead = await fileStream.ReadAsync(buffer, 0, size);
+            return Encoding.GetEncoding("ISO-8859-1").GetString(buffer, 0, bytesRead);
+        }
+
+        private static async Task<string> GetSHA256ToStrAsync(string str)
+        {
+            using (SHA256 sha256Hash = SHA256.Create())
+            {
+                byte[] data = Encoding.GetEncoding("ISO-8859-1").GetBytes(str);
+                byte[] hashBytes = await Task.Run(() => sha256Hash.ComputeHash(data));
+                StringBuilder hashHex = new StringBuilder(hashBytes.Length * 2);
+                foreach (byte b in hashBytes)
+                {
+                    hashHex.Append(b.ToString("x2"));
+                }
+                return hashHex.ToString();
+            }
+        }
+        public static async Task<string> GetHashCodeOfFileAsync(Stream fileStream, int chunkSize = 5 * 1024 * 1024)
+        {
+            const int numberOfChunks = 3;
+            string concatenatedHash = string.Empty;
+            long fileSize = fileStream.Length;
+
+            if (fileSize > (chunkSize * 3))
+            {
+                for (int i = 0; i < numberOfChunks; i++)
+                {
+                    long startPosition = (i == 0) ? 0 : (i == 1 ? (fileSize / 2) - (chunkSize / 2) : fileSize - chunkSize);
+                    string readChunks = await ReadChunkAsync(fileStream, startPosition, chunkSize);
+                    string hash = await GetSHA256ToStrAsync(readChunks);
+                    concatenatedHash += hash;
+                }
+            }
+            else
+            {
+                int actualNumberOfChunks = Math.Min(numberOfChunks, (int)Math.Ceiling((double)fileSize / chunkSize));
+                for (int i = 0; i < actualNumberOfChunks; i++)
+                {
+                    long startPosition = i * chunkSize;
+                    string readChunks = await ReadChunkAsync(fileStream, startPosition, chunkSize);
+                    string hash = await GetSHA256ToStrAsync(readChunks);
+                    concatenatedHash += hash;
+                }
+            }
+
+            return await GetSHA256ToStrAsync(concatenatedHash);
+        }
+
+Ví dụ mã (Typescript)
+
+export const readChunk = (file: any, start: number, size: number): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const blob = file.slice(start, start + size);
+    reader.onload = (event) => {
+      resolve(event.target.result as string);
+    };
+    reader.onerror = (error) => {
+      reject(error);
+    };
+    reader.readAsBinaryString(blob);
+  });
+};
+
+export const getSHA256ToStr = async (str: any): Promise<string> => {
+  if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
+    const encodeToLatin1 = (str) => {
+      const bytes = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; ++i) {
+        bytes[i] = str.charCodeAt(i) & 0xff;
+      }
+      return bytes;
+    };
+
+    const data = encodeToLatin1(str);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    return hashHex;
+  }
+
+  const hash = CryptoJS.SHA256(CryptoJS.enc.Latin1.parse(str));
+  return hash.toString(CryptoJS.enc.Hex);
+};
+
+export const getHashCodeOfFile = async (file: any, chunkSize: number): Promise<string> => {
+  const numberOfChunks = 3;
+  let concatenatedHash = '';
+
+  if (file.size > (chunkSize * 3)) {
+    for (let i = 0; i < numberOfChunks; i++) {
+      const startPosition = (i === 0) ? 0 : (i === 1 ? (file.size / 2) - (chunkSize / 2) : file.size - chunkSize);
+      const readChunks = await readChunk(file, startPosition, chunkSize);
+      const hash = await getSHA256ToStr(readChunks);
+      concatenatedHash += hash;
+    }
+  } else {
+    const actualNumberOfChunks = Math.min(numberOfChunks, Math.ceil(file.size / chunkSize));
+    for (let i = 0; i < actualNumberOfChunks; i++) {
+      const startPosition = i * chunkSize;
+      const readChunks = await readChunk(file, startPosition, chunkSize);
+      const hash = await getSHA256ToStr(readChunks);
+      concatenatedHash += hash;
+    }
+  }
+  return getSHA256ToStr(concatenatedHash);
+};
+
+ 
+
+        
+
+    
+
+    {"serverDuration": 354, "requestCorrelationId": "115514dacd574a95be4887cc88cea54b"}
+
+Văn bản gốc
+
+Đánh giá bản dịch này
+
+Ý kiến phản hồi của bạn sẽ được dùng để góp phần cải thiện Google Dịch
+
+        
+
+          
+          
+            
+
+              
+
+                
+
+                  
+
+                    
+                  
+
+                
+
+              
+
+              
+
+              
+                
+
+                
+                  
+                    Kích thước ảnh
+                    
+                    Định dạng ảnh
+                    
+                    Dung lượng tệp

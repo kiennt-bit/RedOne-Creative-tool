@@ -239,4 +239,10 @@ export const api = {
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
     },
   },
+
+  // Photoshop Generative Fill (ps-genfill)
+  psGenfill: {
+    generate: (form) => request('POST', '/api/ps-genfill/generate', { form }),
+    health: () => request('GET', '/api/ps-genfill/health'),
+  },
 };

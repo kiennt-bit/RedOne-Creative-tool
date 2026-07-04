@@ -1,0 +1,414 @@
+WRMCB=function(e){var c=console;if(c&&c.log&&c.error){c.log('Error running batched script.');c.error(e);}}
+;
+try {
+/* module-key = 'com.atlassian.confluence.keyboardshortcuts:confluence-keyboard-shortcuts', location = 'js/confluence-keyboard-shortcuts.js' */
+define('confluence-keyboard-shortcuts/confluence-keyboard-shortcuts', [
+    'ajs',
+    'jquery',
+    'confluence-keyboard-shortcuts/confluence-keyboard-shortcuts-soy',
+    'window',
+    'confluence/dialog',
+    'confluence-keyboard-shortcuts/shortcut-dialog-tab-autoformat'
+], function(
+    AJS,
+    $,
+    DialogTemplates,
+    window,
+    ConfluenceDialog,
+    buildAutoformatPanel
+) {
+    "use strict";
+
+    var popup;
+
+    var shortcutsInitialisation = function() {
+        AJS.debug("confluence-keyboard-shortcuts initialising");
+
+        // CGP-151/CONFDEV-811 - Skip this if you are in the Page Gadget
+        if (AJS.PageGadget || (window.parent.AJS && window.parent.AJS.PageGadget)) {
+            AJS.debug("Inside the Page Gadget. Skipping keyboard shortcuts");
+            return;
+        }
+
+        KeyboardShortcuts.enabled = AJS.Meta.getBoolean('use-keyboard-shortcuts');
+
+        AJS.bind("shortcuts-loaded.keyboardshortcuts", function (e, data) {
+            KeyboardShortcuts.shortcuts = data.shortcuts;
+            $("#keyboard-shortcuts-link").click(KeyboardShortcuts.openDialog);
+        });
+
+        AJS.bind("register-contexts.keyboardshortcuts", function(e, data){
+
+            // Only bind the shortcuts for contexts if the user has the preference set
+            if (!KeyboardShortcuts.enabled) {
+                return;
+            }
+            // Here we bind to register-contexts.keyboardshortcuts so that we can select which
+            // keyboard shortcut contexts should be enabled. We use jQuery selectors to determine
+            // which keyboard shortcut contexts are applicable to a page.
+
+            var shortcutRegistry = data.shortcutRegistry;
+
+            //See CONFDEV-12510 for why we need to check that Editor.isVisible exists.
+            var editorVisible = window.Confluence && window.Confluence.Editor && window.Confluence.Editor.isVisible && window.Confluence.Editor.isVisible();
+            $("#action-menu-link").length && !editorVisible && shortcutRegistry.enableContext("viewcontent");
+            $("#viewPageLink").length && shortcutRegistry.enableContext("viewinfo");
+
+            if (editorVisible) {
+                shortcutRegistry.enableContext("adg3.tinymce.actions");
+
+                var tinymce = require('tinymce');
+
+                // tinymce shortcuts are added through the tinymce apis
+                var ed = tinymce.activeEditor;
+                var editorForm = $("#rte").closest("form");
+                $.each(KeyboardShortcuts.shortcuts, function(i, shortcut) {
+                    if (shortcut.context.indexOf("tinymce") !== 0) {
+                        return;
+                    }
+                    var operation = shortcut.op;
+                    var param = shortcut.param;
+                    $.each(shortcut.keys, function() {
+                        var shortcutKey = this;
+                        var shortcutFunc;
+                        if (operation == "click") {
+                            shortcutFunc = function() {
+                                $(param).click();
+                            };
+                        }
+                        else if (operation == "execute") {
+                            shortcutFunc = param;
+                        }
+                        if (shortcutFunc) {
+                            if ($.isArray(shortcutKey)) {
+                                shortcutKey = shortcutKey.join(",");
+                            }
+                            var sk = shortcutKey.toLowerCase();
+                            // CONFDEV-54259: tinymce 4x keyboard mapping is different from tinymce 3x
+                            var shortCutCombo = parseInt(tinymce.majorVersion, 10) >= 4 && tinymce.isMac ? sk.replace('ctrl', 'meta') : sk;
+                            AJS.debug("Adding shortcut for " + shortCutCombo);
+                            ed.addShortcut(shortCutCombo, "", shortcutFunc);
+                        } else {
+                            AJS.logError("ERROR: unkown editor shortcut key operation " + operation + " for shortcut " + shortcutKey);
+                        }
+                    });
+                });
+            }
+
+            KeyboardShortcuts.ready = true;
+        });
+
+        // Why is this if statment needed? It seems that when we are ready to do an import, the pluginsystem is up, and we
+        // pull down the super batch. This superbatch contains this code and it fires off a request to Confluence to get the
+        // i18n resources. This request gets redirected to 'selectsetupstep.action' which due to the fact that the import is
+        // running thinks we are done, and redirects to 'finishsetup.action' and things blow up.
+        if (typeof AJS.contextPath() !== "undefined" && KeyboardShortcuts.enabled) {
+            if ($("#rte").length) { //If there is an editor on the page wait for it to load before initializing shortcuts
+                AJS.bind("init.rte", function() {
+                    AJS.trigger("initialize.keyboardshortcuts");
+                });
+            } else {
+                AJS.trigger("initialize.keyboardshortcuts");
+            }
+        }
+    };
+
+    // Add functions that are referenced from the execute shortcut operations in atlassian-plugin.xml here
+    var KeyboardShortcuts = {
+        Autoformat: [],
+        Editor: [], // hack for jira issue plugin, remove once the plugin has been updated
+        enabled: false,
+        ready: false,
+        dialog: null,
+        closeDialog: function() {
+            getDialog().then(function(dialog) {
+                dialog.hide();
+            });
+            return false;
+        },
+        openDialog: function() {
+            // remove "interactive" class from menu item. with "interactive" class, the menu does not close when clicking
+            // on a menu item. "interactive" class added by help-analytics.js from atlassian-nav-links-plugin-3.2.12
+            $(this).removeClass("interactive");
+            getDialog().then(function(dialog) {
+                dialog.show();
+            });
+            return false;
+        }
+    };
+
+    var getDialog = function () {
+        var dfr = $.Deferred();
+
+        if (popup) {
+            goToEditorTabWhenEditorIsOpened();
+            return dfr.resolve(popup);
+        }
+
+        var shortcuts = KeyboardShortcuts.shortcuts;
+
+        var cancel = function () {
+            AJS.debug("Hiding Shortcuts help");
+            popup.hide();
+            return false;
+        };
+
+        //Same technique as tinyMCE.
+        var isMac = window.navigator.platform.indexOf('Mac') !== -1;
+
+        //Construct the key sequence diagram shown on the keyboard shortcuts help dialog
+        //e.g. shortcut.keys = [["g", "d"]]
+        var makeKeySequence = function (shortcut) {
+            var sequenceSpan = AJS("span").addClass("item-action");
+            // TODO - may need "or" in future if keys has length > 1
+            var keySequence = shortcut.keys[0];
+
+            for (var i = 0; i < keySequence.length; i++) {
+                if (i > 0) {
+                    sequenceSpan.append(makeKbdSeparator("alors"));
+                }
+
+                makeKeyCombo(keySequence[i], sequenceSpan);
+            }
+
+            return sequenceSpan;
+        };
+
+        var makeKeyCombo = function (combo, sequence) {
+            var keys = combo.split("+");
+
+            for (var i = 0; i < keys.length; i++) {
+                if (i > 0) {
+                    sequence.append(makeKbdSeparator("+"));
+                }
+
+                makeKeyAlternatives(keys[i], sequence);
+            }
+        };
+
+        var makeKeyAlternatives = function (key, sequence) {
+            var keys = key.split("..");
+
+            for (var i = 0; i < keys.length; i++) {
+                if (i > 0) {
+                    sequence.append(makeKbdSeparator("\u00e0"));
+                }
+
+                sequence.append(makeKbd(keys[i]));
+            }
+        };
+
+        var makeKbd = function (key) {
+            var kbd = AJS("kbd");
+            var text;
+
+            switch (key) {
+                case "Shift":
+                case "Sh":
+                    kbd.text("Shift");
+                    kbd.addClass("modifier-key");
+                    break;
+                case "Ctrl":
+                    text = isMac ? '\u2318' : "Ctrl";  //Apple command key
+                    kbd.text(text);
+                    kbd.addClass("modifier-key");
+                    break;
+                case "Tab":
+                    kbd.text("Tab");
+                    kbd.addClass("modifier-key");
+                    break;
+                case "Alt":
+                    kbd.text("Alt");
+                    kbd.addClass("modifier-key");
+                    break;
+                case "LeftAlt":
+                    //Option key for Mac, LeftAlt key for PC
+                    text = isMac ? "Option" : "Gauche Alt";
+                    kbd.text(text);
+                    kbd.addClass("modifier-key");
+                    break;
+                case "Control":
+                    //Control key of Mac
+                    kbd.text("Commande");
+                    kbd.addClass("modifier-key");
+                    break;
+                case "Option":
+                    //Option key of Mac
+                    kbd.text("Option");
+                    kbd.addClass("modifier-key");
+                    break;
+                case "UpArrow":
+                    //Option key of Mac
+                    kbd.text("\u2191");
+                    kbd.addClass("regular-key");
+                    break;
+                case "DownArrow":
+                    //Option key of Mac
+                    kbd.text("\u2193");
+                    kbd.addClass("regular-key");
+                    break;
+                case "LeftArrow":
+                    //Option key of Mac
+                    kbd.text("\u2190");
+                    kbd.addClass("regular-key");
+                    break;
+                case "RightArrow":
+                    //Option key of Mac
+                    kbd.text("\u2192");
+                    kbd.addClass("regular-key");
+                    break;
+                default:
+                    kbd.text(key);
+                    kbd.addClass("regular-key");
+            }
+
+            return kbd;
+        };
+
+        var makeKbdSeparator = function (text) {
+            var separator = AJS("span");
+            separator.text(text);
+            separator.addClass("key-separator");
+            return separator;
+        };
+
+        var makeShortcutModule = function (title, contexts, shortcuts) {
+            var module = $(DialogTemplates.keyboardShortcutModule({title: title}));
+            var list = module.find("ul");
+
+            for (var i = 0; i < shortcuts.length; i++) {
+                var shortcut = shortcuts[i];
+
+                if (shortcut.hidden) {
+                    continue;
+                }
+
+                if ($.inArray(shortcut.context, contexts) !== -1) {
+                    var shortcutItem = AJS("li").addClass("item-details");
+                    var text = shortcut.description;
+                    var desc = AJS("strong").addClass("item-description").append(text);
+                    shortcutItem.append(desc);
+                    shortcutItem.append(makeKeySequence(shortcut));
+                    list.append(shortcutItem);
+                }
+            }
+
+            return module;
+        };
+
+        var makeGeneralShortcutsMenu = function () {
+            var generalShortcutsMenuPane = $(DialogTemplates.keyboardShortcutPanel({panelId: "general-shortcuts-panel"}));
+            var generalShortcutsMenu = $(generalShortcutsMenuPane).children(".shortcutsmenu");
+
+            if (AJS.Meta.get("atlassian-account-id")) {
+                generalShortcutsMenuPane.find(".keyboard-shortcut-dialog-panel-header").append(DialogTemplates.keyboardShortcutEnabledCheckbox());
+            }
+
+            var actionsText = "Actions Page / Document live / Billet de blog";
+
+            generalShortcutsMenu.append(makeShortcutModule("Raccourcis globaux", ["global"], shortcuts));
+            generalShortcutsMenu.append(makeShortcutModule(actionsText, ["viewcontent", "viewinfo"], shortcuts));
+
+            return generalShortcutsMenuPane;
+        };
+
+        var makeEditorShortcutsMenu = function () {
+            var editorShortcutsMenuPane = $(DialogTemplates.keyboardShortcutPanel({panelId: "editor-shortcuts-panel"}));
+            var editorShortcutsMenu = $(editorShortcutsMenuPane).children(".shortcutsmenu");
+            var blockContexts = ["tinymce.block"];
+            var richContexts = ["tinymce.rich"];
+            var actionContexts = ["tinymce.actions"];
+
+                // CONFDEV-57495
+                editorShortcutsMenuPane.addClass("foxy-ux-enhancement");
+
+                blockContexts = ["adg3.tinymce.block"];
+                richContexts = ["adg3.tinymce.rich"];
+                richContexts.push(isMac ? "adg3.tinymce.rich.mac" : "adg3.tinymce.rich.win");
+                actionContexts = ["adg3.tinymce.actions"];
+                actionContexts.push(isMac ? "adg3.tinymce.actions.mac" : "adg3.tinymce.actions.win");
+
+            editorShortcutsMenu.append(makeShortcutModule("Mise en forme de bloc", blockContexts, shortcuts));
+            editorShortcutsMenu.append(makeShortcutModule("Mise en forme enrichie", richContexts, shortcuts));
+            editorShortcutsMenu.append(makeShortcutModule("Actions de modification", actionContexts, shortcuts));
+
+            return editorShortcutsMenuPane;
+        };
+
+        var toggleEnabled = function (event) {
+            var enable = $(this).prop('checked');
+            // TODO - after 3.4-m4 and blitz - error handling architecture
+            $.ajax(
+                {
+                    type: "POST",
+                    url: AJS.contextPath() + "/rest/confluenceshortcuts/latest/enabled",
+                    data: JSON.stringify({
+                        enabled: enable
+                    }),
+                    dataType: "json",
+                    contentType: "application/json"
+                }).done(function () {
+                KeyboardShortcutsObject.keyboardShortcuts.enabled = enable;
+                KeyboardShortcutsObject.keyboardShortcuts.ready = false;
+                if (enable) {
+                    AJS.trigger("add-bindings.keyboardshortcuts");
+                } else {
+                    AJS.trigger("remove-bindings.keyboardshortcuts");
+                }
+            });
+        };
+
+        var initialiseEnableShortcutsCheckbox = function () {
+            $('#keyboard-shortcut-enabled-checkbox')
+                .prop('checked', KeyboardShortcutsObject.keyboardShortcuts.enabled)
+                .click(toggleEnabled);
+        };
+
+        popup = ConfluenceDialog.component({
+            width: 950,
+            height: 660,
+            id: "keyboard-shortcuts-dialog"
+        });
+
+
+        function goToEditorTabWhenEditorIsOpened() {
+            // If you have an editor visible automatically open the Editor tab.
+            var editorVisible = window.Confluence && window.Confluence.Editor && window.Confluence.Editor.isVisible && window.Confluence.Editor.isVisible();
+
+            if (editorVisible) {
+                popup.overrideLastTab();
+                popup.gotoPanel(1);
+            } else {
+                popup.gotoPanel(0);
+            }
+        }
+
+        popup.addHeader("Raccourcis de clavier");
+        popup.addPanel("G\u00e9n\u00e9ral", makeGeneralShortcutsMenu());
+        popup.addPanel("Editeur", makeEditorShortcutsMenu());
+        popup.addPanel("Mise en forme automatique de l\'\u00e9diteur", buildAutoformatPanel());
+        popup.addCancel("Fermer", cancel);
+        // CONFDEV-12853: Add help link via prepend() instead of append() to prevent FF display issue
+        popup.popup.element.find(".dialog-title").prepend(DialogTemplates.keyboardShortcutHelpLink());
+        AJS.trigger("keyboard-shortcut-dialog-ready", popup);
+
+        goToEditorTabWhenEditorIsOpened();
+
+        dfr.resolve(popup);
+        initialiseEnableShortcutsCheckbox();
+        return dfr;
+    };
+
+    var KeyboardShortcutsObject = {};
+    KeyboardShortcutsObject.init = shortcutsInitialisation;
+    KeyboardShortcutsObject.keyboardShortcuts = KeyboardShortcuts;
+
+    return KeyboardShortcutsObject;
+});
+
+require('confluence/module-exporter').safeRequire('confluence-keyboard-shortcuts/confluence-keyboard-shortcuts', function(KeyboardShortcuts) {
+    var AJS = require('ajs');
+    Confluence.KeyboardShortcuts = KeyboardShortcuts.keyboardShortcuts;
+    AJS.toInit(KeyboardShortcuts.init);
+});
+}catch(e){WRMCB(e)};

@@ -567,3 +567,157 @@ async def upload_image(file: UploadFile = File(...)):
         log.warning(f"upload-image: resize skipped ({e}) — saving raw")
 
     return {"path": str(out), "name": file.filename}
+
+
+# ── Frame Extraction (G-Labs #3) ─────────────────────────────────────
+
+class ExtractFrameRequest(BaseModel):
+    video_path: str
+    time_seconds: float | None = None  # None = last frame
+
+
+@router.post("/extract-frame")
+async def extract_frame(body: ExtractFrameRequest):
+    """Extract a frame from a video file for use as reference image.
+
+    Used for video chaining: extract last frame of one video → use as
+    start image for the next generation. Returns the path to the
+    extracted PNG.
+
+    Args:
+        video_path: Path to the video file (must be within OUTPUT_DIR)
+        time_seconds: Optional timestamp. None = extract last frame.
+    """
+    vp = Path(body.video_path).resolve()
+
+    # Security: ensure path is within OUTPUT_DIR
+    try:
+        vp.relative_to(Path(OUTPUT_DIR).resolve())
+    except ValueError:
+        raise HTTPException(400, "Video path must be within the output directory")
+
+    if not vp.exists():
+        raise HTTPException(404, f"Video not found: {body.video_path}")
+
+    from ..services.frame_extractor import extract_last_frame, extract_frame_at
+
+    if body.time_seconds is not None:
+        frame_path = await extract_frame_at(str(vp), body.time_seconds)
+    else:
+        frame_path = await extract_last_frame(str(vp))
+
+    if not frame_path:
+        raise HTTPException(500, "Frame extraction failed — ffmpeg may not be available")
+
+    return {"frame_path": frame_path, "video_path": str(vp)}
+
+
+# ── Video Upscale (Real-ESRGAN) ──────────────────────────────────────
+
+class UpscaleVideoRequest(BaseModel):
+    video_paths: list[str]
+    scale: int = 2       # 2, 3, or 4
+    denoise: float = -1  # -1 = model default, 0~1 = denoise strength
+
+
+@router.get("/upscale-status")
+async def upscale_status():
+    """Check if the upscaler binary is available."""
+    from ..services.upscaler import is_upscaler_available
+    return {"available": is_upscaler_available()}
+
+
+@router.post("/upscale-video")
+async def upscale_video_endpoint(body: UpscaleVideoRequest):
+    """Upscale one or more videos using Real-ESRGAN NCNN-Vulkan.
+
+    Runs asynchronously in a background thread. Progress is broadcast
+    via WebSocket events: video_upscale_progress, video_upscale_completed,
+    video_upscale_error.
+    """
+    from ..services.upscaler import upscale_video, is_upscaler_available
+
+    if not is_upscaler_available():
+        raise HTTPException(
+            400,
+            "Video Upscale chưa sẵn sàng. Cài tính năng 'Video Upscale' "
+            "từ Kho tính năng trước.",
+        )
+
+    # Validate all paths
+    for vp_str in body.video_paths:
+        vp = Path(vp_str).resolve()
+        try:
+            vp.relative_to(Path(OUTPUT_DIR).resolve())
+        except ValueError:
+            raise HTTPException(400, f"Path phải nằm trong thư mục output: {vp_str}")
+        if not vp.exists():
+            raise HTTPException(404, f"Video không tồn tại: {vp_str}")
+
+    scale = body.scale if body.scale in (2, 3, 4) else 2
+    loop = asyncio.get_running_loop()
+    batch_id = str(uuid.uuid4())[:8]
+
+    async def _run():
+        total = len(body.video_paths)
+        results = []
+        for idx, vp_str in enumerate(body.video_paths, 1):
+            try:
+                await hub.broadcast("video_upscale_progress", {
+                    "batch_id": batch_id,
+                    "index": idx,
+                    "total": total,
+                    "percent": 0,
+                    "stage": "starting",
+                    "message": f"Bắt đầu upscale {idx}/{total}...",
+                    "video_path": vp_str,
+                })
+
+                def emit(pct: float, stage: str, msg: str):
+                    asyncio.run_coroutine_threadsafe(
+                        hub.broadcast("video_upscale_progress", {
+                            "batch_id": batch_id,
+                            "index": idx,
+                            "total": total,
+                            "percent": round(pct, 1),
+                            "stage": stage,
+                            "message": msg,
+                            "video_path": vp_str,
+                        }),
+                        loop,
+                    )
+
+                output = await upscale_video(
+                    input_path=vp_str,
+                    scale=scale,
+                    denoise=body.denoise,
+                    progress=emit,
+                )
+                results.append({"input": vp_str, "output": output})
+
+                await hub.broadcast("video_upscale_completed", {
+                    "batch_id": batch_id,
+                    "index": idx,
+                    "total": total,
+                    "video_path": vp_str,
+                    "output_path": output,
+                })
+
+            except Exception as e:
+                log.warning("Upscale failed for %s: %s", vp_str, e)
+                await hub.broadcast("video_upscale_error", {
+                    "batch_id": batch_id,
+                    "index": idx,
+                    "total": total,
+                    "video_path": vp_str,
+                    "error": str(e),
+                })
+
+        await hub.broadcast("video_upscale_batch_done", {
+            "batch_id": batch_id,
+            "total": total,
+            "results": results,
+        })
+
+    asyncio.create_task(_run())
+    return {"ok": True, "batch_id": batch_id, "total": len(body.video_paths)}

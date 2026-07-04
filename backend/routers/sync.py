@@ -152,9 +152,18 @@ async def next_task(
     # (signed-in labs.google tab). Lets the extension run in multiple Chrome
     # profiles — the ones without the tab poll harmlessly and claim nothing.
     task = await bridge.pop_task_for_extension(timeout=0.0, tab_status=tab_status)
+    # Always attach pending session commands — even when no task is ready.
+    # This lets the extension execute commands (clear_cookies, reload, etc.)
+    # independently of the task queue, on every poll cycle.
+    commands = bridge.pop_session_commands()
     if task is None:
+        if commands:
+            return envelope({"task": None, "session_commands": commands})
         return {"task": None}
-    return envelope({"task": task.to_dict()})
+    response = {"task": task.to_dict()}
+    if commands:
+        response["session_commands"] = commands
+    return envelope(response)
 
 
 @router.post("/task-result")
