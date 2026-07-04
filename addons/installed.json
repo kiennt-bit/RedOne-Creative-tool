@@ -1,0 +1,9 @@
+{
+  "video-upscale": {
+    "kind": "asset",
+    "version": "1.0.0",
+    "files": [
+      "addons/video-upscale"
+    ]
+  }
+}

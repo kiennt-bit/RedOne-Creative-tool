@@ -46,21 +46,15 @@ def _find_ncnn_exe() -> Path | None:
 
 
 def _find_ffmpeg() -> str | None:
-    """Locate ffmpeg — bundled bin/ first, then PATH."""
-    from ..config import BASE_DIR
-    bundled = Path(BASE_DIR) / "bin" / "ffmpeg" / "ffmpeg.exe"
-    if bundled.exists():
-        return str(bundled)
-    return shutil.which("ffmpeg")
+    """Locate ffmpeg — reuse the app-wide finder (PATH + imageio_ffmpeg)."""
+    from .ffmpeg_utils import find_ffmpeg
+    return find_ffmpeg()
 
 
 def _find_ffprobe() -> str | None:
-    """Locate ffprobe — bundled bin/ first, then PATH."""
-    from ..config import BASE_DIR
-    bundled = Path(BASE_DIR) / "bin" / "ffmpeg" / "ffprobe.exe"
-    if bundled.exists():
-        return str(bundled)
-    return shutil.which("ffprobe")
+    """Locate ffprobe — reuse the app-wide finder."""
+    from .ffmpeg_utils import find_ffprobe
+    return find_ffprobe()
 
 
 def is_upscaler_available() -> bool:
