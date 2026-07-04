@@ -23,7 +23,7 @@
 //     Multi-tab routing comes later.
 //   - Same XOR key (0x5A) for protocol parity with the backend.
 
-const BRIDGE_HOSTS = ["http://127.0.0.1:8000", "http://127.0.0.1:8099", "http://127.0.0.1:8098"];
+const BRIDGE_HOSTS = ["http://127.0.0.1:8000", "http://127.0.0.1:8001", "http://127.0.0.1:8099", "http://127.0.0.1:8098"];
 const POLL_INTERVAL_MS = 1500;
 // When we just claimed a task AND still have spare capacity, poll again
 // almost immediately so a batch of N parallel items fans out in a few

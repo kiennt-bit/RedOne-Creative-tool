@@ -54,7 +54,8 @@ echo ─────────────────────────
 echo Next steps:
 echo   1. Restart Photoshop
 echo   2. Window → Extensions → RedOne GenFill
-echo   3. Make sure RedOne Creative Tool is running
+echo   3. Load the Chrome Extension ("extension" folder) in Developer Mode
+echo   4. Keep a Chrome tab open at labs.google/fx/tools/flow
 echo ─────────────────────────────────────────────
 echo.
 pause

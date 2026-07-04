@@ -20,6 +20,7 @@ const EXT_CHECK_INTERVAL = 3000;      // ms
 // ── State ───────────────────────────────────────────────────
 let csInterface = null;
 let isGenerating = false;
+let generationCancelled = false;
 let lastResultPath = null;
 let serverMode = 'none'; // 'embedded' | 'external' | 'none'
 
@@ -38,6 +39,7 @@ const $promptInput = document.getElementById('prompt-input');
 const $btnGenerate = document.getElementById('btn-generate');
 const $progressSection = document.getElementById('progress-section');
 const $progressText = document.getElementById('progress-text');
+const $btnCancel = document.getElementById('btn-cancel');
 const $resultSection = document.getElementById('result-section');
 const $resultImage = document.getElementById('result-image');
 const $resultMeta = document.getElementById('result-meta');
@@ -71,6 +73,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Wire up events
   $btnGenerate.addEventListener('click', handleGenerate);
+  $btnCancel.addEventListener('click', handleCancelGeneration);
   $btnApply.addEventListener('click', handleApply);
   $btnRegenerate.addEventListener('click', handleRegenerate);
   $promptInput.addEventListener('input', updateGenerateButton);
@@ -216,6 +219,16 @@ function updateGenerateButton() {
 }
 
 // ── Generate Flow ───────────────────────────────────────────
+function handleCancelGeneration() {
+  if (!isGenerating) return;
+  generationCancelled = true;
+  isGenerating = false;
+  document.body.classList.remove('is-generating');
+  hideProgress();
+  showError('Đã hủy quá trình tạo ảnh. Vùng chọn cũ vẫn được giữ nguyên.');
+  updateGenerateButton();
+}
+
 async function handleGenerate() {
   if (isGenerating) return;
   if (!isReady() && serverMode !== 'external') {
@@ -232,6 +245,7 @@ async function handleGenerate() {
   lastPromptText = prompt;
 
   isGenerating = true;
+  generationCancelled = false;
   document.body.classList.add('is-generating');
   hideError();
   hideResult();
@@ -243,6 +257,7 @@ async function handleGenerate() {
 
     // Step 1: Export document + mask
     const exportResult = await exportFromPhotoshop();
+    if (generationCancelled) return;
     const { imagePath, maskPath, cropX, cropY, cropW, cropH } = exportResult;
     
     lastCropX = cropX || 0;
@@ -271,10 +286,13 @@ async function handleGenerate() {
       throw new Error('Không có server khả dụng');
     }
 
+    if (generationCancelled) return;
+
     hideProgress();
     showResult(result);
 
   } catch (err) {
+    if (generationCancelled) return;
     hideProgress();
     showError(err.message || String(err));
   } finally {

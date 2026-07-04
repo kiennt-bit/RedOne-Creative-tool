@@ -46,7 +46,7 @@
           "url": "https://github.com/kiennt-bit/RedOne-Creative-tool-Addon/releases/download/addons-v1/realesrgan-ncnn-vulkan-windows.zip",
           "dest": "addons/video-upscale/realesrgan-ncnn-vulkan-windows.zip",
           "extract_to": "addons/video-upscale",
-          "sha256": ""
+          "sha256": "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d"
         }
       ]
     }
