@@ -9,12 +9,13 @@
  */
 
 import { api } from '/js/api.js';
-import { el, icon, toast } from '/js/ui.js';
+import { el, icon, toast, makeLazyVideoObserver } from '/js/ui.js';
 import { ws } from '/js/ws.js';
 
 let _root = null;
 let _upscaling = false;
 let _selectedPaths = []; // Array of { path, name }
+let _mediaObserver = null;
 
 export async function renderVideoUpscale(root) {
   _root = root;
@@ -140,10 +141,21 @@ export async function renderVideoUpscale(root) {
   root.append(layout);
 
   // WS events
-  ws.on('video_upscale_progress', onProgress);
-  ws.on('video_upscale_completed', onCompleted);
-  ws.on('video_upscale_error', onError);
-  ws.on('video_upscale_batch_done', onBatchDone);
+  const offs = [
+    ws.on('video_upscale_progress', onProgress),
+    ws.on('video_upscale_completed', onCompleted),
+    ws.on('video_upscale_error', onError),
+    ws.on('video_upscale_batch_done', onBatchDone)
+  ];
+
+  const obs = new MutationObserver(() => {
+    if (!root.contains(layout)) {
+      offs.forEach(o => o());
+      if (_mediaObserver) { _mediaObserver.disconnect(); _mediaObserver = null; }
+      obs.disconnect();
+    }
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
 
   _addStyles();
   loadGallery();
@@ -187,6 +199,11 @@ async function loadGallery() {
   if (!gallery) return;
   gallery.innerHTML = '<div class="field-help">Đang tải danh sách video...</div>';
   
+  if (_mediaObserver) {
+    _mediaObserver.disconnect();
+    _mediaObserver = null;
+  }
+  
   try {
     const res = await api.get('/api/video-editor/my-media?type=video');
     const items = res.media || [];
@@ -205,7 +222,7 @@ async function loadGallery() {
       });
       
       const thumb = el('div', { className: 'media-thumb' });
-      const vid = el('video', { src: item.url, muted: true, preload: 'metadata' });
+      const vid = el('video', { 'data-src': item.url, muted: true, preload: 'none' });
       thumb.append(vid);
       
       const info = el('div', { className: 'media-info' },
@@ -217,6 +234,9 @@ async function loadGallery() {
       card.append(thumb, info, check);
       gallery.append(card);
     });
+
+    _mediaObserver = makeLazyVideoObserver(gallery, { rootMargin: '300px' });
+    gallery.querySelectorAll('video[data-src]').forEach((v) => _mediaObserver.observe(v));
   } catch (e) {
     gallery.innerHTML = `<div class="field-help text-danger" style="color:var(--red)">Lỗi tải danh sách video: ${e.message}</div>`;
   }
