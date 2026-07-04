@@ -213,8 +213,8 @@ async def upscale_video(
 
         proc = await asyncio.create_subprocess_exec(
             *ncnn_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
 
         # Poll for progress by counting output files while NCNN runs

@@ -299,7 +299,7 @@ async function startUpscale() {
   const denoise = parseFloat(document.getElementById('upscale-denoise')?.value || '0.5');
   
   const btn = document.getElementById('upscale-start-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-outlined spin">sync</span> Đang xử lý...'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Đang xử lý...'; }
 
   const progressArea = document.getElementById('upscale-progress');
   if (progressArea) {
