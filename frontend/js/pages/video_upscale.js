@@ -343,6 +343,13 @@ function onCompleted(d) {
   if (!resultsArea) return;
   const name = d.output_path.split(/[/\\]/).pop();
   
+  // Resolve absolute path to /files/ URL
+  let fileUrl = `/files/video/${name}`;
+  const parts = d.output_path.replace(/\\/g, '/').split('/outputs/');
+  if (parts.length > 1) {
+    fileUrl = '/files/' + parts[1];
+  }
+
   const card = el('div', { className: 'card result-card slide-in', style: { borderLeft: '4px solid var(--green)', marginTop: '12px', padding: '14px 18px' } },
     icon('check_circle', 20, { style: { color: 'var(--green)' } }),
     el('div', { className: 'result-info', style: { flex: 1, overflow: 'hidden' } },
@@ -350,7 +357,7 @@ function onCompleted(d) {
       el('span', { className: 'field-help', style: { color: 'var(--green)' } }, 'Hoàn tất')
     ),
     el('a', {
-      href: `/outputs/video/${name}`,
+      href: fileUrl,
       download: name,
       className: 'btn btn-sm btn-primary',
       title: 'Tải về'
