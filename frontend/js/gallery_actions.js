@@ -30,7 +30,7 @@ import { tasksStore } from './tasks_store.js';
  *          file paths. Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen, onUpscaleVideo }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
   // Live overall upscale progress ("Đang upscale 2/5"). Hidden until the
   // page calls toolbar._setUpscaleProgress() with an active batch.
@@ -169,6 +169,15 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     try { await onSendToUpscale(ids); } catch (e) { toast(`Gửi upscale lỗi: ${e.message}`, 'error'); }
   }, 'btn-success') : null;
 
+  // Video Upscale (Real-ESRGAN AI) — only shown on video gallery pages.
+  // Sends selected video paths to the backend for GPU-accelerated upscaling.
+  const videoUpscaleEnabled = !!onUpscaleVideo;
+  const btnUpscaleVideo = videoUpscaleEnabled ? iconBtn('upscale', 'Upscale Video (AI)', async () => {
+    const paths = selectedCards().map(pathOf).filter(Boolean);
+    if (!paths.length) return;
+    try { await onUpscaleVideo(paths); } catch (e) { toast(`Upscale video lỗi: ${e.message}`, 'error'); }
+  }, 'btn-accent') : null;
+
   // Selection meta-controls — quiet (ghost), sit on the left.
   const selBtnAll = iconBtn('check', 'Chọn tất cả', () => {
     getCards().forEach(c => {
@@ -201,6 +210,7 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     [btnRegen],                          // regenerate
     [btnI2V, btnSendUpscale],            // send to another tab / tool
     [btn2k, btn4k],                      // Flow upscale 2K / 4K
+    [btnUpscaleVideo],                   // Real-ESRGAN video upscale (AI)
     [btnWm],                             // watermark removal (video pages)
     [btnDownload],                       // download
     onClearSelected ? [btnClear] : [],   // remove from list (destructive)

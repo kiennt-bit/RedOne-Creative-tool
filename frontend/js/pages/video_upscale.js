@@ -10,9 +10,9 @@
  * Loaded dynamically by app.js when the feature is installed.
  */
 
-import { post, get } from '/js/api.js';
+import { api } from '/js/api.js';
 import { el, icon, toast } from '/js/ui.js';
-import ws from '/js/ws.js';
+import { ws } from '/js/ws.js';
 
 let _root = null;
 let _upscaling = false;
@@ -31,7 +31,7 @@ export async function renderVideoUpscale(root) {
   const statusEl = el('div', { className: 'upscale-status' });
   let available = false;
   try {
-    const res = await get('/api/content/upscale-status');
+    const res = await api.get('/api/content/upscale-status');
     available = res.available;
   } catch { /* ignore */ }
 
@@ -191,7 +191,7 @@ async function startUpscale() {
   }
 
   try {
-    await post('/api/content/upscale-video', {
+    await api.post('/api/content/upscale-video', {
       video_paths: _selectedPaths,
       scale,
       denoise,

@@ -900,6 +900,28 @@ export function renderContent(root) {
         onRemoveWatermark: async (paths) => {
           await runBatchWatermark(paths);
         },
+        onUpscaleVideo: async (paths) => {
+          // Only video paths (mp4, mov, avi, mkv, webm)
+          const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
+          const videoPaths = paths.filter(p => videoExts.some(e => p.toLowerCase().endsWith(e)));
+          if (!videoPaths.length) {
+            return toast('Không có video nào được chọn', 'warning');
+          }
+          // Check if upscaler binary is available
+          try {
+            const status = await api.get('/api/content/upscale-status');
+            if (!status.available) {
+              return toast('Video Upscale chưa sẵn sàng. Cài tính năng "Video Upscale" từ Kho tính năng trước.', 'warning');
+            }
+          } catch { /* proceed anyway — API will reject if not ready */ }
+          toast(`Đang gửi ${videoPaths.length} video để upscale (x2)...`, 'info');
+          await api.post('/api/content/upscale-video', {
+            video_paths: videoPaths,
+            scale: 2,
+            denoise: -1,
+          });
+          toast(`Đã bắt đầu upscale ${videoPaths.length} video`, 'success');
+        },
       });
       wrap.appendChild(toolbar);
     }

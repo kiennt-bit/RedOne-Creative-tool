@@ -24,10 +24,13 @@ log = logging.getLogger("redone.upscaler")
 # Type for progress callback: (percent, stage, message)
 ProgressCb = Callable[[float, str, str], None]
 
-# Default model bundled with NCNN release
-DEFAULT_MODEL = "realesr-general-x4v3"
+# Models bundled with NCNN release (in models/ dir inside the zip)
+# - realesrgan-x4plus           : best for general real-world content (photos, video frames)
+# - realesr-animevideov3        : optimized for anime video (x2/x3/x4)
+# - realesrgan-x4plus-anime     : anime images only
+DEFAULT_MODEL = "realesrgan-x4plus"
 DEFAULT_SCALE = 2
-DEFAULT_DENOISE = -1  # -1 = use model default
+DEFAULT_DENOISE = -1  # -1 = use model default (only realesr-general-x4v3 supports -d)
 
 
 def _find_ncnn_exe() -> Path | None:
@@ -208,7 +211,7 @@ async def upscale_video(
             "-s", str(scale),
             "-f", "jpg",
         ]
-        if 0 <= denoise <= 1 and model == "realesr-general-x4v3":
+        if 0 <= denoise <= 1 and "general" in model:
             ncnn_cmd.extend(["-d", str(denoise)])
 
         proc = await asyncio.create_subprocess_exec(
@@ -217,9 +220,13 @@ async def upscale_video(
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Poll for progress by counting output files
-        while proc.returncode is None:
-            await asyncio.sleep(1.5)
+        # Poll for progress by counting output files while NCNN runs
+        while True:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.5)
+                break  # process finished
+            except asyncio.TimeoutError:
+                pass  # still running, poll progress
             try:
                 done_files = len(list(upscaled_dir.glob("frame_*.jpg")))
                 pct = 15 + (done_files / actual_frames * 65) if actual_frames else 15
@@ -229,18 +236,17 @@ async def upscale_video(
                 )
             except Exception:
                 pass
-            # Check if process ended
+
+        # Process finished — collect stderr for error reporting
+        stderr_data = b""
+        if proc.stderr:
             try:
-                proc.returncode  # noqa: B018
-                await asyncio.wait_for(proc.wait(), timeout=0.1)
-            except asyncio.TimeoutError:
+                stderr_data = await proc.stderr.read()
+            except Exception:
                 pass
 
-        await proc.wait()
-        _, stderr = await proc.communicate() if proc.returncode != 0 else (b"", b"")
-
         if proc.returncode != 0:
-            err_text = stderr.decode(errors="replace")[:500] if stderr else "unknown error"
+            err_text = stderr_data.decode(errors="replace")[:500] if stderr_data else "unknown error"
             raise RuntimeError(f"realesrgan-ncnn-vulkan thất bại: {err_text}")
 
         upscaled_files = sorted(upscaled_dir.glob("frame_*.jpg"))
