@@ -20,17 +20,7 @@ export async function renderVideoUpscale(root) {
   _root = root;
   root.innerHTML = '';
 
-  // 1. Header
-  const header = el('div', { className: 'upscale-header-premium' },
-    el('div', { className: 'header-icon' }, icon('auto_awesome_motion', 32)),
-    el('div', { className: 'header-text' },
-      el('h2', {}, 'Video Upscale AI'),
-      el('p', {}, 'Nâng cấp chất lượng video với Real-ESRGAN (GPU-accelerated)')
-    )
-  );
-
   // Check availability
-  const statusEl = el('div', { className: 'upscale-status' });
   let available = false;
   try {
     const res = await api.get('/api/content/upscale-status');
@@ -38,36 +28,36 @@ export async function renderVideoUpscale(root) {
   } catch { /* ignore */ }
 
   if (!available) {
-    statusEl.innerHTML = `
-      <div class="status-warning glass-card">
-        <span class="material-symbols-outlined">warning</span>
-        <div>
-          <strong>Chưa sẵn sàng</strong>
-          <p>realesrgan-ncnn-vulkan chưa được cài đặt. Vui lòng cài đặt từ Kho tính năng.</p>
-        </div>
-      </div>`;
-    root.append(header, statusEl);
+    root.append(
+      el('div', { className: 'card', style: { maxWidth: '600px', margin: '40px auto', textAlign: 'center' } },
+        icon('warning', 32, { style: { color: 'var(--yellow)', marginBottom: '12px' } }),
+        el('h3', { className: 'card-title' }, 'Chưa sẵn sàng'),
+        el('p', { className: 'field-help', style: { fontSize: '13.5px', marginTop: '8px' } },
+          'realesrgan-ncnn-vulkan chưa được cài đặt. Vui lòng cài đặt tính năng "Video Upscale" từ Kho tính năng.'
+        )
+      )
+    );
     return;
   }
 
-  // 2. Layout Container
+  // 1. Layout Container
   const layout = el('div', { className: 'upscale-layout' });
 
-  // ── LEFT COLUMN (Media & Gallery) ──
+  // ── LEFT COLUMN (Media Selection) ──
   const mediaCol = el('div', { className: 'upscale-col media-col' });
   
   // Dropzone
   const fileInput = el('input', { type: 'file', accept: 'video/*', multiple: true, style: 'display:none' });
-  const dropZone = el('div', { className: 'glass-card upload-card', id: 'upscale-dropzone' },
-    el('div', { className: 'upload-icon-wrapper' }, icon('cloud_upload', 36)),
-    el('h3', {}, 'Kéo thả hoặc Click để Upload'),
-    el('p', { className: 'text-muted' }, 'Hỗ trợ MP4, MOV, AVI, MKV (Tối đa 1GB)'),
+  const dropZone = el('div', { className: 'dropzone', id: 'upscale-dropzone' },
+    el('div', { className: 'dropzone-icon' }, icon('upload', 24)),
+    el('div', { style: { fontWeight: '600', fontSize: '14px', marginBottom: '4px' } }, 'Kéo thả hoặc click để tải video lên'),
+    el('div', { className: 'field-help' }, 'Hỗ trợ MP4, MOV, AVI, MKV (Tối đa 1GB)'),
     fileInput
   );
   
-  const uploadProgress = el('div', { className: 'upload-progress', style: 'display:none' },
+  const uploadProgress = el('div', { className: 'upload-progress', style: 'display:none; margin-top: 14px;' },
     el('div', { className: 'upload-bar' }, el('div', { className: 'upload-fill', id: 'upload-fill' })),
-    el('span', { id: 'upload-text' }, 'Đang tải lên...')
+    el('span', { id: 'upload-text', className: 'field-help' }, 'Đang tải lên...')
   );
   dropZone.append(uploadProgress);
 
@@ -87,35 +77,42 @@ export async function renderVideoUpscale(root) {
     fileInput.value = '';
   });
 
-  // Gallery
+  // Gallery Area
   const galleryHeader = el('div', { className: 'gallery-header' },
-    el('h3', {}, 'Video đã có'),
-    el('button', { className: 'btn-icon', title: 'Làm mới', onclick: () => loadGallery() }, icon('refresh', 20))
+    el('h3', { className: 'card-title' }, 'Thư viện video'),
+    el('button', { className: 'btn btn-icon btn-ghost', title: 'Làm mới', onclick: () => loadGallery() }, icon('refresh', 16))
   );
   const galleryGrid = el('div', { className: 'media-gallery', id: 'media-gallery' }, 
-    el('div', { className: 'loading-spinner' }, 'Đang tải...')
+    el('div', { className: 'field-help' }, 'Đang tải danh sách video...')
   );
   
   mediaCol.append(dropZone, galleryHeader, galleryGrid);
 
-  // ── RIGHT COLUMN (Settings & Action) ──
+  // ── RIGHT COLUMN (Settings & Controls) ──
   const settingsCol = el('div', { className: 'upscale-col settings-col' });
 
   // Settings Card
-  const settingsCard = el('div', { className: 'glass-card settings-card' },
-    el('h3', {}, 'Cài đặt'),
-    el('div', { className: 'form-group' },
-      el('label', {}, 'Tỷ lệ phóng'),
-      el('div', { className: 'scale-options' },
-        createRadioCard('scale', '2', '2x', 'Khuyên dùng', true),
-        createRadioCard('scale', '3', '3x', 'Chất lượng cao', false),
-        createRadioCard('scale', '4', '4x', 'Tối đa (Chậm)', false)
+  const settingsCard = el('div', { className: 'card' },
+    el('h3', { className: 'card-title' }, 'Cấu hình AI'),
+    
+    // Scale option using native select style
+    el('div', { className: 'field-group', style: { marginTop: '16px' } },
+      el('label', { className: 'field-label' }, 'Tỷ lệ phóng đại'),
+      el('select', { className: 'select', id: 'upscale-scale' },
+        el('option', { value: '2', selected: true }, 'x2 (Khuyên dùng - Cân bằng nhất)'),
+        el('option', { value: '3' }, 'x3 (Độ chi tiết cao)'),
+        el('option', { value: '4' }, 'x4 (Chậm - Yêu cầu GPU mạnh)')
       )
     ),
-    el('div', { className: 'form-group mt-4' },
-      el('label', {}, 'Khử nhiễu (Denoise): ', el('span', { id: 'denoise-label', className: 'badge' }, '0.5')),
-      el('input', { type: 'range', id: 'upscale-denoise', min: '0', max: '1', step: '0.1', value: '0.5' }),
-      el('div', { className: 'range-marks text-muted' }, el('span', {}, '0.0'), el('span', {}, '1.0'))
+
+    // Denoise slider
+    el('div', { className: 'field-group' },
+      el('label', { className: 'field-label', style: { display: 'flex', justifyContent: 'space-between' } }, 
+        el('span', {}, 'Khử nhiễu (Denoise)'),
+        el('span', { id: 'denoise-label', style: { color: 'var(--brand)', fontWeight: '700' } }, '0.5')
+      ),
+      el('input', { type: 'range', id: 'upscale-denoise', min: '0', max: '1', step: '0.1', value: '0.5', style: { width: '100%', cursor: 'pointer' } }),
+      el('div', { className: 'range-marks field-help' }, el('span', {}, 'Giữ hạt nhiễu (0.0)'), el('span', {}, 'Mịn tuyệt đối (1.0)'))
     )
   );
 
@@ -123,26 +120,24 @@ export async function renderVideoUpscale(root) {
     document.getElementById('denoise-label').textContent = e.target.value;
   });
 
-  // Queue Card
-  const queueCard = el('div', { className: 'glass-card queue-card' },
-    el('div', { className: 'queue-header' },
-      el('h3', {}, 'Danh sách chờ (', el('span', { id: 'queue-count' }, '0'), ')')
+  // Action Queue Card
+  const queueCard = el('div', { className: 'card queue-card' },
+    el('h3', { className: 'card-title' }, 'Hàng chờ xử lý (', el('span', { id: 'queue-count' }, '0'), ')'),
+    el('div', { className: 'selected-list', id: 'upscale-selected', style: { marginTop: '12px' } },
+      el('div', { className: 'field-help' }, 'Chưa chọn video nào. Nhấp chọn video ở bên trái.')
     ),
-    el('div', { className: 'selected-list', id: 'upscale-selected' },
-      el('div', { className: 'empty-state text-muted' }, 'Chưa chọn video nào. Chọn từ thư viện bên trái.')
-    ),
-    el('button', { className: 'btn btn-primary btn-block upscale-start', id: 'upscale-start-btn', disabled: true, onclick: startUpscale },
-      icon('rocket_launch', 20), ' Bắt đầu Upscale'
+    el('button', { className: 'btn btn-primary upscale-start', id: 'upscale-start-btn', disabled: true, style: { width: '100%', marginTop: '16px' }, onclick: startUpscale },
+      icon('sparkles', 16), 'Bắt đầu Upscale'
     )
   );
 
-  const progressArea = el('div', { className: 'progress-area', id: 'upscale-progress', style: 'display:none' });
+  const progressArea = el('div', { className: 'progress-area', id: 'upscale-progress', style: { display: 'none' } });
   const resultsArea = el('div', { className: 'results-area', id: 'upscale-results' });
 
   settingsCol.append(settingsCard, queueCard, progressArea, resultsArea);
   
   layout.append(mediaCol, settingsCol);
-  root.append(header, layout);
+  root.append(layout);
 
   // WS events
   ws.on('video_upscale_progress', onProgress);
@@ -152,19 +147,7 @@ export async function renderVideoUpscale(root) {
 
   _addStyles();
   loadGallery();
-  _updateSelectedList(); // init state
-}
-
-function createRadioCard(name, value, title, desc, checked) {
-  const label = el('label', { className: 'radio-card' });
-  const input = el('input', { type: 'radio', name, value });
-  if (checked) input.checked = true;
-  const content = el('div', { className: 'card-content' },
-    el('h4', {}, title),
-    el('small', {}, desc)
-  );
-  label.append(input, content);
-  return label;
+  _updateSelectedList();
 }
 
 // ── Upload Logic ──
@@ -183,34 +166,33 @@ async function handleUploads(files) {
     fd.append('file', file);
     
     try {
-      // simulate progress
       fill.style.width = `${((i) / files.length) * 100 + 10}%`;
       const res = await api.postForm('/api/video-editor/upload', fd);
-      toast('success', `Đã tải lên: ${file.name}`);
-      // Auto-add to selected list
+      toast(`Đã tải lên: ${file.name}`, 'success');
       addVideoToQueue({ path: res.path, name: file.name });
     } catch (e) {
-      toast('error', `Lỗi tải lên ${file.name}: ${e.message}`);
+      toast(`Lỗi tải lên ${file.name}: ${e.message}`, 'error');
     }
     fill.style.width = `${((i+1) / files.length) * 100}%`;
   }
   
   setTimeout(() => { progress.style.display = 'none'; }, 1000);
-  loadGallery(); // Refresh gallery
+  loadGallery();
 }
 
 // ── Gallery Logic ──
 async function loadGallery() {
   const gallery = document.getElementById('media-gallery');
   if (!gallery) return;
-  gallery.innerHTML = '<div class="loading-spinner">Đang tải...</div>';
+  gallery.innerHTML = '<div class="field-help">Đang tải danh sách video...</div>';
   
   try {
-    const items = await api.get('/api/video-editor/my-media?type=video');
+    const res = await api.get('/api/video-editor/my-media?type=video');
+    const items = res.media || [];
     gallery.innerHTML = '';
     
     if (items.length === 0) {
-      gallery.innerHTML = '<div class="empty-state text-muted">Chưa có video nào trong hệ thống.</div>';
+      gallery.innerHTML = '<div class="field-help">Chưa có video nào. Kéo thả file lên trên hoặc chọn video đã tạo từ tab khác.</div>';
       return;
     }
 
@@ -222,21 +204,20 @@ async function loadGallery() {
       });
       
       const thumb = el('div', { className: 'media-thumb' });
-      // Try to load video first frame or fallback to icon
       const vid = el('video', { src: item.url, muted: true, preload: 'metadata' });
       thumb.append(vid);
       
       const info = el('div', { className: 'media-info' },
         el('div', { className: 'media-name', title: item.name }, item.name),
-        el('div', { className: 'media-meta text-muted' }, formatBytes(item.size))
+        el('div', { className: 'media-meta field-help' }, formatBytes(item.size))
       );
       
-      const check = el('div', { className: 'check-circle' }, icon('check', 16));
+      const check = el('div', { className: 'check-circle' }, icon('check', 14));
       card.append(thumb, info, check);
       gallery.append(card);
     });
   } catch (e) {
-    gallery.innerHTML = `<div class="empty-state text-danger">Lỗi tải danh sách video: ${e.message}</div>`;
+    gallery.innerHTML = `<div class="field-help text-danger" style="color:var(--red)">Lỗi tải danh sách video: ${e.message}</div>`;
   }
 }
 
@@ -266,13 +247,11 @@ function addVideoToQueue(item) {
   }
 }
 
-// Exported for external call (e.g. from gallery toolbar)
 export function upscaleVideos(videoPaths) {
   videoPaths.forEach(p => {
     const name = p.split(/[/\\]/).pop();
     addVideoToQueue({ path: p, name });
   });
-  // Auto switch to this tab should be handled by caller
 }
 
 function _updateSelectedList() {
@@ -284,7 +263,7 @@ function _updateSelectedList() {
   countEl.textContent = _selectedPaths.length;
 
   if (_selectedPaths.length === 0) {
-    listEl.innerHTML = '<div class="empty-state text-muted">Chưa chọn video nào. Nhấp vào video bên trái để thêm.</div>';
+    listEl.innerHTML = '<div class="field-help">Chưa chọn video nào. Chọn từ thư viện bên trái hoặc tải lên.</div>';
     if (btn) btn.disabled = true;
     return;
   }
@@ -292,18 +271,18 @@ function _updateSelectedList() {
   listEl.innerHTML = '';
   for (const item of _selectedPaths) {
     const li = el('div', { className: 'queue-item' },
-      icon('movie', 18),
+      icon('movie', 16, { style: { color: 'var(--text-muted)' } }),
       el('span', { className: 'queue-name', title: item.name }, item.name),
       el('button', {
-        className: 'btn-icon remove-btn',
+        className: 'btn btn-icon btn-ghost remove-btn',
+        style: { padding: '4px', border: 'none', background: 'none' },
         onclick: (e) => {
           e.stopPropagation();
           _selectedPaths = _selectedPaths.filter(x => x.path !== item.path);
           _updateSelectedList();
-          // Update gallery visual state if rendered
           loadGallery(); 
         },
-      }, icon('close', 16))
+      }, icon('x', 14))
     );
     listEl.append(li);
   }
@@ -315,8 +294,7 @@ async function startUpscale() {
   if (_upscaling || _selectedPaths.length === 0) return;
   _upscaling = true;
 
-  const scaleInput = document.querySelector('input[name="scale"]:checked');
-  const scale = parseInt(scaleInput ? scaleInput.value : '2');
+  const scale = parseInt(document.getElementById('upscale-scale').value);
   const denoise = parseFloat(document.getElementById('upscale-denoise')?.value || '0.5');
   
   const btn = document.getElementById('upscale-start-btn');
@@ -326,18 +304,13 @@ async function startUpscale() {
   if (progressArea) {
     progressArea.style.display = 'block';
     progressArea.innerHTML = `
-      <div class="glass-card active-task-card">
-        <div class="task-info">
-          <span class="material-symbols-outlined spin text-primary">hourglass_empty</span>
-          <div style="flex: 1">
-            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-              <strong>Tiến trình Upscale</strong>
-              <span id="upscale-percent">0%</span>
-            </div>
-            <div class="progress-bar"><div class="progress-fill" id="upscale-fill" style="width:0%"></div></div>
-            <p id="upscale-msg" class="text-muted mt-2">Đang khởi tạo AI model...</p>
-          </div>
+      <div class="card active-task-card" style="border-color: var(--brand); margin-top: 16px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-weight:600; font-size:13px;">
+          <span>Tiến trình Upscale AI</span>
+          <span id="upscale-percent" style="color:var(--brand)">0%</span>
         </div>
+        <div class="progress-bar"><div class="progress-fill" id="upscale-fill" style="width:0%"></div></div>
+        <p id="upscale-msg" class="field-help" style="margin-top:8px;">Đang tải AI model...</p>
       </div>`;
   }
 
@@ -349,9 +322,9 @@ async function startUpscale() {
       denoise,
     });
   } catch (e) {
-    toast('error', `Lỗi bắt đầu: ${e.message || e}`);
+    toast(`Lỗi bắt đầu: ${e.message || e}`, 'error');
     _upscaling = false;
-    if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">rocket_launch</span> Bắt đầu Upscale'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">sparkles</span> Bắt đầu Upscale'; }
   }
 }
 
@@ -370,20 +343,19 @@ function onCompleted(d) {
   if (!resultsArea) return;
   const name = d.output_path.split(/[/\\]/).pop();
   
-  const card = el('div', { className: 'glass-card result-card slide-in' },
-    el('div', { className: 'result-thumb' }, icon('play_circle', 24)),
-    el('div', { className: 'result-info' },
-      el('strong', {}, name),
-      el('span', { className: 'text-success' }, icon('check_circle', 14), ' Hoàn tất')
+  const card = el('div', { className: 'card result-card slide-in', style: { borderLeft: '4px solid var(--green)', marginTop: '12px', padding: '14px 18px' } },
+    icon('check_circle', 20, { style: { color: 'var(--green)' } }),
+    el('div', { className: 'result-info', style: { flex: 1, overflow: 'hidden' } },
+      el('strong', { style: { fontSize: '13px', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, name),
+      el('span', { className: 'field-help', style: { color: 'var(--green)' } }, 'Hoàn tất')
     ),
     el('a', {
       href: `/outputs/video/${name}`,
       download: name,
-      className: 'btn btn-outline',
+      className: 'btn btn-sm btn-primary',
       title: 'Tải về'
-    }, icon('download', 18))
+    }, icon('download', 14), 'Tải')
   );
-  // Prepend to show latest first
   if (resultsArea.firstChild) {
     resultsArea.insertBefore(card, resultsArea.firstChild);
   } else {
@@ -392,177 +364,209 @@ function onCompleted(d) {
 }
 
 function onError(d) {
-  toast('error', `Upscale thất bại: ${d.error}`);
+  toast(`Upscale thất bại: ${d.error}`, 'error');
 }
 
 function onBatchDone(d) {
   _upscaling = false;
   const btn = document.getElementById('upscale-start-btn');
-  if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">rocket_launch</span> Bắt đầu Upscale'; }
+  if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined">sparkles</span> Bắt đầu Upscale'; }
   const msg = document.getElementById('upscale-msg');
-  const iconEl = document.querySelector('.active-task-card .material-symbols-outlined');
-  
   if (msg) msg.textContent = `Hoàn tất ${d.results?.length || 0}/${d.total} video!`;
-  if (iconEl) {
-    iconEl.textContent = 'check_circle';
-    iconEl.classList.remove('spin', 'text-primary');
-    iconEl.classList.add('text-success');
-  }
-  
-  toast('success', `Upscale xong ${d.results?.length || 0} video.`);
-  loadGallery(); // refresh gallery to show new files
+  toast(`Upscale xong ${d.results?.length || 0} video.`, 'success');
+  loadGallery();
 }
 
-// ── Styles (Premium UI/UX) ──
+// ── Styles (Seamless Integration with RedOne Design System) ──
 function _addStyles() {
-  if (document.getElementById('upscale-styles-v2')) return;
+  if (document.getElementById('upscale-styles-v3')) return;
   const style = document.createElement('style');
-  style.id = 'upscale-styles-v2';
+  style.id = 'upscale-styles-v3';
   style.textContent = `
-    /* Premium Layout & Glassmorphism */
-    .upscale-header-premium {
-      display: flex; align-items: center; gap: 16px; margin-bottom: 24px;
-      padding: 0 8px;
-    }
-    .header-icon {
-      width: 56px; height: 56px; border-radius: 16px;
-      background: linear-gradient(135deg, var(--brand), var(--accent-orange));
-      color: white; display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 8px 16px rgba(220,38,38,0.2);
-    }
-    .header-text h2 { margin: 0 0 4px; font-weight: 700; letter-spacing: -0.5px; }
-    .header-text p { margin: 0; color: var(--text-muted); font-size: 15px; }
-
     .upscale-layout {
-      display: grid; grid-template-columns: 1fr 340px; gap: 24px;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 22px;
       align-items: start;
+      margin-top: 10px;
     }
     @media (max-width: 900px) {
       .upscale-layout { grid-template-columns: 1fr; }
     }
 
-    .glass-card {
-      background: var(--surface);
-      border: 1px solid var(--border-soft);
-      border-radius: 16px; padding: 20px;
-      box-shadow: var(--sh-sm);
-      transition: box-shadow 0.2s, transform 0.2s;
+    .media-col {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
     }
-    
-    /* Left Column: Media */
-    .upload-card {
-      border: 2px dashed var(--border-strong);
-      background: var(--surface-alt);
-      text-align: center; cursor: pointer;
-      position: relative; overflow: hidden;
-      margin-bottom: 24px;
-    }
-    .upload-card:hover, .upload-card.dragover {
-      border-color: var(--brand);
-      background: var(--brand-tint);
-    }
-    .upload-icon-wrapper {
-      width: 64px; height: 64px; border-radius: 50%;
-      background: var(--bg-0); display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 12px; color: var(--brand);
-    }
-    .upload-card h3 { margin: 0 0 8px; font-size: 16px; }
-    .upload-card p { margin: 0; font-size: 13px; }
-    
-    .upload-progress { margin-top: 16px; }
-    .upload-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-bottom: 8px;}
-    .upload-fill { height: 100%; background: var(--brand); width: 0%; transition: width 0.3s ease; }
-    #upload-text { font-size: 12px; color: var(--text-muted); font-weight: 500;}
 
     .gallery-header {
-      display: flex; justify-content: space-between; align-items: center;
-      margin-bottom: 16px; padding: 0 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
     }
-    .gallery-header h3 { margin: 0; font-size: 16px; font-weight: 600; }
-    
-    .media-gallery {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 16px; max-height: 500px; overflow-y: auto; padding-right: 4px;
-    }
-    .media-card {
-      position: relative; border-radius: 12px; overflow: hidden;
-      background: var(--surface); border: 1px solid var(--border);
-      cursor: pointer; transition: all 0.2s;
-    }
-    .media-card:hover { transform: translateY(-2px); box-shadow: var(--sh-md); border-color: var(--border-strong); }
-    .media-card.selected { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
-    .media-thumb { height: 100px; background: #000; position: relative; }
-    .media-thumb video { width: 100%; height: 100%; object-fit: cover; opacity: 0.8; }
-    .media-info { padding: 12px; }
-    .media-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px;}
-    .media-meta { font-size: 11px; }
-    
-    .check-circle {
-      position: absolute; top: 8px; right: 8px;
-      width: 24px; height: 24px; border-radius: 50%;
-      background: var(--brand); color: white;
-      display: flex; align-items: center; justify-content: center;
-      opacity: 0; transform: scale(0.8); transition: all 0.2s;
-    }
-    .media-card.selected .check-circle { opacity: 1; transform: scale(1); }
 
-    /* Right Column: Settings & Queue */
-    .settings-col { display: flex; flex-direction: column; gap: 16px; }
-    .settings-card h3, .queue-card h3 { margin: 0 0 16px; font-size: 15px; }
-    
-    .scale-options { display: grid; grid-template-columns: 1fr; gap: 8px; }
-    .radio-card {
-      position: relative; display: block; cursor: pointer;
+    .media-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 14px;
+      max-height: 480px;
+      overflow-y: auto;
+      padding-right: 6px;
     }
-    .radio-card input { position: absolute; opacity: 0; }
-    .card-content {
-      padding: 12px; border-radius: 10px; border: 1px solid var(--border);
-      background: var(--surface-alt); transition: all 0.2s;
-      display: flex; align-items: center; justify-content: space-between;
+
+    .media-card {
+      position: relative;
+      border-radius: var(--r-md);
+      overflow: hidden;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.15s ease;
     }
-    .radio-card:hover .card-content { border-color: var(--border-strong); }
-    .radio-card input:checked + .card-content {
-      border-color: var(--brand); background: var(--brand-tint);
-      box-shadow: inset 0 0 0 1px var(--brand);
+    .media-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--sh-md);
+      border-color: var(--border-strong);
     }
-    .card-content h4 { margin: 0; font-size: 14px; color: var(--text); }
-    .card-content small { font-size: 12px; color: var(--brand); font-weight: 500; opacity: 0; transition: opacity 0.2s;}
-    .radio-card input:checked + .card-content small { opacity: 1; }
+    .media-card.selected {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 2px var(--brand-soft);
+    }
+
+    .media-thumb {
+      height: 94px;
+      background: #000;
+      overflow: hidden;
+    }
+    .media-thumb video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.85;
+    }
+
+    .media-info {
+      padding: 10px;
+    }
+    .media-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 2px;
+      color: var(--text);
+    }
+
+    .check-circle {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--brand);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: scale(0.8);
+      transition: all 0.15s ease;
+    }
+    .media-card.selected .check-circle {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .settings-col {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .range-marks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+    }
+
+    .selected-list {
+      max-height: 220px;
+      overflow-y: auto;
+    }
 
     .queue-item {
-      display: flex; align-items: center; gap: 12px;
-      padding: 10px 12px; background: var(--surface-alt);
-      border-radius: 8px; margin-bottom: 8px; border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--bg-2);
+      border-radius: var(--r-md);
+      margin-bottom: 6px;
+      border: 1px solid var(--border-soft);
     }
-    .queue-name { flex: 1; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .remove-btn { color: var(--text-muted); }
-    .remove-btn:hover { color: var(--brand); background: var(--brand-soft); }
+    .queue-name {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
-    .upscale-start { height: 48px; border-radius: 12px; font-size: 15px; margin-top: 16px; }
-    
-    /* Progress & Results */
-    .active-task-card { border-color: var(--brand); border-width: 2px; }
-    .task-info { display: flex; gap: 16px; align-items: flex-start; }
-    .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--brand), var(--accent-orange)); transition: width 0.3s; }
-    
-    .result-card {
-      display: flex; align-items: center; gap: 16px; padding: 12px 16px;
-      margin-bottom: 12px; border-left: 4px solid #22c55e;
+    .upload-bar {
+      height: 4px;
+      background: var(--border-strong);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 6px;
     }
-    .result-thumb { color: var(--text-muted); display: flex; }
-    .result-info { flex: 1; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
-    .result-info strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .result-info span { font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 4px; }
-    .text-success { color: #22c55e; }
-    
-    .slide-in { animation: slideIn 0.3s ease-out; }
+    .upload-fill {
+      height: 100%;
+      background: var(--brand);
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+
+    .progress-bar {
+      height: 5px;
+      background: var(--border-strong);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--brand);
+      transition: width 0.2s ease;
+    }
+
+    .result-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+    }
+
+    .spin {
+      animation: spin 1.2s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+
+    .slide-in {
+      animation: slideIn 0.2s ease-out;
+    }
     @keyframes slideIn {
-      from { opacity: 0; transform: translateY(-10px); }
+      from { opacity: 0; transform: translateY(-8px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    .spin { animation: spin 1.5s linear infinite; }
-    @keyframes spin { 100% { transform: rotate(360deg); } }
   `;
   document.head.append(style);
 }
