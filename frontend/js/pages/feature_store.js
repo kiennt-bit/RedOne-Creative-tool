@@ -75,7 +75,8 @@ function _card(f) {
 
 function _action(f) {
   const installed = state.isInstalled(f);
-  const comingSoon = f.comingSoon || (f.kind !== 'builtin' && !(f.download && f.download.url));
+  const hasDownload = (f.download && f.download.url) || (f.assets && f.assets.length > 0);
+  const comingSoon = f.comingSoon || (f.kind !== 'builtin' && !hasDownload);
 
   if (_installing.has(f.id)) return _progress(f);
 

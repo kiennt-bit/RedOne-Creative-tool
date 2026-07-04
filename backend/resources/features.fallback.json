@@ -13,18 +13,13 @@
       "group": "Xử lý video",
       "icon": "movie",
       "tags": ["video", "heavy"],
-      "kind": "frontend",
+      "kind": "builtin",
+      "module": "video_editor",
       "renderName": "renderVideoEditor",
       "version": "1.0.0",
       "defaultInstalled": false,
       "comingSoon": false,
-      "minAppVersion": "1.5.0",
-      "size": "~33 KB",
-      "download": {
-        "url": "https://github.com/kiennt-bit/RedOne-Creative-tool-Addon/releases/download/addons-v1/video-editor-v1.0.0.zip",
-        "entry": "video_editor.js",
-        "sha256": "3dfe2a1122f1deda8b6e8f65a0ab143fb59cf53571fee06d67f02bc50feab597"
-      }
+      "minAppVersion": "1.5.0"
     },
     {
       "id": "video-upscale",
