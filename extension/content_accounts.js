@@ -31,7 +31,7 @@
       const t0 = Date.now();
       const tick = () => {
         let el = null;
-        try { el = getter(); } catch (_) {}
+        try { el = getter(); } catch (_) { }
         if (el) return resolve(el);
         if (Date.now() - t0 > timeoutMs) return resolve(null);
         setTimeout(tick, 250);
@@ -73,14 +73,60 @@
       await new Promise((r) => setTimeout(r, 250));
       clickNext();
     }
-    try { chrome.runtime.sendMessage({ type: "GOOGLE_AUTOFILL_DONE" }); } catch (_) {}
+    try { chrome.runtime.sendMessage({ type: "GOOGLE_AUTOFILL_DONE" }); } catch (_) { }
+  }
+
+  async function autoSelectAccount(targetEmail) {
+    if (!targetEmail) return;
+    
+    // Only run if we are redirected from/for Google Labs
+    if (!location.href.includes("labs.google")) return;
+    
+    // Wait up to 5s for the Account Chooser item to appear
+    const selector = `div[data-identifier="${targetEmail}"], [data-email="${targetEmail}"]`;
+    const accountBtn = await waitFor(() => {
+        let btn = document.querySelector(selector);
+        if (btn) return btn;
+        
+        // Advanced: scan all leaf text elements to find exact email match
+        const textElements = Array.from(document.querySelectorAll('*')).filter(el => {
+            if (el.children.length > 0) return false;
+            return el.textContent.trim().toLowerCase() === targetEmail.toLowerCase();
+        });
+        
+        for (const el of textElements) {
+            const clickable = el.closest('[role="link"], [role="button"], button, [jsname="j9NuTc"], div.g474V');
+            if (clickable) return clickable;
+        }
+        
+        // Fallback: simple text match on links
+        const elements = Array.from(document.querySelectorAll('div, li, [role="link"], [role="button"], button'));
+        btn = elements.find(el => el.textContent.includes(targetEmail) && el.closest('[role="link"], [role="button"], button'));
+        if (btn) return btn.closest('[role="link"], [role="button"], button');
+        
+        return null;
+    }, 5000);
+    
+    if (accountBtn) {
+      console.log(`[Extension] Found Google account item matching ${targetEmail}, auto-selecting...`);
+      // Small delay to let page fully settle, then click
+      await new Promise(r => setTimeout(r, 800));
+      if (passwordField()) return;
+      accountBtn.click();
+      
+      try { chrome.runtime.sendMessage({ type: "GOOGLE_AUTOFILL_DONE" }); } catch (_) {}
+    }
   }
 
   // Only proceed if the background has a pending auto-fill request for us.
   try {
     chrome.runtime.sendMessage({ type: "GET_GOOGLE_AUTOFILL" }, (r) => {
       if (chrome.runtime.lastError || !r || !r.ok || !r.email) return;
-      run({ email: r.email, password: r.password });
+      if (r.password) {
+        run({ email: r.email, password: r.password });
+      } else {
+        autoSelectAccount(r.email);
+      }
     });
   } catch (_) {}
 })();

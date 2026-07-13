@@ -173,7 +173,13 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
   // Sends selected video paths to the backend for GPU-accelerated upscaling.
   const videoUpscaleEnabled = !!onUpscaleVideo;
   const btnUpscaleVideo = videoUpscaleEnabled ? iconBtn('upscale', 'Upscale Video (AI)', async () => {
-    const paths = selectedCards().map(pathOf).filter(Boolean);
+    // Prefer watermark-removed path (wm_path) if available — so upscale runs
+    // on the clean version, not the original with watermark.
+    const paths = selectedCards().map(c => {
+      const item = itemOf ? itemOf(c) : null;
+      if (item && item.wm_status === 'done' && item.wm_path) return item.wm_path;
+      return pathOf(c);
+    }).filter(Boolean);
     if (!paths.length) return;
     try { await onUpscaleVideo(paths); } catch (e) { toast(`Upscale video lỗi: ${e.message}`, 'error'); }
   }, 'btn-accent') : null;

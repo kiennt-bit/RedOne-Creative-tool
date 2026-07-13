@@ -67,3 +67,4 @@ docs/shakker_capture/
 # Local rollback snapshots taken before risky changes (e.g. before the
 # extension parallel-dispatch change). Per-machine safety nets, not source.
 _backup_pre_*/
+addons/

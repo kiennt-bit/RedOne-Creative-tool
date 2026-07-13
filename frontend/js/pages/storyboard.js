@@ -401,7 +401,13 @@ export function renderStoryboard(root) {
       );
       if (it.status === 'done' && it.output_url) {
         const img = el('img', { src: it.output_url, loading: 'lazy', decoding: 'async', style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        img.addEventListener('click', () => openMediaViewer({ type: 'image', url: it.output_url, label: `Scene ${i + 1} ${it.prompt || ''}`.trim() }));
+        img.addEventListener('click', () => {
+          const galleryItems = items
+            .filter(x => x.status === 'done' && x.output_url)
+            .map((x, j) => ({ url: x.output_url, type: 'image', label: `Scene ${j + 1} ${x.prompt || ''}`.trim() }));
+          const doneIndex = items.slice(0, i + 1).filter(x => x.status === 'done' && x.output_url).length - 1;
+          openMediaViewer({ items: galleryItems, currentIndex: doneIndex });
+        });
         thumb.appendChild(img);
       } else if (it.status === 'error') {
         thumb.appendChild(el('div', {

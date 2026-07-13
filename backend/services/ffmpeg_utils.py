@@ -47,6 +47,21 @@ def find_ffmpeg() -> Optional[str]:
     p = shutil.which("ffmpeg")
     if p:
         return p
+        
+    # In PyInstaller, imageio_ffmpeg.get_ffmpeg_exe() might fail due to pkg_resources.
+    # We manually search the extracted MEIPASS directory.
+    if getattr(sys, "frozen", False):
+        meipass = Path(sys._MEIPASS)
+        bin_dir = meipass / "imageio_ffmpeg" / "binaries"
+        if bin_dir.exists():
+            for exe in bin_dir.glob("ffmpeg*.exe"):
+                return str(exe)
+                
+        # Fallback to checking next to the executable
+        exe_dir = Path(sys.executable).parent
+        if (exe_dir / "ffmpeg.exe").exists():
+            return str(exe_dir / "ffmpeg.exe")
+
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()

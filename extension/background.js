@@ -65,15 +65,17 @@ let _shakkerEmail = null;
 // Held only in SW memory (never persisted to storage).
 let _pendingGoogleLogin = null;
 let _shakkerLastSync = null;
+let _targetGoogleEmail = null;
 
 // Restore counters
 chrome.storage.local.get(
-    ["tokenCount", "lastSuccessAt", "shakkerEmail", "shakkerLastSync"],
+    ["tokenCount", "lastSuccessAt", "shakkerEmail", "shakkerLastSync", "targetGoogleEmail"],
     (data) => {
         _tokenCount = data.tokenCount || 0;
         _lastSuccessAt = data.lastSuccessAt || null;
         _shakkerEmail = data.shakkerEmail || null;
         _shakkerLastSync = data.shakkerLastSync || null;
+        _targetGoogleEmail = data.targetGoogleEmail || null;
     }
 );
 
@@ -265,7 +267,10 @@ async function _findLabsTab() {
     // No labs.google tab found after retries. Auto-open one in the
     // background so the next task doesn't fail with "no labs.google tab".
     // 60s cooldown prevents rapid-fire tab creation on repeated failures.
-    if (Date.now() - _lastPrefetchAt > _PREFETCH_COOLDOWN_MS) {
+    // IMPORTANT: Only prefetch when backend is connected — otherwise the
+    // extension opens phantom tabs even after the user has shut down the
+    // tool (reported bug: "extension tự mở tab khi đã tắt tool").
+    if (_connected && Date.now() - _lastPrefetchAt > _PREFETCH_COOLDOWN_MS) {
         _lastPrefetchAt = Date.now();
         try {
             const newTab = await chrome.tabs.create({
@@ -542,7 +547,11 @@ async function _executeSessionCommand(cmd) {
     const command = cmd.cmd || cmd.command;
     const params = cmd.params || {};
     try {
-        if (command === "clear_cookies") {
+        if (command === "set_target_email") {
+            _targetGoogleEmail = params.email || null;
+            chrome.storage.local.set({ targetGoogleEmail: _targetGoogleEmail });
+            console.log(`[Extension] Set target Google login email: ${_targetGoogleEmail}`);
+        } else if (command === "clear_cookies") {
             // Clear ALL labs.google cookies → force session re-login
             const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
             for (const c of cookies) {
@@ -651,17 +660,21 @@ async function _pollLoop() {
 
             let data = null;
             let sourceHost = null;
+            let backendReachable = false;
             for (const host of BRIDGE_HOSTS) {
                 try {
                     const resData = await _bridgeGet(host, `/sync/next-task?${params}`);
+                    backendReachable = true;  // got a response → backend is alive
+                    if (!data) data = resData; // keep first valid response (for session_commands)
                     if (resData && resData.task) {
                         data = resData;
                         sourceHost = host;
                         break;
                     }
+                    break;  // got valid response, no need to try other hosts
                 } catch (_) { }
             }
-            if (data || sourceHost) _connected = true;
+            _connected = backendReachable;
 
             // ── Server-driven session commands ──────────────────
             // Execute commands piggybacked on the poll response BEFORE
@@ -768,7 +781,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // as the Flow bridge protocol (local-only origin, no auth).
         (async () => {
             try {
-                const r = await _bridgePost("/sync/shakker-account", msg.state || {});
+                let r = null;
+                for (const host of BRIDGE_HOSTS) {
+                    try {
+                        r = await _bridgePost(host, "/sync/shakker-account", msg.state || {});
+                        if (r && r.ok) break;
+                    } catch (_) {}
+                }
                 if (r && r.ok) {
                     _shakkerEmail = (msg.state && msg.state.email) || _shakkerEmail;
                     _shakkerLastSync = Date.now();
@@ -812,12 +831,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (p && (Date.now() - p.ts) < 180000) {
             sendResponse({ ok: true, email: p.email, password: p.password });
         } else {
-            sendResponse({ ok: false });
+            chrome.storage.local.get(["targetGoogleEmail"], (data) => {
+                const email = data.targetGoogleEmail || _targetGoogleEmail;
+                if (email) {
+                    sendResponse({ ok: true, email: email, password: null });
+                } else {
+                    sendResponse({ ok: false });
+                }
+            });
         }
-        return true;
+        return true; // Keep channel open for async response
     }
     if (msg && msg.type === "GOOGLE_AUTOFILL_DONE") {
         _pendingGoogleLogin = null;
+        _targetGoogleEmail = null;
+        chrome.storage.local.remove("targetGoogleEmail");
         sendResponse({ ok: true });
         return true;
     }

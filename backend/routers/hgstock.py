@@ -58,11 +58,15 @@ def _user_has_hgstock_permission(session: dict) -> bool:
     For the initial rollout: any logged-in @redone.vn user has access.
     Later: add per-user toggle via Hub/Admin.
     """
+    from ..config import IS_FROZEN
+    if IS_FROZEN:
+        return False
     if not session or not session.get("email"):
         return False
     # Any authenticated user can upload (gated by @redone.vn domain check
     # already enforced by oauth_auth). Future: per-user flag via Hub.
     return True
+
 
 
 # ── Request schemas ───────────────────────────────────────────────────
@@ -78,6 +82,16 @@ class UploadRequest(BaseModel):
 @router.get("/status")
 async def hgstock_status(request: Request) -> JSONResponse:
     """Check if HG Stock upload is available for the current user."""
+    from ..config import IS_FROZEN
+    if IS_FROZEN:
+        return JSONResponse({
+            "configured": False,
+            "has_permission": False,
+            "environment": "prod",
+            "admin_url": "",
+            "user_email": "",
+        })
+
     session = _get_session(request)
     configured = _client.is_configured()
     has_permission = _user_has_hgstock_permission(session)

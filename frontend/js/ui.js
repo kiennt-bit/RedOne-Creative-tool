@@ -198,6 +198,8 @@ export function icon(name, size = 16) {
     check: '<path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2" fill="none"/>',
     x: '<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2"/>',
     chevron: '<path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'chevron-left': '<path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    'chevron-right': '<path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
     eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
     folder: '<path d="M3 6h6l2 2h10v12H3z" fill="none" stroke="currentColor" stroke-width="2"/>',
     image: '<path d="M3 5h18v14H3z M8 11l3 3 3-4 5 6H4z" fill="currentColor"/>',
@@ -288,50 +290,128 @@ export function geminiKeyNotice() {
 // Xem ảnh/video ngay trong app (nền mờ đằng sau) thay vì mở tab Chrome mới /
 // play inline. type: 'image' | 'video'. label hiện ở thanh dưới + nút Tải về /
 // Đóng. Đóng bằng: bấm nền, nút Đóng, hoặc phím Esc.
-export function openMediaViewer({ url, type = 'image', label = '', downloadUrl = '' }) {
-  if (!url) return null;
-  const dl = downloadUrl || url;
+//
+// Gallery mode: truyền thêm `items` (mảng {url, type?, label?, downloadUrl?}) +
+// `currentIndex` để bật Next/Prev (nút + phím ← →).  Backward-compatible: gọi
+// chỉ với {url, type, label} vẫn hoạt động bình thường (single-item, ẩn nút).
+export function openMediaViewer({ url, type = 'image', label = '', downloadUrl = '', items = null, currentIndex = 0 }) {
+  const gallery = items && items.length > 0
+    ? items
+    : [{ url, type, label, downloadUrl }];
+  let idx = (items && items.length > 0) ? currentIndex : 0;
+  if (idx < 0 || idx >= gallery.length) idx = 0;
+
+  if (!gallery[idx]?.url) return null;
   const old = document.getElementById('media-viewer');
   if (old) old.remove();
 
-  // Media đứng RIÊNG (đúng tỉ lệ thật, không bọc card → không lòi viền đen 2 bên).
-  const media = type === 'video'
-    ? el('video', { src: url, controls: true, autoplay: true, loop: true,
-        style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
-                 borderRadius: 'var(--r-md)', background: '#000', boxShadow: 'var(--sh-lg)' } })
-    : el('img', { src: url, alt: label || 'preview',
-        style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
-                 borderRadius: 'var(--r-md)', boxShadow: 'var(--sh-lg)' } });
+  // ── Media container (swap nội dung khi navigate) ─────────────────
+  const mediaWrap = el('div', {
+    style: { display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  });
+  mediaWrap.addEventListener('click', (e) => e.stopPropagation());
+
+  // ── Nav buttons — fixed to viewport sides, vertically centered ───
+  const _navStyle = (side) => ({
+    position: 'fixed', top: '50%', [side]: '20px',
+    transform: 'translateY(-50%)', zIndex: '2010',
+    width: '48px', height: '48px', borderRadius: '50%', border: 'none',
+    background: 'rgba(0,0,0,0.5)', color: '#fff',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer', backdropFilter: 'blur(8px)',
+    boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
+    transition: 'background 0.2s, box-shadow 0.2s',
+  });
+
+  const prevBtn = el('button', {
+    'aria-label': 'Previous', title: 'Trước (←)',
+    style: _navStyle('left'),
+  }, icon('chevron-left', 24));
+
+  const nextBtn = el('button', {
+    'aria-label': 'Next', title: 'Tiếp (→)',
+    style: _navStyle('right'),
+  }, icon('chevron-right', 24));
+
+  [prevBtn, nextBtn].forEach((b) => {
+    b.addEventListener('mouseenter', () => {
+      b.style.background = 'rgba(255,255,255,0.2)';
+      b.style.boxShadow = '0 4px 20px rgba(0,0,0,0.5)';
+    });
+    b.addEventListener('mouseleave', () => {
+      b.style.background = 'rgba(0,0,0,0.5)';
+      b.style.boxShadow = '0 2px 12px rgba(0,0,0,0.4)';
+    });
+    b.addEventListener('click', (e) => e.stopPropagation());
+  });
+
+  // ── Counter + Caption bar ─────────────────────────────────────────
+  const counterEl = el('span', {
+    style: { fontSize: '12px', color: 'rgba(255,255,255,0.7)', fontVariantNumeric: 'tabular-nums',
+             flexShrink: '0', whiteSpace: 'nowrap' },
+  });
+
+  const labelEl = el('span', {
+    style: { flex: '1', minWidth: '0', fontSize: '13px', fontWeight: '600',
+             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  });
+
+  const dlLink = el('a', {
+    class: 'btn btn-sm', download: '',
+    style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
+  }, icon('download', 14), 'Tải về');
 
   const closeBtn = el('button', {
     class: 'btn btn-sm',
     style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
   }, icon('x', 14), 'Đóng');
 
-  // Caption là thanh RIÊNG dưới media — không bọc chung, không đè lên ảnh / thanh
-  // điều khiển video. Label co lại (ellipsis) nên không bao giờ làm khung rộng ra.
   const caption = el('div', {
     style: {
       display: 'flex', alignItems: 'center', gap: '12px',
       maxWidth: '94vw', padding: '8px 14px', color: '#fff',
       background: 'rgba(0,0,0,0.62)', borderRadius: 'var(--r-md)',
     },
-  },
-    el('span', {
-      style: { flex: '1', minWidth: '0', fontSize: '13px', fontWeight: '600',
-               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-    }, label || ''),
-    el('a', {
-      class: 'btn btn-sm', href: dl, download: '',
-      style: { display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: '0' },
-    }, icon('download', 14), 'Tải về'),
-    closeBtn,
-  );
-
-  // Click vào media/caption không đóng; chỉ click vùng nền trống mới đóng.
-  media.addEventListener('click', (e) => e.stopPropagation());
+  }, counterEl, labelEl, dlLink, closeBtn);
   caption.addEventListener('click', (e) => e.stopPropagation());
 
+  // ── Render current item ──────────────────────────────────────────
+  function renderItem() {
+    const it = gallery[idx];
+    const t = it.type || 'image';
+    const dl = it.downloadUrl || it.url;
+
+    mediaWrap.innerHTML = '';
+    const media = t === 'video'
+      ? el('video', { src: it.url, controls: true, autoplay: true, loop: true,
+          style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
+                   borderRadius: 'var(--r-md)', background: '#000', boxShadow: 'var(--sh-lg)' } })
+      : el('img', { src: it.url, alt: it.label || 'preview',
+          style: { display: 'block', maxWidth: '94vw', maxHeight: '82vh',
+                   borderRadius: 'var(--r-md)', boxShadow: 'var(--sh-lg)' } });
+    mediaWrap.appendChild(media);
+
+    labelEl.textContent = it.label || '';
+    dlLink.href = dl;
+
+    const multi = gallery.length > 1;
+    counterEl.textContent = multi ? `${idx + 1} / ${gallery.length}` : '';
+    counterEl.style.display = multi ? '' : 'none';
+    prevBtn.style.display = multi ? '' : 'none';
+    nextBtn.style.display = multi ? '' : 'none';
+    prevBtn.style.opacity = idx > 0 ? '1' : '0.3';
+    nextBtn.style.opacity = idx < gallery.length - 1 ? '1' : '0.3';
+    prevBtn.style.pointerEvents = idx > 0 ? 'auto' : 'none';
+    nextBtn.style.pointerEvents = idx < gallery.length - 1 ? 'auto' : 'none';
+  }
+
+  function goPrev() { if (idx > 0) { idx--; renderItem(); } }
+  function goNext() { if (idx < gallery.length - 1) { idx++; renderItem(); } }
+
+  prevBtn.addEventListener('click', goPrev);
+  nextBtn.addEventListener('click', goNext);
+
+  // ── Backdrop ─────────────────────────────────────────────────────
   const backdrop = el('div', {
     id: 'media-viewer',
     style: {
@@ -341,17 +421,22 @@ export function openMediaViewer({ url, type = 'image', label = '', downloadUrl =
       background: 'rgba(8,8,12,0.82)', backdropFilter: 'blur(4px)',
       animation: 'fadeIn 0.18s ease both',
     },
-  }, media, caption);
+  }, mediaWrap, caption, prevBtn, nextBtn);
 
   function close() {
     document.removeEventListener('keydown', onKey);
     backdrop.remove();
   }
-  function onKey(e) { if (e.key === 'Escape') close(); }
+  function onKey(e) {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') goPrev();
+    else if (e.key === 'ArrowRight') goNext();
+  }
   backdrop.addEventListener('click', close);
   closeBtn.addEventListener('click', close);
   document.addEventListener('keydown', onKey);
 
+  renderItem();
   document.body.appendChild(backdrop);
   return { close };
 }

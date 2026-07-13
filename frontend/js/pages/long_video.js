@@ -365,10 +365,12 @@ export function renderLongVideo(root) {
                      : it.status === 'generating' ? 'Đang render'
                      : 'Chờ';
 
+      const meta = el('div', { class: 'scene-meta' },
+        el('span', { class: `chip ${chipClass}` }, chipText)
+      );
+
       card.appendChild(el('div', { class: 'scene-info' },
-        el('div', { class: 'scene-meta' },
-          el('span', { class: `chip ${chipClass}` }, chipText),
-        ),
+        meta,
         el('div', { class: 'scene-prompt' }, it.prompt),
       ));
       strip.appendChild(card);

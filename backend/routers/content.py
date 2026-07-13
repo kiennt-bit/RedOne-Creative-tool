@@ -616,8 +616,9 @@ async def extract_frame(body: ExtractFrameRequest):
 
 class UpscaleVideoRequest(BaseModel):
     video_paths: list[str]
-    scale: int = 2       # 2, 3, or 4
+    resolution: str = "FHD"  # "FHD", "2K", or "4K"
     denoise: float = -1  # -1 = model default, 0~1 = denoise strength
+    model: str = "realesrgan-x4plus"
 
 
 @router.get("/upscale-status")
@@ -626,6 +627,50 @@ async def upscale_status():
     from ..services.upscaler import is_upscaler_available
     return {"available": is_upscaler_available()}
 
+
+# In-memory store for active upscale batches to support HTTP polling fallback
+_upscale_progress: dict[str, dict] = {}
+_upscale_sem: Optional[asyncio.Semaphore] = None
+# Set of batch_ids that have been cancelled — checked by _run() between videos
+_cancelled_batches: set[str] = set()
+# Active subprocess per batch — killed on cancel
+_active_upscale_procs: dict[str, asyncio.subprocess.Process] = {}
+
+@router.get("/upscale-status/{batch_id}")
+async def get_upscale_status(batch_id: str):
+    if batch_id not in _upscale_progress:
+        raise HTTPException(404, "Không tìm thấy thông tin lượt upscale")
+    return _upscale_progress[batch_id]
+
+@router.post("/upscale-cancel/{batch_id}")
+async def cancel_upscale(batch_id: str):
+    """Cancel a running video upscale batch."""
+    if batch_id not in _upscale_progress:
+        raise HTTPException(404, "Không tìm thấy batch")
+    prog = _upscale_progress[batch_id]
+    if prog.get("completed"):
+        return {"ok": True, "message": "Batch đã hoàn tất"}
+    _cancelled_batches.add(batch_id)
+    # Kill active subprocess if any
+    proc = _active_upscale_procs.get(batch_id)
+    if proc and proc.returncode is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    prog.update({
+        "stage": "cancelled",
+        "message": "Đã hủy bởi người dùng",
+        "completed": True,
+    })
+    await hub.broadcast("video_upscale_batch_done", {
+        "batch_id": batch_id,
+        "total": len(prog.get("results", [])),
+        "results": prog.get("results", []),
+        "cancelled": True,
+    })
+    log.info("Upscale batch %s cancelled by user", batch_id)
+    return {"ok": True, "message": "Đã hủy"}
 
 @router.post("/upscale-video")
 async def upscale_video_endpoint(body: UpscaleVideoRequest):
@@ -636,6 +681,9 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
     video_upscale_error.
     """
     from ..services.upscaler import upscale_video, is_upscaler_available
+    global _upscale_sem
+    if _upscale_sem is None:
+        _upscale_sem = asyncio.Semaphore(1)
 
     if not is_upscaler_available():
         raise HTTPException(
@@ -647,22 +695,51 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
     # Validate all paths
     for vp_str in body.video_paths:
         vp = Path(vp_str).resolve()
-        try:
-            vp.relative_to(Path(OUTPUT_DIR).resolve())
-        except ValueError:
+        vp_lower = str(vp).lower().replace("\\", "/")
+        out_lower = str(Path(OUTPUT_DIR).resolve()).lower().replace("\\", "/")
+        if not vp_lower.startswith(out_lower):
             raise HTTPException(400, f"Path phải nằm trong thư mục output: {vp_str}")
         if not vp.exists():
             raise HTTPException(404, f"Video không tồn tại: {vp_str}")
 
-    scale = body.scale if body.scale in (2, 3, 4) else 2
+    resolution = body.resolution if body.resolution in ("FHD", "2K", "4K") else "FHD"
+    model = body.model if body.model in ("realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-general-x4v3") else "realesrgan-x4plus"
     loop = asyncio.get_running_loop()
     batch_id = str(uuid.uuid4())[:8]
 
+    # Initialize progress store entry
+    _upscale_progress[batch_id] = {
+        "batch_id": batch_id,
+        "percent": 0,
+        "stage": "starting",
+        "message": "Đang xếp hàng...",
+        "completed": False,
+        "error": None,
+        "results": [],
+        "resolution": resolution,
+        "denoise": body.denoise,
+        "model": model,
+    }
+
     async def _run():
-        total = len(body.video_paths)
-        results = []
+        async with _upscale_sem:
+            total = len(body.video_paths)
+            results = []
         for idx, vp_str in enumerate(body.video_paths, 1):
+            # ── Check cancellation before each video ──
+            if batch_id in _cancelled_batches:
+                _cancelled_batches.discard(batch_id)
+                _active_upscale_procs.pop(batch_id, None)
+                return
             try:
+                # Update progress state
+                _upscale_progress[batch_id].update({
+                    "percent": 0,
+                    "stage": "starting",
+                    "message": f"Bắt đầu upscale {idx}/{total}...",
+                    "video_path": vp_str,
+                })
+
                 await hub.broadcast("video_upscale_progress", {
                     "batch_id": batch_id,
                     "index": idx,
@@ -674,11 +751,17 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
                 })
 
                 def emit(pct: float, stage: str, msg: str):
+                    p_round = round(pct, 1)
+                    _upscale_progress[batch_id].update({
+                        "percent": p_round,
+                        "stage": stage,
+                        "message": msg,
+                    })
                     coro = hub.broadcast("video_upscale_progress", {
                         "batch_id": batch_id,
                         "index": idx,
                         "total": total,
-                        "percent": round(pct, 1),
+                        "percent": p_round,
                         "stage": stage,
                         "message": msg,
                         "video_path": vp_str,
@@ -691,11 +774,15 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
 
                 output = await upscale_video(
                     input_path=vp_str,
-                    scale=scale,
+                    resolution=resolution,
+                    model=model,
                     denoise=body.denoise,
                     progress=emit,
                 )
-                results.append({"input": vp_str, "output": output})
+                
+                res_item = {"input": vp_str, "output": output}
+                results.append(res_item)
+                _upscale_progress[batch_id]["results"].append(res_item)
 
                 await hub.broadcast("video_upscale_completed", {
                     "batch_id": batch_id,
@@ -706,15 +793,36 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
                 })
 
             except Exception as e:
+                err_str = str(e)
                 log.warning("Upscale failed for %s: %s", vp_str, e)
+                _upscale_progress[batch_id].update({
+                    "percent": 100,
+                    "stage": "error",
+                    "message": f"Lỗi: {err_str}",
+                    "error": err_str,
+                    "completed": True,
+                })
                 await hub.broadcast("video_upscale_error", {
                     "batch_id": batch_id,
                     "index": idx,
                     "total": total,
                     "video_path": vp_str,
-                    "error": str(e),
+                    "error": err_str,
                 })
+                await hub.broadcast("video_upscale_batch_done", {
+                    "batch_id": batch_id,
+                    "total": total,
+                    "results": results,
+                    "error": err_str,
+                })
+                return  # stop the batch execution on error
 
+        _upscale_progress[batch_id].update({
+            "percent": 100,
+            "stage": "done",
+            "message": "Hoàn tất!",
+            "completed": True,
+        })
         await hub.broadcast("video_upscale_batch_done", {
             "batch_id": batch_id,
             "total": total,

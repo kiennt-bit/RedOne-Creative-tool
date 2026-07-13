@@ -17,7 +17,11 @@ function notify(event, data) {
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  socket = new WebSocket(`${proto}//${location.host}/ws`);
+  let host = location.host;
+  if (location.hostname === 'localhost') {
+    host = '127.0.0.1' + (location.port ? ':' + location.port : '');
+  }
+  socket = new WebSocket(`${proto}//${host}/ws`);
 
   socket.addEventListener('open', () => {
     alive = true;

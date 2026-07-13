@@ -88,6 +88,7 @@ export function renderAudioMerge(root) {
       out.appendChild(el('video', { src: r.url, controls: true, class: 'video-preview' }));
       out.appendChild(el('a', { href: r.url, download: '', class: 'btn btn-primary', style: { marginTop: '8px' } },
         icon('download'), 'Tải về'));
+
       toast('Đã ghép xong', 'success');
     } catch (e) { toast(e.message, 'error'); }
     finally { setLoading(btn, false); }

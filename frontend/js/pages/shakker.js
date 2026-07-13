@@ -694,8 +694,12 @@ export function renderShakker(root) {
               beforeLabel: 'Ảnh gốc', afterLabel: 'Đã upscale',
               downloadUrl: it.output_url, title: it.prompt || '',
             });
-          } else {
-            openMediaViewer({ type: 'image', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() });
+           } else {
+            const galleryItems = taskState.items
+              .filter(x => x.status === 'done' && x.output_url && !x.before_url)
+              .map((x, j) => ({ url: x.output_url, type: 'image', label: `#${j + 1} ${x.prompt || ''}`.trim() }));
+            const doneIndex = taskState.items.slice(0, i + 1).filter(x => x.status === 'done' && x.output_url && !x.before_url).length - 1;
+            openMediaViewer({ items: galleryItems, currentIndex: doneIndex });
           }
         });
         thumb.appendChild(img);

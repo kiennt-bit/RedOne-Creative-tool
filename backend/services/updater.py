@@ -432,35 +432,6 @@ def apply_update_and_exit(extracted_dir: Path) -> None:
     from ..config import EXE_DIR
     install_dir = EXE_DIR  # parent of running .exe
 
-    # ── Preserve the user's Load-unpacked Chrome extension across updates ──
-    # The extension ships at <install>\extension\ and members load it via
-    # chrome://extensions "Load unpacked". The install batch xcopy-es the new
-    # bundle over the install dir; if the new bundle also carries extension\,
-    # it OVERWRITES the very folder Chrome is serving the unpacked extension
-    # from. Changing those files underneath a running Chrome trips Chrome's
-    # unpacked-extension tamper check and Chrome DROPS the extension — the
-    # reported "update lên bản mới là mất extension".
-    #
-    # Fix: treat an already-installed extension\ like user data (data\,
-    # outputs\) — leave it byte-identical. Strip it from the staged bundle so
-    # the batch never touches it. The backend<->extension channel is a stable
-    # localhost HTTP contract, so an older bundled extension keeps working with
-    # the newer tool. (A genuine extension update is a separate, deliberate
-    # step — re-Load unpacked — not something a routine tool update should
-    # silently force.) A fresh install that has no extension\ yet still gets
-    # one, because we only skip when the install ALREADY has the folder.
-    try:
-        ext_installed = install_dir / "extension"
-        ext_staged = extracted_dir / "extension"
-        if ext_installed.exists() and ext_staged.exists():
-            shutil.rmtree(ext_staged, ignore_errors=True)
-            log.info(
-                "Auto-update: preserved existing extension\\ (skipped overwrite "
-                "so Chrome keeps the Load-unpacked extension)"
-            )
-    except Exception as e:
-        log.warning(f"Could not prune staged extension/: {e}")
-
     # ── Strip data/ from staged bundle — prevent dev session leaking ──
     # If the release zip accidentally contains a data/ folder (e.g. the
     # dev forgot to clean dist/ before zipping), it would get xcopy'd

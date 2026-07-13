@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..config import USER_DATA_ROOT, EXT_DIR
+from .ffmpeg_utils import subprocess_no_window_kwargs
 
 log = logging.getLogger("redone.upscaler")
 
@@ -38,6 +39,9 @@ def _find_ncnn_exe() -> Path | None:
     candidates = [
         EXT_DIR / "video-upscale" / "realesrgan-ncnn-vulkan.exe",
         EXT_DIR / "video-upscale" / "realesrgan-ncnn-vulkan",
+        # The upstream zip contains a nested "video-upscale/" directory
+        EXT_DIR / "video-upscale" / "video-upscale" / "realesrgan-ncnn-vulkan.exe",
+        EXT_DIR / "video-upscale" / "video-upscale" / "realesrgan-ncnn-vulkan",
     ]
     for p in candidates:
         if p.exists():
@@ -88,12 +92,26 @@ async def get_video_info(video_path: str) -> dict:
             fps_str = stream.get("r_frame_rate", "30/1")
             parts = fps_str.split("/")
             fps = float(parts[0]) / float(parts[1]) if len(parts) == 2 else 30.0
+            
+            duration = 0.0
+            try:
+                duration = float(fmt.get("duration", 0))
+            except (TypeError, ValueError):
+                pass
+
+            nb_frames = 0
+            try:
+                nb_frames = int(stream.get("nb_frames"))
+            except (TypeError, ValueError):
+                if duration > 0:
+                    nb_frames = int(duration * fps)
+
             return {
-                "width": stream.get("width", 0),
-                "height": stream.get("height", 0),
+                "width": int(stream.get("width", 0)),
+                "height": int(stream.get("height", 0)),
                 "fps": round(fps, 2),
-                "duration": float(fmt.get("duration", 0)),
-                "nb_frames": int(stream.get("nb_frames", 0)),
+                "duration": duration,
+                "nb_frames": nb_frames,
             }
         except Exception as e:
             log.warning("ffprobe failed: %s", e)
@@ -143,7 +161,7 @@ async def get_video_info(video_path: str) -> dict:
 async def upscale_video(
     input_path: str,
     output_path: Optional[str] = None,
-    scale: int = DEFAULT_SCALE,
+    resolution: str = "FHD",  # "FHD", "2K", "4K"
     model: str = DEFAULT_MODEL,
     denoise: float = DEFAULT_DENOISE,
     progress: Optional[ProgressCb] = None,
@@ -153,17 +171,13 @@ async def upscale_video(
     Args:
         input_path: Path to input video
         output_path: Output path (auto-generated if None)
-        scale: Upscale factor (2, 3, or 4)
-        model: Model name (default: realesr-general-x4v3)
+        resolution: Output quality ("FHD", "2K", or "4K")
+        model: Model name
         denoise: Denoise strength 0~1 (-1 = model default)
         progress: Optional callback (percent, stage, message)
 
     Returns:
         Path to the upscaled video file.
-
-    Raises:
-        FileNotFoundError: If input video, ffmpeg, or NCNN EXE not found.
-        RuntimeError: If any processing step fails.
     """
     vp = Path(input_path)
     if not vp.exists():
@@ -180,17 +194,35 @@ async def upscale_video(
     if not ffmpeg:
         raise FileNotFoundError("ffmpeg không tìm thấy trên PATH")
 
-    if scale not in (2, 3, 4):
-        scale = 2
+    # Determine resolution value
+    if resolution not in ("FHD", "2K", "4K"):
+        resolution = "FHD"
 
-    if output_path is None:
-        from ..config import OUTPUT_DIR
-        out_dir = OUTPUT_DIR / "video"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stem = vp.stem
-        output_path = str(out_dir / f"{stem}_upscaled_x{scale}{vp.suffix}")
+    # Determine model scale factor for NCNN Vulkan
+    if model == "realesr-animevideov3":
+        if resolution == "2K":
+            model_native_scale = 3
+        elif resolution == "4K":
+            model_native_scale = 4
+        else:
+            model_native_scale = 2
+    else:
+        model_native_scale = 4
 
-    _emit = progress or (lambda *_: None)
+    # Verify model files exist in addons/video-upscale/models/
+    models_dir = ncnn_exe.parent / "models"
+    if model == "realesr-animevideov3":
+        param_file = models_dir / f"realesr-animevideov3-x{model_native_scale}.param"
+        bin_file = models_dir / f"realesr-animevideov3-x{model_native_scale}.bin"
+    else:
+        param_file = models_dir / f"{model}.param"
+        bin_file = models_dir / f"{model}.bin"
+
+    if not param_file.exists() or not bin_file.exists():
+        raise FileNotFoundError(
+            f"Thiếu file model '{model}' (.bin/.param) trong thư mục: {models_dir.name}/. "
+            f"Vui lòng chọn model realesrgan-x4plus (cho đời thực) hoặc realesr-animevideov3 (cho anime) để chạy."
+        )
 
     # Get video info for progress tracking
     info = await get_video_info(input_path)
@@ -199,9 +231,18 @@ async def upscale_video(
     original_w = info.get("width", 0)
     original_h = info.get("height", 0)
 
+    if output_path is None:
+        from ..config import OUTPUT_DIR
+        out_dir = OUTPUT_DIR / "video" / "upscaled"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = vp.stem
+        output_path = str(out_dir / f"{stem}_upscaled_{resolution}{vp.suffix}")
+
+    _emit = progress or (lambda *_: None)
+
     log.info(
-        "Upscale: %s → x%d (model=%s, %dx%d, ~%d frames)",
-        vp.name, scale, model, original_w, original_h, total_frames,
+        "Upscale: %s → %s (model=%s, %dx%d, ~%d frames)",
+        vp.name, resolution, model, original_w, original_h, total_frames,
     )
 
     # Create temp directories
@@ -224,6 +265,7 @@ async def upscale_video(
             *extract_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **subprocess_no_window_kwargs(),
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -246,16 +288,16 @@ async def upscale_video(
             "-i", str(frames_dir),
             "-o", str(upscaled_dir),
             "-n", model,
-            "-s", str(scale),
+            "-s", str(model_native_scale),
             "-f", "jpg",
         ]
-        if 0 <= denoise <= 1 and "general" in model:
-            ncnn_cmd.extend(["-d", str(denoise)])
+        # Note: The compiled realesrgan-ncnn-vulkan executable does not support -d flag, so we skip it.
 
         proc = await asyncio.create_subprocess_exec(
             *ncnn_cmd,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            **subprocess_no_window_kwargs(),
         )
 
         # Poll for progress by counting output files while NCNN runs
@@ -295,6 +337,28 @@ async def upscale_video(
         _emit(82, "merging", "Đang ghép frames thành video...")
 
         # ── Step 3: Merge frames + audio → output ───────────────────
+        if original_w >= original_h:
+            # Landscape
+            if resolution == "4K":
+                target_h = 2160
+            elif resolution == "2K":
+                target_h = 1440
+            else:
+                target_h = 1080
+            target_w = int(round(original_w * (target_h / original_h) / 2) * 2) if original_h > 0 else original_w
+        else:
+            # Portrait
+            if resolution == "4K":
+                target_w = 2160
+            elif resolution == "2K":
+                target_w = 1440
+            else:
+                target_w = 1080
+            target_h = int(round(original_h * (target_w / original_w) / 2) * 2) if original_w > 0 else original_h
+
+        ncnn_output_w = original_w * model_native_scale
+        ncnn_output_h = original_h * model_native_scale
+
         merge_cmd = [
             ffmpeg, "-y",
             "-framerate", str(fps),
@@ -302,6 +366,12 @@ async def upscale_video(
             "-i", str(vp),       # original video for audio
             "-map", "0:v:0",     # video from upscaled frames
             "-map", "1:a?",      # audio from original (if exists)
+        ]
+        
+        if (ncnn_output_w != target_w or ncnn_output_h != target_h) and original_w > 0 and original_h > 0:
+            merge_cmd.extend(["-vf", f"scale={target_w}:{target_h}"])
+
+        merge_cmd.extend([
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "18",        # high quality
@@ -310,11 +380,12 @@ async def upscale_video(
             "-b:a", "192k",
             "-shortest",
             str(output_path),
-        ]
+        ])
         proc = await asyncio.create_subprocess_exec(
             *merge_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **subprocess_no_window_kwargs(),
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -328,11 +399,11 @@ async def upscale_video(
             raise RuntimeError("Output video không được tạo")
 
         out_size = out_p.stat().st_size // 1024 // 1024
-        _emit(100, "done", f"Hoàn tất! {out_size}MB — {original_w*scale}x{original_h*scale}")
+        _emit(100, "done", f"Hoàn tất! {out_size}MB — {target_w}x{target_h}")
         log.info(
             "Upscale done: %s → %s (%dMB, %dx%d)",
             vp.name, out_p.name, out_size,
-            original_w * scale, original_h * scale,
+            target_w, target_h,
         )
         return str(output_path)
 

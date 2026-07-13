@@ -22,14 +22,18 @@ class WSHub:
 
     async def broadcast(self, event: str, payload: Any = None):
         msg = json.dumps({"event": event, "data": payload}, default=str)
-        dead = []
-        for c in list(self.clients):
+        if not self.clients:
+            return
+            
+        async def send(c: WebSocket):
             try:
-                await c.send_text(msg)
+                # 2-second timeout to prevent hanging on dead or slow TCP connections
+                await asyncio.wait_for(c.send_text(msg), timeout=2.0)
             except Exception:
-                dead.append(c)
-        for c in dead:
-            await self.disconnect(c)
+                await self.disconnect(c)
+                
+        # Send to all clients concurrently to avoid blocking
+        await asyncio.gather(*(send(c) for c in list(self.clients)), return_exceptions=True)
 
 
 hub = WSHub()

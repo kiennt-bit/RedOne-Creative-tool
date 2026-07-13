@@ -342,7 +342,7 @@ export function renderVideoWatermark(root) {
                     await api.files.openFolder(it.outputPath);
                   } catch (e) { toast(e.message, 'error'); }
                 },
-              }, icon('folder', 14), 'Mở thư mục') : null,
+              }, icon('folder', 14), 'Mở thư mục') : null
             )
           : null,
         it.status === 'error' && it.error

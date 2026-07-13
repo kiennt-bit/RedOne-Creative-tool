@@ -91,8 +91,15 @@ def _download(url: str, dest: Path, expected_sha: Optional[str],
     tmp = dest.with_suffix(dest.suffix + ".part")
     h = hashlib.sha256()
     req = urllib.request.Request(url, headers={"User-Agent": "RedOne-Creative"})
-    with urllib.request.urlopen(req, timeout=60) as resp:  # nosec - host allowlisted
+    # Bypass system proxy — Python urllib reads proxy from Windows registry
+    # which can corrupt downloads if a local proxy intercepts the response.
+    no_proxy_handler = urllib.request.ProxyHandler({})
+    opener = urllib.request.build_opener(no_proxy_handler)
+    with opener.open(req, timeout=120) as resp:  # nosec - host allowlisted
+        final_url = resp.url
+        ct = resp.headers.get("Content-Type", "")
         total = int(resp.headers.get("Content-Length") or 0)
+        log.info("_download: url=%s → final_url=%s ct=%s length=%s", url, final_url, ct, total)
         done = 0
         with open(tmp, "wb") as f:
             while True:
@@ -109,9 +116,12 @@ def _download(url: str, dest: Path, expected_sha: Optional[str],
                 tot = (total // 1024 // 1024) if total else "?"
                 progress(pct, "downloading", f"Đang tải {label} {mb}/{tot} MB")
     digest = h.hexdigest()
+    log.info("_download: done=%s bytes, sha256=%s, expected=%s", done, digest, expected_sha)
     if expected_sha and digest.lower() != str(expected_sha).lower():
         tmp.unlink(missing_ok=True)
-        raise ValueError(f"sha256 không khớp ({label})")
+        raise ValueError(
+            f"sha256 không khớp ({label}): got {digest[:16]}… expected {str(expected_sha)[:16]}…"
+        )
     tmp.replace(dest)
 
 

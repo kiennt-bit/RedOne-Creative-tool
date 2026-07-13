@@ -845,11 +845,140 @@ export function renderContent(root) {
     return '';
   }
 
+  // Snapshot of the last render — used to detect wm-only changes so we can
+  // patch chips in-place without rebuilding the entire grid (which destroys
+  // <video> elements and causes flicker during watermark removal).
+  let _lastRenderedSnap = null;
+
+  function _patchWmChipsInPlace(taskState) {
+    const wrap = root.querySelector('#cnt-results');
+    if (!wrap) return false;
+    const cards = wrap.querySelectorAll('.scene-card');
+    if (!cards.length || cards.length !== taskState.items.length) return false;
+
+    taskState.items.forEach((it, i) => {
+      const card = cards[i];
+      if (!card) return;
+      // Find or create the wm-chip container
+      const actions = card.querySelector('.scene-actions');
+      if (!actions) return;
+      let chip = actions.querySelector('[data-wm-chip]');
+      if (it.wm_status === 'running') {
+        const text = `Xóa WM ${Math.round(it.wm_progress || 0)}%`;
+        if (chip) {
+          chip.className = 'chip chip-blue';
+          chip.textContent = text;
+          chip.title = it.wm_label || '';
+        } else {
+          chip = el('span', {
+            class: 'chip chip-blue', 'data-wm-chip': '1',
+            style: { marginLeft: 'auto' }, title: it.wm_label || '',
+          }, text);
+          actions.appendChild(chip);
+        }
+      } else if (it.wm_status === 'done' && it.wm_url) {
+        if (chip && chip.tagName === 'A') {
+          chip.href = it.wm_url;
+        } else {
+          if (chip) chip.remove();
+          chip = el('a', {
+            href: it.wm_url, download: '', target: '_blank',
+            class: 'chip chip-green', 'data-wm-chip': '1',
+            style: { marginLeft: 'auto', textDecoration: 'none' },
+            title: 'Click để tải video đã xóa watermark',
+          }, '✓ Đã xóa WM');
+          actions.appendChild(chip);
+        }
+      } else if (it.wm_status === 'error') {
+        if (chip) {
+          chip.className = 'chip chip-red';
+          chip.textContent = 'WM lỗi';
+          chip.title = it.wm_error || 'Lỗi xóa watermark';
+        } else {
+          chip = el('span', {
+            class: 'chip chip-red', 'data-wm-chip': '1',
+            style: { marginLeft: 'auto' }, title: it.wm_error || 'Lỗi xóa watermark',
+          }, 'WM lỗi');
+          actions.appendChild(chip);
+        }
+      }
+    });
+
+    // Also update status text
+    _updateStatusText(taskState);
+    return true;
+  }
+
+  function _updateStatusText(taskState) {
+    const total = taskState.total || taskState.items.length;
+    let statusText;
+    if (taskState.status === 'running') {
+      if (taskState.batch_cooldown) {
+        const cd = taskState.batch_cooldown;
+        const elapsed = (Date.now() - cd.started_at) / 1000;
+        const remaining = Math.max(0, Math.ceil((cd.seconds || 0) - elapsed));
+        statusText = `Đang nghỉ ${remaining}s giữa đợt gen (${cd.batch_done}/${cd.batch_total}) • ${taskState.done}/${total} xong`;
+      } else {
+        statusText = `Đang render • ${taskState.done + taskState.error}/${total} (OK: ${taskState.done}, lỗi: ${taskState.error})`;
+      }
+      cancelBtn.classList.remove('hidden');
+    } else if (taskState.status === 'completed') {
+      statusText = `Hoàn tất: ${taskState.done} OK / ${taskState.error} lỗi`;
+      cancelBtn.classList.add('hidden');
+    } else if (taskState.status === 'error') {
+      statusText = `Lỗi: ${taskState.error_message || ''}`;
+      cancelBtn.classList.add('hidden');
+    } else if (taskState.status === 'cancelled') {
+      statusText = 'Đã hủy';
+      cancelBtn.classList.add('hidden');
+    }
+    const el2 = root.querySelector('#cnt-status');
+    if (el2) el2.textContent = statusText;
+  }
+
+  // Detect if only wm_ fields changed (no item status/url/count changes).
+  function _isWmOnlyChange(taskState) {
+    if (!_lastRenderedSnap) return false;
+    const snap = _lastRenderedSnap;
+    if (snap.id !== taskState.id) return false;
+    if (snap.itemCount !== taskState.items.length) return false;
+    if (snap.status !== taskState.status) return false;
+    if (snap.done !== taskState.done || snap.error !== taskState.error) return false;
+    // Check that no item changed status or output_url (only wm_ fields differ)
+    for (let i = 0; i < taskState.items.length; i++) {
+      const cur = taskState.items[i];
+      const prev = snap.itemStatuses[i];
+      if (!prev) return false;
+      if (cur.status !== prev.status || cur.output_url !== prev.output_url) return false;
+    }
+    return true;
+  }
+
+  function _saveSnap(taskState) {
+    _lastRenderedSnap = {
+      id: taskState.id,
+      itemCount: taskState.items.length,
+      status: taskState.status,
+      done: taskState.done,
+      error: taskState.error,
+      itemStatuses: taskState.items.map(it => ({ status: it.status, output_url: it.output_url })),
+    };
+  }
+
   function renderTaskGallery(taskState) {
     if (!root.isConnected) return;
     const wrap = root.querySelector('#cnt-results');
     if (!wrap) return;
+
+    // Fast-path: if only wm_ fields changed, patch chips in-place (no flicker).
+    if (taskState && _isWmOnlyChange(taskState)) {
+      _patchWmChipsInPlace(taskState);
+      _saveSnap(taskState);
+      return;
+    }
+
     clear(wrap);
+    if (taskState) _saveSnap(taskState);
 
     // Show WHICH task these cards belong to (task name).
     const titleEl = root.querySelector('#cnt-results-title');
@@ -901,26 +1030,22 @@ export function renderContent(root) {
           await runBatchWatermark(paths);
         },
         onUpscaleVideo: async (paths) => {
-          // Only video paths (mp4, mov, avi, mkv, webm)
           const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
           const videoPaths = paths.filter(p => videoExts.some(e => p.toLowerCase().endsWith(e)));
           if (!videoPaths.length) {
             return toast('Không có video nào được chọn', 'warning');
           }
-          // Check if upscaler binary is available
-          try {
-            const status = await api.get('/api/content/upscale-status');
-            if (!status.available) {
-              return toast('Video Upscale chưa sẵn sàng. Cài tính năng "Video Upscale" từ Kho tính năng trước.', 'warning');
+          window.__pendingUpscaleVideos = window.__pendingUpscaleVideos || [];
+          videoPaths.forEach(vp => {
+            const name = vp.split(/[/\\]/).pop();
+            if (!window.__pendingUpscaleVideos.some(p => p.path === vp)) {
+              window.__pendingUpscaleVideos.push({ path: vp, name: name });
             }
-          } catch { /* proceed anyway — API will reject if not ready */ }
-          toast(`Đang gửi ${videoPaths.length} video để upscale (x2)...`, 'info');
-          await api.post('/api/content/upscale-video', {
-            video_paths: videoPaths,
-            scale: 2,
-            denoise: -1,
           });
-          toast(`Đã bắt đầu upscale ${videoPaths.length} video`, 'success');
+          if (window.__app && window.__app.navigate) {
+            window.__app.navigate('video-upscale');
+            toast(`Đã thêm ${videoPaths.length} video vào danh sách chọn nâng cấp!`, 'success');
+          }
         },
       });
       wrap.appendChild(toolbar);
@@ -937,7 +1062,13 @@ export function renderContent(root) {
         // simultaneous metadata fetches that lag the page.
         // Poster-only thumbnail (no inline controls); click → lightbox để xem.
         const vid = el('video', { 'data-src': it.output_url, preload: 'none', muted: true, playsinline: true, style: { width: '100%', height: '100%', objectFit: 'cover', cursor: 'zoom-in' } });
-        vid.addEventListener('click', () => openMediaViewer({ type: 'video', url: it.output_url, label: `#${i + 1} ${it.prompt || ''}`.trim() }));
+        vid.addEventListener('click', () => {
+          const galleryItems = taskState.items
+            .filter(x => x.status === 'done' && x.output_url)
+            .map((x, j) => ({ url: x.output_url, type: 'video', label: `#${j + 1} ${x.prompt || ''}`.trim() }));
+          const doneIndex = taskState.items.slice(0, i + 1).filter(x => x.status === 'done' && x.output_url).length - 1;
+          openMediaViewer({ items: galleryItems, currentIndex: doneIndex });
+        });
         thumb.appendChild(vid);
         // Icon play ở giữa để user biết đây là video (bấm để xem trong lightbox).
         // pointer-events:none → click xuyên qua xuống <video> ở trên.
@@ -975,7 +1106,7 @@ export function renderContent(root) {
                      : it.status === 'generating' ? 'Đang render'
                      : 'Đang chờ';
 
-      // Build actions row with download + copy-prompt + per-card watermark chip
+      // Build actions row with download + copy-prompt + upscale button
       const sceneActions = (it.status === 'done' && it.output_url)
         ? el('div', { class: 'scene-actions' },
             el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
@@ -991,19 +1122,21 @@ export function renderContent(root) {
       if (sceneActions) {
         if (it.wm_status === 'running') {
           sceneActions.appendChild(el('span', {
-            class: 'chip chip-blue', style: { marginLeft: 'auto' },
+            class: 'chip chip-blue', 'data-wm-chip': '1',
+            style: { marginLeft: 'auto' },
             title: it.wm_label || '',
           }, `Xóa WM ${Math.round(it.wm_progress || 0)}%`));
         } else if (it.wm_status === 'done' && it.wm_url) {
           sceneActions.appendChild(el('a', {
             href: it.wm_url, download: '', target: '_blank',
-            class: 'chip chip-green',
+            class: 'chip chip-green', 'data-wm-chip': '1',
             style: { marginLeft: 'auto', textDecoration: 'none' },
             title: 'Click để tải video đã xóa watermark',
           }, '✓ Đã xóa WM'));
         } else if (it.wm_status === 'error') {
           sceneActions.appendChild(el('span', {
-            class: 'chip chip-red', style: { marginLeft: 'auto' },
+            class: 'chip chip-red', 'data-wm-chip': '1',
+            style: { marginLeft: 'auto' },
             title: it.wm_error || 'Lỗi xóa watermark',
           }, 'WM lỗi'));
         }
@@ -1037,31 +1170,7 @@ export function renderContent(root) {
       lazyVids.forEach(v => _mediaObs.observe(v));
     }
 
-    const total = taskState.total || taskState.items.length;
-    let statusText;
-    if (taskState.status === 'running') {
-      // If we're currently inside a between-batch cooldown, surface the
-      // wait time so user knows tool isn't frozen.
-      if (taskState.batch_cooldown) {
-        const cd = taskState.batch_cooldown;
-        const elapsed = (Date.now() - cd.started_at) / 1000;
-        const remaining = Math.max(0, Math.ceil((cd.seconds || 0) - elapsed));
-        statusText = `Đang nghỉ ${remaining}s giữa đợt gen (${cd.batch_done}/${cd.batch_total}) • ${taskState.done}/${total} xong`;
-      } else {
-        statusText = `Đang render • ${taskState.done + taskState.error}/${total} (OK: ${taskState.done}, lỗi: ${taskState.error})`;
-      }
-      cancelBtn.classList.remove('hidden');
-    } else if (taskState.status === 'completed') {
-      statusText = `Hoàn tất: ${taskState.done} OK / ${taskState.error} lỗi`;
-      cancelBtn.classList.add('hidden');
-    } else if (taskState.status === 'error') {
-      statusText = `Lỗi: ${taskState.error_message || ''}`;
-      cancelBtn.classList.add('hidden');
-    } else if (taskState.status === 'cancelled') {
-      statusText = 'Đã hủy';
-      cancelBtn.classList.add('hidden');
-    }
-    root.querySelector('#cnt-status').textContent = statusText;
+    _updateStatusText(taskState);
   }
 
   // "Gen lại N lỗi" button — created once, refreshed on every render.
