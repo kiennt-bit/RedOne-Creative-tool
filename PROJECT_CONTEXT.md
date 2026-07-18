@@ -2,12 +2,13 @@
 
 > **Mục đích file này**: tóm tắt toàn bộ kiến trúc + quyết định + lịch sử để mở session AI mới (hoặc onboard dev mới) mà không mất context. Đọc file này + xem code = hiểu hệ thống.
 >
-> **Cập nhật lần cuối**: 2026-07-17 · phiên bản hiện tại **v1.5.3**
+> **Cập nhật lần cuối**: 2026-07-18 · phiên bản hiện tại **v1.5.4**
 
 ---
 
 ## 0. TL;DR thay đổi lớn gần đây
 
+- **v1.5.4**: Bỏ "Tách Nền" + "Xóa Logo Ảnh" (xử lý ảnh) + "Ghép Audio"; gộp nhóm sidebar "Xử lý ảnh" + "Xử lý video" → **"Xử lý media"** (alias nhóm cũ trong `renderFeatureNav` để tính năng Kho không mất tab); "Resize Hàng Loạt" hỗ trợ cả **video** (ffmpeg scale/pad/crop, xuất MP4) + làm gọn UI kết quả. **Lưu ý: bản build EXE v1.5.4 chưa bao gồm "HG Stock" (đang triển khai dở).**
 - **v1.5.3**: Gallery lightbox nav (prev/next + phím mũi tên), fix video WM chớp giật (`_patchWmChipsInPlace`), prefer `wm_path` khi gửi sang upscale AI, nút hủy upscale video, fix `_cancelled_batches = set()` (không phải `{}`).
 - **v1.5.2**: `flow_client.renew_token(bad_token=None)` mới, extension auth cải thiện (targetGoogleEmail sync).
 - **v1.5.x**: Thêm **Storyboard**, **Ghép Audio nâng cao**, **HG Stock upload**, **Upscale Video AI** (realesrgan-ncnn-vulkan), **Photoshop GenFill plugin** (CEP + embedded bridge server port 8099).
@@ -116,7 +117,7 @@ RedOne Creative tool/
 │           ├── content.js       ← Tạo Video + WM (_patchWmChipsInPlace anti-flicker)
 │           ├── image.js         ← Tạo Ảnh (sendImagesToI2V ưu tiên upscale_path)
 │           ├── video_upscale.js ← Upscale Video AI (nút hủy per-batch)
-│           ├── storyboard.js, video_watermark.js, audio_merge.js, hgstock.js
+│           ├── storyboard.js, video_watermark.js, hgstock.js
 │           └── accounts.js, settings.js, tasks_manager.js, ...
 │
 ├── features/index.json      ← Remote feature catalog
@@ -134,8 +135,7 @@ RedOne Creative tool/
 ```
 SÁNG TẠO:   Tạo Video · Tạo Ảnh · Ảnh Shakker · Video Dài · Storyboard
 PHÂN TÍCH:  YouTube→Prompt · Ý Tưởng→Video · Ảnh→Prompt
-XỬ LÝ ẢNH:  Tách Nền · Xóa Logo · Upscale Ảnh · Resize Hàng Loạt
-XỬ LÝ VIDEO: Xóa Watermark Video · Upscale Video (AI) · Ghép Audio · Phụ Đề
+XỬ LÝ MEDIA: Upscale Ảnh · Resize Hàng Loạt · Chỉnh Màu Hàng Loạt · Xóa Watermark Video · Upscale Video (AI) · Phụ Đề
 HỆ THỐNG:   Quản lý Task · Tài Khoản · HG Stock · Cài Đặt
 ```
 

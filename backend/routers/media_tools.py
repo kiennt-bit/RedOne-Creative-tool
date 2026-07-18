@@ -1,4 +1,4 @@
-"""Media utilities: bg remove, watermark, upscale, audio merge, subtitle, batch resize."""
+"""Media utilities: video watermark removal, subtitle, batch resize."""
 from __future__ import annotations
 import asyncio
 import io
@@ -13,12 +13,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..config import OUTPUT_DIR
-from ..services.gemini import generate_text
-from ..services.image_utils import resize_image, fill_background, PRESETS
-from ..services.ffmpeg_utils import (
-    merge_audio, burn_subtitles, run_ffmpeg,
-    find_ffmpeg, subprocess_no_window_kwargs,
-)
+from ..services.image_utils import resize_image, PRESETS
+from ..services.ffmpeg_utils import find_ffmpeg, subprocess_no_window_kwargs, run_ffmpeg
 
 log = logging.getLogger("redone.media")
 router = APIRouter(prefix="/api/media", tags=["media"])
@@ -30,130 +26,6 @@ def _save_temp(file: UploadFile, prefix: str) -> Path:
     with out.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return out
-
-
-# ─────────────────────── Background Remove ───────────────────────
-
-@router.post("/bg-remove")
-async def bg_remove(
-    file: UploadFile = File(...),
-    method: str = Form("gemini"),  # "gemini" | "rembg"
-    fill_color: Optional[str] = Form(None),
-):
-    src = _save_temp(file, "bg")
-    try:
-        out_dir = OUTPUT_DIR / "image" / "bg_removed"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        result_png = out_dir / f"{uuid.uuid4().hex}.png"
-
-        # Both "rembg" and "gemini" methods currently use rembg under the
-        # hood (Gemini doesn't have a foreground-segmentation API yet —
-        # we use rembg as the actual implementation regardless).
-        try:
-            from rembg import remove
-            img_bytes = src.read_bytes()
-            out_bytes = remove(img_bytes)
-            with result_png.open("wb") as f:
-                f.write(out_bytes)
-        except ImportError:
-            raise HTTPException(
-                500,
-                "rembg chưa cài. Chạy trong terminal: pip install rembg onnxruntime",
-            )
-        except SystemExit:
-            # rembg's bg.py calls sys.exit(1) at IMPORT TIME when its
-            # onnxruntime backend is missing — that's a SystemExit
-            # exception, not ImportError. Catch it explicitly so user
-            # gets a clear remediation instead of an opaque 500.
-            raise HTTPException(
-                500,
-                "rembg đã cài nhưng thiếu onnxruntime backend. "
-                "Chạy trong terminal: pip install onnxruntime",
-            )
-        except Exception as e:
-            raise HTTPException(500, f"BG remove failed: {e}")
-
-        if fill_color:
-            filled = result_png.with_name(result_png.stem + "_filled.png")
-            fill_background(result_png, filled, fill_color)
-            return {"path": str(filled), "url": f"/files/{filled.relative_to(OUTPUT_DIR).as_posix()}"}
-        return {"path": str(result_png), "url": f"/files/{result_png.relative_to(OUTPUT_DIR).as_posix()}"}
-    finally:
-        try:
-            shutil.rmtree(src.parent, ignore_errors=True)
-        except Exception:
-            pass
-
-
-# ─────────────────────── Watermark Remove ───────────────────────
-
-class WMRect(BaseModel):
-    x: int
-    y: int
-    w: int
-    h: int
-
-
-@router.post("/watermark-remove")
-async def watermark_remove(
-    file: UploadFile = File(...),
-    x: int = Form(...),
-    y: int = Form(...),
-    w: int = Form(...),
-    h: int = Form(...),
-    padding: int = Form(10),
-):
-    """Remove watermark from image. Uses LaMa via spandrel if installed, else simple inpaint."""
-    src = _save_temp(file, "wm")
-    out_dir = OUTPUT_DIR / "image" / "watermark_removed"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{uuid.uuid4().hex}.png"
-    try:
-        try:
-            # Try LaMa (best quality)
-            from PIL import Image, ImageDraw
-            import numpy as np
-            try:
-                import spandrel
-                import torch
-            except ImportError:
-                spandrel = None
-                torch = None
-
-            img = Image.open(src).convert("RGB")
-            if spandrel and torch:
-                # Build mask
-                mask = Image.new("L", img.size, 0)
-                draw = ImageDraw.Draw(mask)
-                draw.rectangle([x - padding, y - padding, x + w + padding, y + h + padding], fill=255)
-                # Load LaMa model from local cache (user must download)
-                model_path = Path.home() / ".cache" / "redone" / "big-lama.pt"
-                if not model_path.exists():
-                    raise FileNotFoundError(f"LaMa model not found at {model_path}. Download big-lama.pt manually.")
-                model = spandrel.ModelLoader().load_from_file(str(model_path)).cuda() if torch.cuda.is_available() else spandrel.ModelLoader().load_from_file(str(model_path)).cpu()
-                # ... full LaMa inference omitted for brevity; falls through to OpenCV
-                raise RuntimeError("LaMa not fully wired — using OpenCV fallback")
-            else:
-                raise RuntimeError("spandrel/torch not installed — using OpenCV fallback")
-        except Exception as e:
-            log.warning(f"LaMa unavailable, using OpenCV inpaint: {e}")
-            try:
-                import cv2
-                import numpy as np
-                img_cv = cv2.imread(str(src))
-                if img_cv is None:
-                    raise RuntimeError("Could not read image")
-                mask = np.zeros(img_cv.shape[:2], dtype=np.uint8)
-                pad = padding
-                mask[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad] = 255
-                result = cv2.inpaint(img_cv, mask, 5, cv2.INPAINT_TELEA)
-                cv2.imwrite(str(out_path), result)
-            except ImportError:
-                raise HTTPException(500, "opencv-python required for watermark removal. Install: pip install opencv-python")
-
-        return {"path": str(out_path), "url": f"/files/{out_path.relative_to(OUTPUT_DIR).as_posix()}"}
-    finally:
-        shutil.rmtree(src.parent, ignore_errors=True)
 
 
 # ─────────────────────── Video Watermark Remove (LaMa / OpenCV) ───────────────────────
@@ -380,29 +252,6 @@ async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
     }
 
 
-# ─────────────────────── Audio Merge ───────────────────────
-
-@router.post("/audio-merge")
-async def audio_merge_endpoint(
-    video: UploadFile = File(...),
-    audio: UploadFile = File(...),
-    replace: bool = Form(True),
-):
-    v = _save_temp(video, "video")
-    a = _save_temp(audio, "audio")
-    out_dir = OUTPUT_DIR / "video" / "merged"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{uuid.uuid4().hex}.mp4"
-    try:
-        ok = await merge_audio(str(v), str(a), str(out_path), replace=replace)
-        if not ok:
-            raise HTTPException(500, "ffmpeg failed")
-        return {"path": str(out_path), "url": f"/files/{out_path.relative_to(OUTPUT_DIR).as_posix()}"}
-    finally:
-        shutil.rmtree(v.parent, ignore_errors=True)
-        shutil.rmtree(a.parent, ignore_errors=True)
-
-
 # ─────────────────────── Subtitle Generate ───────────────────────
 
 def _whisper_load_audio(path: str, sr: int = 16000):
@@ -440,14 +289,50 @@ def _whisper_load_audio(path: str, sr: int = 16000):
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
 
 
+# In-memory subtitle jobs: job_id -> {status, percent, stage, url, path, ...}.
+# Process-lifetime only — a server restart drops running jobs (the frontend
+# surfaces a friendly "mất tiến trình" and lets the user re-run).
+_subtitle_jobs: dict = {}
+
+
 @router.post("/subtitle")
 async def subtitle_endpoint(
     file: UploadFile = File(...),
     model_size: str = Form("base"),
     language: str = Form("auto"),
 ):
-    """Generate SRT subtitles using Whisper."""
+    """Start a Whisper subtitle job in the BACKGROUND and return its job_id.
+
+    Progress is polled via GET /subtitle-status/{job_id}. Running detached
+    (instead of blocking the request) is what lets the UI survive tab
+    navigation and show a live %.
+    """
     src = _save_temp(file, "subtitle")
+    job_id = uuid.uuid4().hex
+    _subtitle_jobs[job_id] = {
+        "status": "running", "percent": 0, "stage": "Đang chuẩn bị…",
+        "filename": file.filename,
+    }
+    # Trim old finished jobs so the dict can't grow unbounded.
+    if len(_subtitle_jobs) > 50:
+        for k in list(_subtitle_jobs)[:-50]:
+            _subtitle_jobs.pop(k, None)
+    asyncio.create_task(_run_subtitle_job(job_id, src, model_size, language))
+    return {"job_id": job_id}
+
+
+@router.get("/subtitle-status/{job_id}")
+async def subtitle_status(job_id: str):
+    j = _subtitle_jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, "Không tìm thấy job phụ đề (server có thể đã khởi động lại)")
+    return {"job_id": job_id, **j}
+
+
+async def _run_subtitle_job(job_id: str, src: Path, model_size: str, language: str) -> None:
+    job = _subtitle_jobs.get(job_id)
+    if job is None:
+        return
     out_dir = OUTPUT_DIR / "subtitle"
     out_dir.mkdir(parents=True, exist_ok=True)
     srt_path = out_dir / f"{uuid.uuid4().hex}.srt"
@@ -455,37 +340,62 @@ async def subtitle_endpoint(
         try:
             import whisper
         except ImportError:
-            raise HTTPException(500, "whisper not installed. Run: pip install openai-whisper")
+            job.update(status="error", error="whisper chưa cài. Chạy: pip install openai-whisper")
+            return
 
         def _transcribe():
             # Decode with the bundled ffmpeg and feed Whisper a numpy array, so
             # Whisper's own load_audio() (bare `ffmpeg` on PATH) is never hit.
             audio = _whisper_load_audio(str(src))
+            job.update(percent=5, stage="Đang tải model Whisper…")
             model = whisper.load_model(model_size)
+            job.update(percent=10, stage="Đang nhận diện giọng nói…")
             kwargs = {}
             if language and language != "auto":
                 kwargs["language"] = language
-            return model.transcribe(audio, **kwargs)
+            # Report % by hooking Whisper's internal tqdm frame counter
+            # (verbose=False keeps the bar enabled but silent). If the hook ever
+            # breaks across versions, fall back to a plain transcribe.
+            try:
+                import whisper.transcribe as _wt
+                _orig_tqdm = _wt.tqdm.tqdm
 
-        try:
-            result = await asyncio.to_thread(_transcribe)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(500, f"Tạo phụ đề thất bại: {e}")
+                def _make_bar(*a, **k):
+                    bar = _orig_tqdm(*a, **k)
+                    _orig_update = bar.update
+
+                    def _update(n=1):
+                        _orig_update(n)
+                        if bar.total:
+                            job["percent"] = min(98, 10 + int(bar.n / bar.total * 88))
+                    bar.update = _update
+                    return bar
+
+                _wt.tqdm.tqdm = _make_bar
+                try:
+                    return model.transcribe(audio, verbose=False, **kwargs)
+                finally:
+                    _wt.tqdm.tqdm = _orig_tqdm
+            except Exception:
+                return model.transcribe(audio, **kwargs)
+
+        result = await asyncio.to_thread(_transcribe)
+
         lines = []
         for i, seg in enumerate(result.get("segments", []), 1):
-            start = seg["start"]
-            end = seg["end"]
-            text = seg["text"].strip()
-            lines.append(f"{i}\n{_fmt_srt(start)} --> {_fmt_srt(end)}\n{text}\n")
+            lines.append(
+                f"{i}\n{_fmt_srt(seg['start'])} --> {_fmt_srt(seg['end'])}\n{seg['text'].strip()}\n"
+            )
         srt_path.write_text("\n".join(lines), encoding="utf-8")
-        return {
-            "path": str(srt_path),
-            "url": f"/files/{srt_path.relative_to(OUTPUT_DIR).as_posix()}",
-            "language": result.get("language"),
-            "segments": len(result.get("segments", [])),
-        }
+        job.update(
+            status="done", percent=100, stage="Hoàn tất",
+            path=str(srt_path),
+            url=f"/files/{srt_path.relative_to(OUTPUT_DIR).as_posix()}",
+            language=result.get("language"),
+            segments=len(result.get("segments", [])),
+        )
+    except Exception as e:
+        job.update(status="error", error=f"Tạo phụ đề thất bại: {e}")
     finally:
         shutil.rmtree(src.parent, ignore_errors=True)
 
@@ -498,7 +408,7 @@ def _fmt_srt(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-# ─────────────────────── Batch Resize ───────────────────────
+# ─────────────────────── Batch Resize (ảnh + video) ───────────────────────
 
 class BatchResizeRequest(BaseModel):
     width: int
@@ -506,6 +416,42 @@ class BatchResizeRequest(BaseModel):
     mode: str = "fit"  # stretch | fit | cover
     bg_color: str = "#000000"
     fmt: str = "png"
+
+
+# Extensions treated as video → resized with ffmpeg (everything else = image).
+_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v",
+               ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".3gp"}
+
+
+def _is_video_name(name: str | None) -> bool:
+    return Path(name or "").suffix.lower() in _VIDEO_EXTS
+
+
+async def _resize_video(src: Path, dst: Path, width: int, height: int,
+                        mode: str, bg_color: str) -> None:
+    """Resize a video to width×height using the same fit/cover/stretch
+    semantics as the image path. Re-encodes with libx264 + AAC audio."""
+    # ffmpeg color syntax wants 0xRRGGBB; the UI sends #RRGGBB.
+    color = (bg_color or "#000000").replace("#", "0x")
+    if mode == "stretch":
+        vf = f"scale={width}:{height}"
+    elif mode == "cover":
+        vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+              f"crop={width}:{height}")
+    else:  # fit — keep aspect ratio, letterbox padding with bg_color
+        vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:{color}")
+    code, out = await run_ffmpeg([
+        "-i", str(src),
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        str(dst),
+    ], timeout=1800)
+    if code != 0:
+        raise RuntimeError(f"ffmpeg resize failed: {out[-400:]}")
 
 
 @router.get("/resize-presets")
@@ -522,17 +468,32 @@ async def batch_resize(
     bg_color: str = Form("#000000"),
     fmt: str = Form("png"),
 ):
-    out_dir = OUTPUT_DIR / "image" / "resized" / uuid.uuid4().hex
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """Resize a batch of images and/or videos to width×height.
+
+    Images use Pillow (`resize_image`) and honour the `fmt` field; videos are
+    re-encoded to MP4 with ffmpeg (the `fmt` field is ignored for video).
+    """
+    batch_id = uuid.uuid4().hex
+    img_dir = OUTPUT_DIR / "image" / "resized" / batch_id
+    vid_dir = OUTPUT_DIR / "video" / "resized" / batch_id
     results = []
     for file in files:
         src = _save_temp(file, "resize")
         try:
-            stem = Path(file.filename or "image").stem
-            dst = out_dir / f"{stem}.{fmt}"
-            resize_image(src, dst, width=width, height=height, mode=mode, bg_color=bg_color, fmt=fmt)
+            stem = Path(file.filename or "media").stem
+            if _is_video_name(file.filename):
+                vid_dir.mkdir(parents=True, exist_ok=True)
+                dst = vid_dir / f"{stem}.mp4"
+                await _resize_video(src, dst, width, height, mode, bg_color)
+                kind = "video"
+            else:
+                img_dir.mkdir(parents=True, exist_ok=True)
+                dst = img_dir / f"{stem}.{fmt}"
+                resize_image(src, dst, width=width, height=height, mode=mode, bg_color=bg_color, fmt=fmt)
+                kind = "image"
             results.append({
                 "name": file.filename,
+                "type": kind,
                 "path": str(dst),
                 "url": f"/files/{dst.relative_to(OUTPUT_DIR).as_posix()}",
             })
@@ -540,4 +501,4 @@ async def batch_resize(
             results.append({"name": file.filename, "error": str(e)})
         finally:
             shutil.rmtree(src.parent, ignore_errors=True)
-    return {"results": results, "folder": str(out_dir)}
+    return {"results": results}

@@ -1,5 +1,5 @@
 // Batch resize page
-import { el, clear, toast, setLoading, icon, formatBytes } from '../ui.js';
+import { el, clear, toast, setLoading, icon, formatBytes, wireDropzone } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → file list + results survive SPA tab navigation
@@ -12,7 +12,7 @@ export function renderBatchResize(root) {
     el('div', { class: 'hero-icon' }, icon('image', 28)),
     el('div', { class: 'hero-text' },
       el('h2', null, 'Resize Hàng Loạt'),
-      el('p', null, 'Đổi kích thước nhiều ảnh theo preset platform hoặc tùy chỉnh'),
+      el('p', null, 'Đổi kích thước nhiều ảnh & video theo preset platform hoặc tùy chỉnh'),
     ),
   ));
 
@@ -49,12 +49,13 @@ export function renderBatchResize(root) {
       el('input', { type: 'color', class: 'color-input', id: 'br-bg', value: '#000000' }),
     ),
     el('div', { class: 'field-group' },
-      el('label', { class: 'field-label' }, 'Định dạng'),
+      el('label', { class: 'field-label' }, 'Định dạng (ảnh)'),
       el('select', { class: 'select', id: 'br-fmt' },
         el('option', { value: 'png', selected: 'true' }, 'PNG'),
         el('option', { value: 'jpg' }, 'JPEG'),
         el('option', { value: 'webp' }, 'WebP'),
       ),
+      el('div', { class: 'field-help' }, 'Video luôn xuất MP4 (H.264).'),
     ),
     el('button', { class: 'btn btn-primary', style: { width: '100%', marginTop: '12px' }, id: 'br-go' },
       icon('sparkles'), 'Resize',
@@ -68,7 +69,7 @@ export function renderBatchResize(root) {
         icon('plus', 14), 'Thêm files',
       ),
     ),
-    el('input', { type: 'file', accept: 'image/*', multiple: 'true', id: 'br-files', style: { display: 'none' } }),
+    el('input', { type: 'file', accept: 'image/*,video/*', multiple: 'true', id: 'br-files', style: { display: 'none' } }),
     el('div', { class: 'file-list', id: 'br-list' },
       el('div', { class: 'empty' },
         el('div', { class: 'empty-icon' }, icon('image', 32)),
@@ -100,6 +101,11 @@ export function renderBatchResize(root) {
     for (const f of e.target.files) state.files.push(f);
     renderList();
   });
+  // Kéo-thả ảnh/video vào danh sách (ngoài nút "Thêm files")
+  wireDropzone(root.querySelector('#br-list'), null, (files) => {
+    for (const f of files) if (/^(image|video)\//.test(f.type)) state.files.push(f);
+    renderList();
+  });
 
   function renderList() {
     const list = root.querySelector('#br-list');
@@ -112,8 +118,9 @@ export function renderBatchResize(root) {
       return;
     }
     state.files.forEach((f, i) => {
+      const isVid = (f.type || '').startsWith('video');
       list.appendChild(el('div', { class: 'file-row' },
-        el('div', { class: 'file-icon' }, icon('image', 16)),
+        el('div', { class: 'file-icon' }, icon(isVid ? 'movie' : 'image', 16)),
         el('div', { class: 'file-name' }, f.name),
         el('div', { class: 'file-size' }, formatBytes(f.size)),
         el('button', { class: 'btn btn-icon btn-ghost', onclick: () => {
@@ -146,18 +153,66 @@ export function renderBatchResize(root) {
   function renderResult(results) {
     const out = root.querySelector('#br-result');
     clear(out);
-    out.appendChild(el('h4', { style: { marginTop: '16px' } }, 'Kết quả'));
-    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '8px' } });
-    (results || []).forEach(res => {
+    const list = results || [];
+    const okCount = list.filter(r => !r.error).length;
+
+    out.appendChild(el('div', {
+      class: 'card-header',
+      style: { marginTop: '16px', alignItems: 'baseline' },
+    },
+      el('h4', { style: { margin: 0 } }, 'Kết quả'),
+      el('span', { style: { fontSize: '12px', color: 'var(--text-muted)' } },
+        `${okCount}/${list.length} file`),
+    ));
+
+    const grid = el('div', {
+      style: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+        gap: '12px', marginTop: '12px',
+      },
+    });
+
+    // Shared media box: same 16:9 frame for image + video so the grid stays
+    // even. object-fit: contain never crops; a dark backdrop hides letterbox.
+    const mediaStyle = {
+      width: '100%', aspectRatio: '16 / 9', objectFit: 'contain',
+      background: '#000', borderRadius: '8px', display: 'block',
+    };
+    // One-line label that truncates with an ellipsis; full name on hover.
+    const nameStyle = {
+      flex: 1, minWidth: 0, fontSize: '11px', color: 'var(--text)',
+      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    };
+
+    list.forEach(res => {
       if (res.error) {
-        grid.appendChild(el('div', { class: 'card', style: { padding: '8px', fontSize: '11px', color: 'var(--red)' } },
-          res.name, ': ', res.error));
-      } else {
-        grid.appendChild(el('div', null,
-          el('img', { src: res.url, class: 'thumb', style: { objectFit: 'cover' } }),
-          el('div', { style: { fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' } }, res.name),
+        grid.appendChild(el('div', {
+          class: 'card',
+          style: { padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' },
+        },
+          el('div', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--red)' } }, 'Lỗi'),
+          el('div', { title: res.name, style: { fontSize: '11px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, res.name),
+          el('div', { style: { fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-word' } }, res.error),
         ));
+        return;
       }
+      const isVideo = res.type === 'video';
+      const media = isVideo
+        ? el('video', { src: res.url, controls: 'true', preload: 'metadata', style: mediaStyle })
+        : el('img', { src: res.url, style: mediaStyle });
+      grid.appendChild(el('div', {
+        class: 'card',
+        style: { padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' },
+      },
+        media,
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 } },
+          icon(isVideo ? 'movie' : 'image', 14, { style: { color: 'var(--text-muted)', flexShrink: 0 } }),
+          el('div', { title: res.name, style: nameStyle }, res.name),
+        ),
+        el('a', { href: res.url, download: '', class: 'btn btn-sm btn-ghost', style: { width: '100%', justifyContent: 'center' } },
+          icon('download', 13), 'Tải về'),
+      ));
     });
     out.appendChild(grid);
   }

@@ -28,6 +28,7 @@ from .routers import (
     hub as hub_router,
     features as features_router,
     video_editor as video_editor_router,
+    batch_color as batch_color_router,
     hgstock as hgstock_router,
     ps_genfill as ps_genfill_router,
 )
@@ -231,6 +232,7 @@ app.include_router(auth_router.router)
 app.include_router(hub_router.router)
 app.include_router(features_router.router)
 app.include_router(video_editor_router.router)
+app.include_router(batch_color_router.router)
 app.include_router(hgstock_router.router)
 app.include_router(ps_genfill_router.router)
 

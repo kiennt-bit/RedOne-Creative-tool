@@ -146,11 +146,11 @@ function renderWizard(initialStatus, onComplete) {
 
     const needsPip = !(
       status.has_torch && status.has_simple_lama && status.has_cv2_ext
-      && status.has_google_genai && status.has_onnxruntime
+      && status.has_google_genai
     );
     stepListWrap.appendChild(stepRow(
       'pip',
-      'PyTorch + simple-lama + opencv + google-genai + onnxruntime',
+      'PyTorch + simple-lama + opencv + google-genai',
       status_for('pip', needsPip, !needsPip),
       status.has_cuda
         ? 'GPU NVIDIA detected → cài CUDA build (~2GB, 5-10 phút)'

@@ -1,5 +1,5 @@
 // Script-to-Prompt page — one-shot Gemini storyboard
-import { el, clear, toast, setLoading, icon, modal, geminiKeyNotice } from '../ui.js';
+import { el, clear, toast, setLoading, icon, modal, geminiKeyNotice, wireDropzone } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → survives SPA tab navigation (restored on re-render).
@@ -61,6 +61,7 @@ export function renderScript(root) {
       }
     }
     box.addEventListener('click', () => fi.click());
+    wireDropzone(box, fi);
     fi.addEventListener('change', () => {
       const f = fi.files[0];
       if (!f) return;

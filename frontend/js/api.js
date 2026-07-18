@@ -123,15 +123,13 @@ export const api = {
   },
 
   media: {
-    bgRemove: (form) => request('POST', '/api/media/bg-remove', { form }),
-    watermark: (form) => request('POST', '/api/media/watermark-remove', { form }),
     videoWatermark: (form) => request('POST', '/api/media/video-watermark-remove', { form }),
     videoWatermarkBatch: (paths, opts = {}) => request('POST', '/api/media/video-watermark-remove-batch',
       { body: { paths, method: opts.method || 'auto', device: opts.device || 'auto',
                 gpu_ratio: opts.gpuRatio || 70 } }),
     lamaStatus: (force = false) => request('GET', '/api/media/lama-status', { params: { force } }),
-    audioMerge: (form) => request('POST', '/api/media/audio-merge', { form }),
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
+    subtitleStatus: (jobId) => request('GET', `/api/media/subtitle-status/${jobId}`),
     resizePresets: () => request('GET', '/api/media/resize-presets'),
     batchResize: (form) => request('POST', '/api/media/batch-resize', { form }),
   },
@@ -150,6 +148,31 @@ export const api = {
       return request('POST', '/api/video-editor/upload', { form: fd });
     },
     render: (payload) => request('POST', '/api/video-editor/render', { body: payload }),
+  },
+
+  // Chỉnh màu hàng loạt (batch color grading)
+  batchColor: {
+    start: (files, color, suffix) => request('POST', '/api/batch-color/start',
+      { body: { files, color, suffix } }),
+    // Server-rendered preview frame — returns a Blob (JPEG), not JSON.
+    preview: async (path, color, ts = 0, maxW = 854) => {
+      const res = await fetch('/api/batch-color/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, color, ts, max_w: maxW }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch { /* keep */ }
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+      return res.blob();
+    },
+    previewClip: (path, color, ts = 0, dur = 4) => request('POST', '/api/batch-color/preview-clip',
+      { body: { path, color, ts, dur } }),
+    presets: () => request('GET', '/api/batch-color/presets'),
+    savePreset: (name, color) => request('POST', '/api/batch-color/presets', { body: { name, color } }),
+    deletePreset: (name) => request('DELETE', `/api/batch-color/presets/${encodeURIComponent(name)}`),
   },
 
   settings: {

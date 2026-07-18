@@ -21,11 +21,9 @@ import { renderLongVideo } from './pages/long_video.js';
 import { renderYoutube } from './pages/youtube.js';
 import { renderScript } from './pages/script.js';
 import { renderImagePrompt } from './pages/image_prompt.js';
-import { renderBgRemove } from './pages/bg_remove.js';
-import { renderWatermark } from './pages/watermark.js';
 import { renderVideoWatermark } from './pages/video_watermark.js';
 import { renderBatchResize } from './pages/batch_resize.js';
-import { renderAudioMerge } from './pages/audio_merge.js';
+import { renderBatchColor } from './pages/batch_color.js';
 import { renderSubtitle } from './pages/subtitle.js';
 import { renderAccounts } from './pages/accounts.js';
 import { renderSettings } from './pages/settings.js';
@@ -52,10 +50,8 @@ const PAGES = {
   'youtube':       { title: 'YouTube → Prompt',  subtitle: 'Phân tích YouTube / TikTok thành storyboard',            render: renderYoutube },
   'script':        { title: 'Ý Tưởng → Prompt',  subtitle: 'Từ kịch bản tiếng Việt sang storyboard prompt — gửi sang Tạo Video hoặc Tạo Ảnh', render: renderScript },
   'image-prompt':  { title: 'Ảnh → Prompt',      subtitle: 'Phân tích ảnh và sinh prompt cho video',                 render: renderImagePrompt },
-  'bg-remove':     { title: 'Tách Nền',          subtitle: 'Xóa background ảnh (rembg / Gemini)',                    render: renderBgRemove },
-  'watermark':     { title: 'Xóa Logo / Watermark', subtitle: 'Xóa watermark khỏi ảnh (vẽ vùng + inpaint OpenCV)',  render: renderWatermark },
   'batch-resize':  { title: 'Resize Hàng Loạt',  subtitle: 'Đổi kích thước nhiều ảnh theo preset',                   render: renderBatchResize },
-  'audio-merge':   { title: 'Ghép Audio',        subtitle: 'Ghép âm thanh vào video bằng FFmpeg',                    render: renderAudioMerge },
+  'batch-color':   { title: 'Chỉnh màu hàng loạt', subtitle: 'Áp một thiết lập màu cho nhiều ảnh và video — xem trước đúng màu file xuất', render: renderBatchColor },
   'subtitle':      { title: 'Tạo Phụ Đề',        subtitle: 'Sinh phụ đề SRT từ video bằng Whisper',                  render: renderSubtitle },
   'video-watermark': { title: 'Xóa Watermark Video', subtitle: 'Xóa logo Veo / watermark khỏi nhiều video một lúc', render: renderVideoWatermark },
   'tasks':         { title: 'Quản lý Task',      subtitle: 'Theo dõi tiến độ + hàng đợi tất cả tác vụ',              render: renderTasksManager },
@@ -185,9 +181,15 @@ function findNavGroup(label) {
 // feature items first, then re-adds installed ones into their declared group.
 function renderFeatureNav() {
   $$('.nav-item[data-feature="1"]').forEach(n => n.remove());
+  // The remote catalog still declares the old split groups ("Xử lý ảnh" /
+  // "Xử lý video"), which were merged into "Xử lý media". Alias them, and fall
+  // back to the media group so an installed feature never silently vanishes
+  // from the sidebar when its declared group no longer exists here.
+  const GROUP_ALIAS = { 'Xử lý ảnh': 'Xử lý media', 'Xử lý video': 'Xử lý media' };
   for (const f of _featuresList()) {
     if (!featureState.isInstalled(f)) continue;
-    const group = findNavGroup(f.group);
+    const group = findNavGroup(GROUP_ALIAS[f.group] || f.group)
+      || findNavGroup('Xử lý media');
     if (!group) continue;
     const svg = icon(f.icon || 'sparkles', 20);
     svg.classList.add('ni');

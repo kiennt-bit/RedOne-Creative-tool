@@ -603,3 +603,243 @@
 .log-line.error { color: #fca5a5; }
 .log-line.warn { color: #fcd34d; }
 .log-line.info { color: #93c5fd; }
+
+/* ── Chỉnh màu hàng loạt (batch color) ─────────────────────────────
+   The preview stage is a fixed dark "darkroom" in BOTH themes — a neutral
+   dark surround is what lets the eye judge color accurately (same reason
+   Lightroom's develop canvas stays dark). Everything else follows the app
+   design system. */
+.bc-stage {
+  position: relative;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg-3);       /* empty/upload state follows the theme */
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Once media is loaded, switch to a neutral dark backdrop so colours read true. */
+.bc-stage.bc-media { background: #17181c; }
+.bc-stage img, .bc-stage video {
+  max-width: 100%;
+  max-height: 460px;
+  display: block;
+  transition: opacity 120ms ease;
+}
+.bc-stage img.bc-swapping { opacity: 0; }
+/* Empty state doubles as a drag-and-drop zone (fills the stage, dashed border). */
+.bc-dropzone {
+  position: absolute;
+  inset: 12px;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 16px;
+  border: 2px dashed rgba(226, 75, 74, .38);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.bc-dropzone:hover { border-color: var(--brand); background: rgba(255, 255, 255, .03); }
+.bc-dropzone:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.bc-dropzone.bc-drag { border-color: var(--brand); background: rgba(226, 75, 74, .10); }
+.bc-dropzone .empty-icon { transition: transform 140ms ease; }
+.bc-dropzone.bc-drag .empty-icon { transform: scale(1.06); }
+.bc-overlay {
+  position: absolute;
+  background: rgba(0, 0, 0, .58);
+  color: #fff;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+.bc-render-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  margin-right: 5px;
+  vertical-align: 1px;
+  animation: bc-pulse 900ms ease-in-out infinite;
+}
+@keyframes bc-pulse { 50% { opacity: .25; } }
+
+/* Slider readouts are measurements → mono + tabular so digits don't jitter */
+.bc-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  width: 34px;
+  text-align: right;
+  color: var(--text-2);
+}
+/* Range sliders: thin track + a slim vertical "marker" thumb (like a colour-tool
+   playhead) — reads exactly where the value sits, so it's precise to place. */
+.bc-layout input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+}
+.bc-layout input[type=range]:hover { background: var(--text-faint); }
+.bc-layout input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 6px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--brand);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+  transition: transform .1s ease, background .1s ease;
+}
+.bc-layout input[type=range]::-webkit-slider-thumb:hover { background: var(--brand-2); transform: scaleY(1.12); }
+.bc-layout input[type=range]::-webkit-slider-thumb:active { background: var(--brand-2); transform: scaleY(1.22); }
+.bc-layout input[type=range]::-moz-range-thumb {
+  width: 6px;
+  height: 16px;
+  border: none;
+  border-radius: 3px;
+  background: var(--brand);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+}
+
+/* HSL: ONE continuous spectrum strip; adjustment points are draggable dots.
+   Any hue is pickable — the page compiles each point into the two adjacent
+   ffmpeg bands by angular distance. */
+.bc-spectrum {
+  position: relative;
+  height: 20px;
+  border-radius: 999px;
+  margin: 8px 2px 16px;
+  cursor: crosshair;
+  background: linear-gradient(to right,
+    #e24b4a 0%, #e5b93c 16.7%, #4ca64c 33.3%, #3cb8b8 50%,
+    #4a7de2 66.7%, #b45ad4 83.3%, #e24b4a 100%);
+}
+.bc-point {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+  cursor: grab;
+  touch-action: none;
+}
+.bc-point:active { cursor: grabbing; }
+.bc-point.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--text); }
+.bc-point .bc-band-mark {
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+/* Center play overlay — auto-renders the graded clip then plays (Space) */
+.bc-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, .75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding-left: 4px;
+}
+.bc-play:hover { background: var(--brand); border-color: var(--brand); }
+.bc-play:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* Small clickable chip on the stage (e.g. "Về ảnh tĩnh") */
+.bc-chipbtn {
+  position: absolute;
+  background: rgba(0, 0, 0, .58);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+}
+.bc-chipbtn:hover { background: var(--brand); }
+
+/* File-picker modal: thumbnail grid with shift-range selection */
+.bc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+.bc-cell {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #111;
+  aspect-ratio: 16/10;
+  border: 2px solid transparent;
+  user-select: none;
+}
+.bc-cell img, .bc-cell video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.bc-cell:hover { border-color: var(--border-strong); }
+.bc-cell.sel { border-color: var(--brand); }
+.bc-cell .bc-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.bc-cell.sel .bc-check { display: flex; }
+.bc-cell .bc-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, .62);
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bc-stage img, .bc-stage video { transition: none; }
+  .bc-render-dot { animation: none; }
+  .bc-dropzone, .bc-dropzone .empty-icon { transition: none; }
+  .bc-dropzone.bc-drag .empty-icon { transform: none; }
+  .bc-layout input[type=range]::-webkit-slider-thumb { transition: none; }
+}
+@media (max-width: 900px) {
+  .bc-layout { grid-template-columns: 1fr !important; }
+}

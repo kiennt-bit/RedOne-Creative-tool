@@ -20,6 +20,56 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
+# HSL per-band adjustments (batch-color tab). ffmpeg's huesaturation filter
+# exposes exactly these 6 bands — one filter instance per non-zero band.
+_HSL_BANDS = ("r", "y", "g", "c", "b", "m")
+# huesaturation caps its `saturation` shift at +-1, so slider 100 alone barely
+# moves the colour. `strength` (ffmpeg default 1) is the real multiplier; 2.0
+# takes a muted colour to near-full saturation at 100 while keeping headroom
+# before clipping (measured: strength 3 already clips).
+_SAT_STRENGTH = 2.0
+
+
+def _hsl_filters(hsl: dict | None) -> list[str]:
+    """UI sends -100..100 per band; hue maps to -180..180, sat/int to -1..1.
+    Bands left at zero produce no filter at all.
+
+    Saturation goes in its OWN huesaturation pass with a strength multiplier:
+    ffmpeg caps the `saturation` shift at +-1, so at slider 100 the shift is
+    already maxed and the visible change is small. `strength` (default 1) is the
+    real amplifier -- _SAT_STRENGTH boosts it without touching the hue/lightness
+    feel, which stay in the original combined pass."""
+    out: list[str] = []
+    if not hsl:
+        return out
+    for band in _HSL_BANDS:
+        v = hsl.get(band) or {}
+        try:
+            h = float(v.get("h") or 0)
+            s = float(v.get("s") or 0)
+            l = float(v.get("l") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (h or s or l):
+            continue
+        h = max(-100.0, min(100.0, h))
+        s = max(-100.0, min(100.0, s))
+        l = max(-100.0, min(100.0, l))
+        # Hue + lightness (intensity): unchanged behaviour, default strength.
+        if h or l:
+            out.append(
+                f"huesaturation=hue={fmt(h * 1.8)}:intensity={fmt(l / 100)}"
+                f":colors={band}:lightness=1"
+            )
+        # Saturation: separate pass, amplified so the slider has real punch.
+        if s:
+            out.append(
+                f"huesaturation=saturation={fmt(s / 100)}"
+                f":strength={fmt(_SAT_STRENGTH)}:colors={band}:lightness=1"
+            )
+    return out
+
+
 def color_filter(color: dict) -> str:
     if not color:
         return ""
@@ -80,5 +130,8 @@ def color_filter(color: dict) -> str:
     blur = color.get("blur") or 0
     if blur:
         parts.append(f"gblur=sigma={fmt(float(blur) / 8.0)}")
+
+    # Per-band HSL (optional key; absent → chain unchanged)
+    parts.extend(_hsl_filters(color.get("hsl")))
 
     return ",".join(parts)

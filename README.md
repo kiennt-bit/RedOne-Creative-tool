@@ -78,11 +78,8 @@ RedOne Creative tool/
 | **YouTube → Prompt** | POST /api/analyzer/youtube | yt-dlp + Gemini Vision |
 | **Ý Tưởng → Video** | POST /api/analyzer/script | Gemini one-shot storyboard |
 | **Ảnh → Prompt** | POST /api/analyzer/image-to-prompt | Gemini Vision |
-| **Tách Nền** | POST /api/media/bg-remove | rembg (offline) |
-| **Xóa Watermark** | POST /api/media/watermark-remove | OpenCV inpaint (LaMa optional) |
 | **Upscale** | POST /api/media/upscale | PIL LANCZOS (Real-ESRGAN optional) |
 | **Resize Hàng Loạt** | POST /api/media/batch-resize | Pillow + presets platform |
-| **Ghép Audio** | POST /api/media/audio-merge | FFmpeg |
 | **Phụ Đề** | POST /api/media/subtitle | OpenAI Whisper (offline) |
 | **Tài Khoản** | /api/accounts/* | SQLite + Playwright login |
 | **Cài Đặt** | /api/settings | KV store + logs viewer |
@@ -92,7 +89,6 @@ RedOne Creative tool/
 Tính năng AI nặng không bắt buộc — chỉ install khi muốn dùng:
 
 ```bash
-pip install rembg              # Tách nền chất lượng cao
 pip install openai-whisper     # Sinh phụ đề
 pip install opencv-python      # Xóa watermark (basic)
 pip install torch spandrel     # Xóa watermark bằng LaMa (chất lượng cao)

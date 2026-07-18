@@ -1,5 +1,5 @@
 // YouTube / TikTok analyzer page
-import { el, clear, toast, setLoading, icon, geminiKeyNotice } from '../ui.js';
+import { el, clear, toast, setLoading, icon, geminiKeyNotice, wireDropzone } from '../ui.js';
 import { api } from '../api.js';
 
 // Module-level state → survives SPA tab navigation. renderYoutube() restores
@@ -147,6 +147,7 @@ export function renderYoutube(root) {
   const dz = root.querySelector('#yt-dropzone');
   const fi = root.querySelector('#yt-file');
   dz.addEventListener('click', () => fi.click());
+  wireDropzone(dz, fi);
   fi.addEventListener('change', () => {
     const f = fi.files[0];
     if (!f) return;

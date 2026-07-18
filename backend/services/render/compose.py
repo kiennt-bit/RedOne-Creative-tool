@@ -1,10 +1,10 @@
 """Render orchestrator — multi-track timeline → MP4 (single process).
 
-Phase 1 of the faithful rebuild: format each visual clip (trim/scale/color/
-opacity) and overlay all tracks by z-order onto a black canvas, mix audio
-(per-clip volume + fade), encode with the quality preset, then make a thumbnail.
-Transitions (xfade) and ASS text land in later phases. Same public signature as
-before so the router is unchanged.
+Formats each visual clip (trim/scale/color/opacity/rotation) and overlays all
+tracks by z-order onto a black canvas, composites per-type xfade transitions
+at clip boundaries, burns ASS text (libass), mixes audio (per-clip volume +
+fade), encodes with the quality preset, then makes a thumbnail. Shipped in
+v1.5.0. The color chain (color.py) is shared with the batch-color tab.
 """
 from __future__ import annotations
 import logging

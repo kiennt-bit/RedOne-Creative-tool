@@ -1,9 +1,10 @@
-"""Trình dựng video (Part B) — project store + media library + render task.
+"""Trình dựng video — project store + media library + render task.
 
-Phase 1 (MVP): a single-track timeline of clips (video + image, each trimmed)
-is rendered to one MP4 through the SAME sequential queue / pause / resume /
-cancel machinery as every other task (mode="video_render"), so it shows up in
-"Quản lý task" with the usual controls.
+A multi-track timeline (video/image/text/audio clips, xfade transitions, ASS
+text, per-clip color) is rendered to one MP4 through the SAME sequential
+queue / pause / resume / cancel machinery as every other task
+(mode="video_render"), so it shows up in "Quản lý task" with the usual
+controls. Shipped in v1.5.0.
 
   - Projects:   CRUD on the `projects` table (editor state stored as JSON).
   - My media:   list the user's own media (app outputs + uploads) to drop on

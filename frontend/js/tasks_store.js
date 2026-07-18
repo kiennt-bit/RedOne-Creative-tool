@@ -642,6 +642,14 @@ ws.on('task_batch_cooldown', (d) => {
 });
 
 // Long-video specific
+// Long-video scene events. Each handler recomputes the task-level `error`
+// count from item statuses — the "Gen lại lỗi" button keys off `t.error`, so
+// without this a failed scene never surfaces the retry button (and a resolved
+// one never hides it).
+function _recountErrors(t) {
+  t.error = t.items.filter(it => it.status === 'error').length;
+}
+
 ws.on('scene_started', (d) => {
   if (!d || !d.task_id) return;
   const t = tasks.get(d.task_id);
@@ -649,6 +657,8 @@ ws.on('scene_started', (d) => {
   const idx = (d.scene || 1) - 1;
   if (t.items[idx]) {
     t.items[idx].status = 'generating';
+    t.items[idx].error = null;
+    _recountErrors(t);
     notify(d.task_id);
   }
 });
@@ -662,6 +672,7 @@ ws.on('scene_done', (d) => {
     t.items[idx].status = 'done';
     t.items[idx].output_url = pathToUrl(d.output_path);
     t.items[idx].output_path = d.output_path;
+    _recountErrors(t);
     notify(d.task_id);
   }
 });
@@ -674,6 +685,7 @@ ws.on('scene_failed', (d) => {
   if (t.items[idx]) {
     t.items[idx].status = 'error';
     t.items[idx].error = d.error || 'Lỗi';
+    _recountErrors(t);
     notify(d.task_id);
   }
 });

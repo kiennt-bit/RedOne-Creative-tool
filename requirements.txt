@@ -47,15 +47,5 @@ cloakbrowser>=0.3.28
 # ~/.cache/torch/hub/checkpoints/.
 
 # Other optional heavy AI:
-# ── Tách Nền (Background removal) — feature in "Xử lý ảnh" sidebar ──
-# rembg fails at IMPORT TIME with `SystemExit: 1` if onnxruntime backend
-# is missing. Always install them together:
-#   pip install rembg onnxruntime
-# OR via extras:
-#   pip install "rembg[cpu]"
-# rembg>=2.0.0
-# onnxruntime>=1.16.0
-#
-# Other:
 # openai-whisper>=20231117
 # spandrel>=0.3.0

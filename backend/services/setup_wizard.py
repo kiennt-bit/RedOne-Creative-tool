@@ -328,12 +328,11 @@ async def compute_needs() -> dict:
     # v1.1+ deps — added so the wizard auto-installs them on first run
     # for end users (instead of users hitting cryptic ImportError later).
     has_google_genai = await _check_module(py, "google.genai") if has_python else False
-    has_onnxruntime = await _check_module(py, "onnxruntime") if has_python else False
     has_model = _check_lama_model()
 
     needs_pip = has_python and not (
         has_torch and has_simple_lama and has_cv2_ext
-        and has_google_genai and has_onnxruntime
+        and has_google_genai
     )
 
     _set_state(
@@ -352,7 +351,6 @@ async def compute_needs() -> dict:
         "has_simple_lama": has_simple_lama,
         "has_cv2_ext": has_cv2_ext,
         "has_google_genai": has_google_genai,
-        "has_onnxruntime": has_onnxruntime,
         "has_model": has_model,
         "has_cuda": _check_cuda_available(),
         "completed_for_version": load_persisted_state().get("completed_for_version"),
@@ -360,7 +358,7 @@ async def compute_needs() -> dict:
         "all_ready": (
             has_msvc and has_python and has_torch
             and has_simple_lama and has_cv2_ext
-            and has_google_genai and has_onnxruntime
+            and has_google_genai
             and has_model
         ),
         "msvc_install_url": MSVC_REDIST_URL,
@@ -478,20 +476,17 @@ async def _step_pip_install(python: str, with_cuda: bool,
     #
     # google-genai (v1.1+): Vertex AI commercial mode SDK. Required when
     #   user picks Auth mode = "Vertex AI Commercial" in Settings.
-    # onnxruntime (v1.1+): rembg ML backend. Without it, the "Tách Nền"
-    #   page crashes with SystemExit: 1 at import time.
     light_packages = [
         "opencv-python",
         "simple-lama-inpainting",
         "google-genai",
-        "onnxruntime",
     ]
     args = [python, "-m", "pip", "install", "--upgrade", *light_packages]
 
     # CUDA torch: separate install with --index-url to grab the cu121 wheel
     if with_cuda:
         # Phase A: install non-torch packages (fast, ~50MB total)
-        await _run_pip(args, on_progress, "Cài opencv + lama + genai + onnx…")
+        await _run_pip(args, on_progress, "Cài opencv + lama + genai…")
         # Phase B: torch with CUDA (slow, ~2GB)
         torch_args = [
             python, "-m", "pip", "install", "--upgrade",

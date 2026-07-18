@@ -1,8 +1,8 @@
 // Long video page — N scenes + extend + concat. State survives navigation.
-import { el, clear, toast, setLoading, icon, ensureFlowAccountOrWarn } from '../ui.js';
+import { el, clear, toast, setLoading, icon, ensureFlowAccountOrWarn, wireDropzone } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeRetryFailedButton } from '../gallery_actions.js';
+import { makeRetryFailedButton, makeSelectionToolbar, attachCardCheckbox } from '../gallery_actions.js';
 
 const form = {
   prompts: ['', ''],
@@ -251,6 +251,7 @@ export function renderLongVideo(root) {
   const fi = root.querySelector('#lv-image');
   const preview = root.querySelector('#lv-image-preview');
   dz.addEventListener('click', () => fi.click());
+  wireDropzone(dz, fi);
   fi.addEventListener('change', async () => {
     const file = fi.files[0]; if (!file) return;
     try {
@@ -317,6 +318,27 @@ export function renderLongVideo(root) {
     toast('Đã xóa danh sách (file vẫn còn trên ổ đĩa)', 'info');
   }
 
+  // Bulk-remove watermark from selected scene videos (built-in Veo mask).
+  // Backend streams WS events → tasks_store sets per-item wm_status; gallery
+  // chips update via the normal notify path.
+  async function runBatchWatermark(paths) {
+    const handle = toast(`Đang xóa watermark cho ${paths.length} video… (mỗi video ~5-30s)`, 'info', 0);
+    try {
+      const r = await api.media.videoWatermarkBatch(paths, { method: 'auto', device: 'auto' });
+      const okN = (r.completed || []).length;
+      const errN = (r.errors || []).length;
+      if (errN === 0) {
+        toast(`Đã xóa watermark ${okN} video — file mới có suffix [RedOne].mp4`, 'success');
+      } else {
+        toast(`Watermark: ${okN} OK, ${errN} lỗi (xem chip trên từng video)`, 'warning');
+      }
+    } catch (e) {
+      toast(`Watermark batch lỗi: ${e.message}`, 'error');
+    } finally {
+      if (handle && typeof handle.remove === 'function') handle.remove();
+    }
+  }
+
   function renderProgress(taskState) {
     if (!root.isConnected) return;
     const wrap = root.querySelector('#lv-progress');
@@ -336,6 +358,50 @@ export function renderLongVideo(root) {
     }
 
     const strip = el('div', { class: 'scene-strip' });
+
+    // Selection toolbar (Gen lại / Xóa WM / Upscale Video / Tải) — appears once
+    // ≥1 scene is done. Each finished scene clip is treated as a gallery item,
+    // mirroring the Tạo Video gallery so long-video gets the same batch actions.
+    const hasAnyDone = taskState.items.some(it => it.status === 'done' && it.output_path);
+    let toolbar = null;
+    if (hasAnyDone) {
+      toolbar = makeSelectionToolbar({
+        getCards: () => [...strip.querySelectorAll('.scene-card[data-path]')],
+        pathOf: (card) => card.dataset.path,
+        itemOf: (card) => {
+          const id = parseInt(card.dataset.itemId || '0', 10);
+          if (!id) return null;
+          const t = tasksStore.get(_taskId);
+          return (t && t.items.find(x => x.id === id)) || { id };
+        },
+        onRegen: async () => {
+          // Long video is an extend chain — a single scene can't be regenerated
+          // in isolation. Re-run the whole task; the backend resumes from the
+          // first non-completed scene (skips finished ones) and re-concats.
+          tasksStore.resetErrorItems(_taskId);
+          await api.tasks.retry(_taskId);
+        },
+        onRemoveWatermark: async (paths) => { await runBatchWatermark(paths); },
+        onUpscaleVideo: async (paths) => {
+          const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
+          const videoPaths = paths.filter(p => videoExts.some(e => p.toLowerCase().endsWith(e)));
+          if (!videoPaths.length) return toast('Không có video nào được chọn', 'warning');
+          window.__pendingUpscaleVideos = window.__pendingUpscaleVideos || [];
+          videoPaths.forEach(vp => {
+            const name = vp.split(/[/\\]/).pop();
+            if (!window.__pendingUpscaleVideos.some(p => p.path === vp)) {
+              window.__pendingUpscaleVideos.push({ path: vp, name });
+            }
+          });
+          if (window.__app && window.__app.navigate) {
+            window.__app.navigate('video-upscale');
+            toast(`Đã thêm ${videoPaths.length} video vào danh sách nâng cấp!`, 'success');
+          }
+        },
+      });
+      wrap.appendChild(toolbar);
+    }
+
     taskState.items.forEach((it, i) => {
       const card = el('div', { class: 'scene-card', 'data-scene': i + 1 });
       const thumb = el('div', { class: 'scene-thumb' },
@@ -369,10 +435,31 @@ export function renderLongVideo(root) {
         el('span', { class: `chip ${chipClass}` }, chipText)
       );
 
+      // Download + watermark-status chip for finished scenes.
+      let sceneActions = null;
+      if (it.status === 'done' && it.output_url) {
+        sceneActions = el('div', { class: 'scene-actions' },
+          el('a', { href: it.output_url, download: '', class: 'btn btn-sm btn-ghost' },
+            icon('download', 14), 'Tải'),
+        );
+        if (it.wm_status === 'running') {
+          sceneActions.appendChild(el('span', { class: 'chip chip-blue', 'data-wm-chip': '1', style: { marginLeft: 'auto' }, title: it.wm_label || '' }, `Xóa WM ${Math.round(it.wm_progress || 0)}%`));
+        } else if (it.wm_status === 'done' && it.wm_url) {
+          sceneActions.appendChild(el('a', { href: it.wm_url, download: '', target: '_blank', class: 'chip chip-green', 'data-wm-chip': '1', style: { marginLeft: 'auto', textDecoration: 'none' }, title: 'Click để tải video đã xóa watermark' }, '✓ Đã xóa WM'));
+        } else if (it.wm_status === 'error') {
+          sceneActions.appendChild(el('span', { class: 'chip chip-red', 'data-wm-chip': '1', style: { marginLeft: 'auto' }, title: it.wm_error || 'Lỗi xóa watermark' }, 'WM lỗi'));
+        }
+      }
+
       card.appendChild(el('div', { class: 'scene-info' },
         meta,
         el('div', { class: 'scene-prompt' }, it.prompt),
+        sceneActions,
       ));
+      if (it.status === 'done' && it.output_path) {
+        if (it.id != null) card.dataset.itemId = String(it.id);
+        attachCardCheckbox(card, it.output_path, toolbar);
+      }
       strip.appendChild(card);
     });
     wrap.appendChild(strip);
@@ -405,6 +492,11 @@ export function renderLongVideo(root) {
       return t ? { taskId: _taskId, errorCount: t.error || 0, status: t.status } : null;
     },
     onResetUI: (id) => tasksStore.resetErrorItems(id),
+    // Long video is an extend chain — retry re-runs the whole task, which
+    // resumes from the first non-completed scene (skips done ones) and
+    // re-concats. Per-item retry-failed (the default) would regenerate a scene
+    // as a standalone clip via the content generator and break the chain.
+    retryFn: (taskId) => api.tasks.retry(taskId),
   });
   root.querySelector('#lv-header-actions').prepend(retryBtn);
 

@@ -14,6 +14,21 @@ dist/
 # Addon bundles (build artifacts — source is in frontend/js/pages/)
 features/bundles/
 
+# Release zips (extension.zip, RedOne-GenFill-Plugin.zip, dist zips...) —
+# repackaged from source on every build, nên không có lý do commit. Bản phát
+# hành thật đi qua GitHub Releases, không qua repo.
+# LƯU Ý: KHÔNG chặn *.crx ở đây — chrome-ext/redone-auth-helper.crx ĐANG được
+# theo dõi có chủ đích (nguồn cho luồng auto-update). Luật /extension.crx bên
+# dưới cố tình neo ở root để chừa file đó ra.
+*.zip
+
+# Model weights (realesr-general-x4v3.pth/.onnx.data, test.onnx...) — mỗi file
+# cỡ 5MB, tải về từ Addon repo release khi user cài tính năng Video Upscale.
+# Commit vào đây là phình repo vĩnh viễn mà không được gì.
+*.pth
+*.onnx
+*.onnx.data
+
 # ECC reference repo + agent config (local only, not part of project)
 ecc/
 .agents/

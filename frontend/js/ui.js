@@ -27,6 +27,40 @@ export function clear(node) {
 export function $(sel, root = document) { return root.querySelector(sel); }
 export function $$(sel, root = document) { return [...root.querySelectorAll(sel)]; }
 
+// Wire drag-and-drop file upload onto a dropzone element so users can drop
+// image/video/audio files instead of only click-to-select.
+//   - `dz`     : the element that accepts drops (usually a `.dropzone`)
+//   - `input`  : the hidden <input type=file>; on drop its files are set and a
+//                `change` event fired, reusing the page's existing handler.
+//   - `onFiles`: optional — when given, called with the dropped FileList
+//                instead of the input flow (for custom targets/lists).
+// `.dropzone` elements get their native `.dragover` highlight; other targets
+// get a temporary dashed outline so the drop area is always visible.
+export function wireDropzone(dz, input, onFiles) {
+  if (!dz) return;
+  const isDz = dz.classList && dz.classList.contains('dropzone');
+  const on = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('dragover');
+    if (!isDz) { dz.style.outline = '2px dashed var(--brand)'; dz.style.outlineOffset = '2px'; }
+  };
+  const off = (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    dz.classList.remove('dragover');
+    if (!isDz) { dz.style.outline = ''; dz.style.outlineOffset = ''; }
+  };
+  dz.addEventListener('dragenter', on);
+  dz.addEventListener('dragover', on);
+  dz.addEventListener('dragleave', off);
+  dz.addEventListener('drop', (e) => {
+    off(e);
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    if (onFiles) onFiles(files);
+    else if (input) { input.files = files; input.dispatchEvent(new Event('change', { bubbles: true })); }
+  });
+}
+
 // Toasts
 export function toast(message, type = 'info', duration = 4000) {
   const stack = $('#toast-stack');

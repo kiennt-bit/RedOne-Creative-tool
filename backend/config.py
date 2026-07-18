@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -220,20 +220,6 @@ X_BROWSER_VALIDATION = "AKIAtsVHZoiKbPixy+qSK1BgKWo="
 
 DEFAULT_ACCOUNT_EXPIRY_DAYS = 30
 
-# ── Per-account Proxy (G-Labs #8) ────────────────────────────
-# Map email → proxy URL (e.g. "http://user:pass@host:port").
-# Loaded from private_config.py (gitignored) to keep credentials safe.
-# Example in private_config.py:
-#   ACCOUNT_PROXIES = {
-#       "account1@gmail.com": "http://user:pass@proxy1.example.com:8080",
-#       "account2@gmail.com": "socks5://user:pass@proxy2.example.com:1080",
-#   }
-try:
-    from private_config import ACCOUNT_PROXIES  # type: ignore[import-untyped]
-except (ImportError, ModuleNotFoundError):
-    ACCOUNT_PROXIES: dict[str, str] = {}
-
-
 def cost_for_model_key(model_key: str) -> int:
     if not model_key:
         return 10
@@ -333,20 +319,6 @@ def clamp_duration(quality: str, duration: int | None) -> int:
         return DEFAULT_VIDEO_DURATION if DEFAULT_VIDEO_DURATION in allowed else allowed[-1]
     return duration
 
-
-# Human-readable labels (used by frontend if it asks for the list)
-VIDEO_MODEL_LABELS = [
-    {"value": "omni_flash", "label": "Omni Flash",                          "cost": None,
-     "supports": [4, 6, 8, 10]},
-    {"value": "lite",       "label": "Veo 3.1 — Lite",                      "cost": 5,
-     "supports": [4, 6, 8]},
-    {"value": "fast",       "label": "Veo 3.1 — Fast",                      "cost": 10,
-     "supports": [4, 6, 8]},
-    {"value": "quality",    "label": "Veo 3.1 — Quality",                   "cost": 100,
-     "supports": [4, 6, 8]},
-    {"value": "lite_lp",    "label": "Veo 3.1 — Lite [Lower Priority]",     "cost": 0,
-     "supports": [4, 6, 8]},
-]
 
 # Backwards-compat alias (some old code still references VIDEO_MODEL_MAP)
 VIDEO_MODEL_MAP = T2V_MODEL_MAP

@@ -15,36 +15,39 @@ for /L %%v in (7,1,14) do (
 )
 echo      Done: PlayerDebugMode = 1 for CSXS.7 through CSXS.14
 
-REM ── Step 2: Create symbolic link ──
+REM ── Step 2: Copy plugin files to CEP extensions folder ──
 set PLUGIN_SRC=%~dp0photoshop-plugin
 set PLUGIN_DST=C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\com.redone.genfill
 
 echo.
-echo [2/3] Creating extension symlink...
+echo [2/3] Installing extension files...
 echo      Source: %PLUGIN_SRC%
 echo      Target: %PLUGIN_DST%
 
-if exist "%PLUGIN_DST%" (
-    echo      Link already exists, removing old one...
-    rmdir "%PLUGIN_DST%" 2>nul
-    del "%PLUGIN_DST%" 2>nul
+if not exist "%PLUGIN_SRC%\index.html" (
+    echo.
+    echo [ERROR] Khong tim thay folder "photoshop-plugin" canh file install nay.
+    echo         Dam bao file install nam cung thu muc voi folder "photoshop-plugin".
+    pause
+    exit /b 1
 )
 
-mklink /D "%PLUGIN_DST%" "%PLUGIN_SRC%"
+REM Remove old symlink or folder if exists
+if exist "%PLUGIN_DST%" (
+    echo      Removing old installation...
+    rmdir /S /Q "%PLUGIN_DST%" 2>nul
+)
+
+REM Copy all files (no symlink dependency)
+xcopy "%PLUGIN_SRC%\*" "%PLUGIN_DST%\" /E /I /Y /Q
 if errorlevel 1 (
     echo.
-    echo [ERROR] Failed to create symlink. Make sure:
-    echo   1. You are running this as Administrator
-    echo   2. The target directory doesn't already exist
-    echo.
-    echo Trying copy fallback...
-    xcopy "%PLUGIN_SRC%\*" "%PLUGIN_DST%\" /E /I /Y /Q
-    if errorlevel 1 (
-        echo [ERROR] Copy also failed. Please run as Administrator.
-        pause
-        exit /b 1
-    )
+    echo [ERROR] Copy failed. Make sure you are running this as Administrator.
+    pause
+    exit /b 1
 )
+
+echo      Done: Files copied successfully.
 
 REM ── Step 3: Done ──
 echo.
