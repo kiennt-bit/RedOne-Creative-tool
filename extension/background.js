@@ -810,7 +810,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // open the Google login page — content_accounts.js fills it in.
         (async () => {
             try {
-                const r = await _bridgeGet("/sync/shared-google");
+                let r = null;
+                for (const host of BRIDGE_HOSTS) {
+                    try {
+                        r = await _bridgeGet(host, "/sync/shared-google");
+                        if (r && r.ok) break;
+                    } catch (_) {}
+                }
                 if (!r || !r.ok || !r.email || !r.password) {
                     sendResponse({ ok: false, error: (r && r.reason) || "Chưa có tài khoản chung" });
                     return;
