@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.6"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -174,9 +174,13 @@ VIDEO_MODELS = {
     "veo_3_1_lite": {"name": "Veo 3.1 Lite (Low Priority)", "cost": 5},
 }
 
+# NOTE: nothing reads this dict — the real model list lives in the frontend
+# dropdowns (image.js / storyboard.js) and the key→codename mapping in
+# FlowClient.IMAGE_MODEL_MAP. Kept in sync so it doesn't mislead.
 IMAGE_MODELS = {
     "nano_banana_pro": {"name": "Nano Banana Pro", "cost": 0},
     "nano_banana_2": {"name": "Nano Banana 2", "cost": 0},
+    "nano_banana_lite": {"name": "Nano Banana Lite", "cost": 0},
 }
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
@@ -335,11 +339,11 @@ def video_model_for(quality: str, mode: str = "t2v", duration: int = 8) -> str:
     m = (mode or "t2v").lower()
     if quality == "omni_flash":
         d = clamp_duration("omni_flash", duration)
-        # Currently CONFIRMED only `abra_t2v_<N>s` from labs.google capture.
-        # Try the same key for both T2V and I2V (Google's image-input is
-        # signalled via `startImage` field, model itself may be unified).
-        # If 500 from Google → need to capture I2V payload separately.
-        return f"abra_t2v_{d}s"
+        # CONFIRMED from labs.google HAR: `abra_t2v_<N>s` and `abra_i2v_<N>s`
+        # are separate keys — I2V is NOT unified with T2V as previously assumed.
+        # Duration is encoded in the key. Only abra_i2v_4s was captured
+        # directly; 6s/8s/10s follow the same pattern as the T2V variants.
+        return f"abra_i2v_{d}s" if m == "i2v" else f"abra_t2v_{d}s"
     table = I2V_MODEL_MAP if m == "i2v" else T2V_MODEL_MAP
     return table.get(quality, table["fast"])
 

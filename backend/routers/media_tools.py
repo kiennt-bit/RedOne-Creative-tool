@@ -53,7 +53,8 @@ async def video_watermark_remove(
     method: str = Form("auto"),       # auto | opencv | lama | sttn | propainter
     device: str = Form("auto"),       # auto | cpu | cuda | split
     gpu_ratio: int = Form(70),
-    use_default_mask: bool = Form(True),  # if True and no mask uploaded, use veo3 mask
+    use_default_mask: bool = Form(True),  # if True and no mask uploaded, use built-in mask
+    watermark_kind: str = Form("veo_mini"),   # veo_mini | gemini
 ):
     """Remove watermark/logo from a single video.
 
@@ -68,22 +69,24 @@ async def video_watermark_remove(
     """
     from ..ws_hub import hub
     from ..services.watermark_video import (
-        remove_watermark_from_video, get_default_veo_mask,
+        remove_watermark_from_video, get_mask_for, normalize_kind, WATERMARK_LABELS,
     )
     from datetime import datetime as _dt
 
     src_video = _save_temp(file, "wmv")
     mask_path: Optional[Path] = None
     mask_tmp_dir: Optional[Path] = None
+    resolved_kind: Optional[str] = None
 
     if mask is not None:
         mask_saved = _save_temp(mask, "wmv_mask")
         mask_path = mask_saved
         mask_tmp_dir = mask_saved.parent
     elif use_default_mask:
-        mask_path = get_default_veo_mask()
+        resolved_kind = normalize_kind(watermark_kind)
+        mask_path = get_mask_for(resolved_kind)
         if not mask_path.exists():
-            raise HTTPException(500, f"Built-in Veo mask không tồn tại: {mask_path}")
+            raise HTTPException(500, f"Mask dựng sẵn không tồn tại: {mask_path}")
     else:
         raise HTTPException(400, "Phải upload mask hoặc bật use_default_mask")
 
@@ -109,6 +112,8 @@ async def video_watermark_remove(
     await hub.broadcast("watermark_started", {
         "job_id": job_id, "source": file.filename,
         "method": method, "device": device,
+        "watermark_kind": resolved_kind,
+        "watermark_label": WATERMARK_LABELS.get(resolved_kind or "") or None,
     })
     try:
         result = await remove_watermark_from_video(
@@ -151,15 +156,17 @@ class VideoWatermarkBatchRequest(BaseModel):
     method: str = "auto"
     device: str = "auto"
     gpu_ratio: int = 70
+    watermark_kind: str = "veo_mini"   # veo_mini | gemini
 
 
 @router.post("/video-watermark-remove-batch")
 async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
-    """Sequentially clean watermark from N gallery videos using the built-in
-    Veo3 mask. Broadcasts WS progress per video. Returns list of outputs."""
+    """Sequentially clean watermark from N gallery videos using the bundled
+    mask for `watermark_kind`. Broadcasts WS progress per video. Returns list
+    of outputs."""
     from ..ws_hub import hub
     from ..services.watermark_video import (
-        remove_watermark_from_video, get_default_veo_mask,
+        remove_watermark_from_video, get_mask_for, normalize_kind,
     )
     from datetime import datetime as _dt
 
@@ -183,10 +190,16 @@ async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
     if not resolved:
         raise HTTPException(400, "Không có file nào hợp lệ để xử lý")
 
-    mask_path = get_default_veo_mask()
     today = _dt.now().strftime("%Y-%m-%d")
     out_dir = OUTPUT_DIR / "video" / "watermark_removed" / today
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # One mask for the whole batch — the user picked the logo up front, so
+    # there is nothing to decide per video.
+    kind = normalize_kind(body.watermark_kind)
+    mask_path = get_mask_for(kind)
+    if not mask_path.exists():
+        raise HTTPException(500, f"Mask dựng sẵn không tồn tại: {mask_path}")
 
     job_id = uuid.uuid4().hex[:8]
     total = len(resolved)
@@ -195,6 +208,7 @@ async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
 
     await hub.broadcast("watermark_batch_started", {
         "job_id": job_id, "total": total, "method": body.method,
+        "watermark_kind": kind,
     })
 
     for idx, src in enumerate(resolved, 1):

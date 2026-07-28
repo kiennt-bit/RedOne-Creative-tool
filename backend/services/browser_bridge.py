@@ -18,8 +18,10 @@ Internals:
       `bridge.pop_task_for_extension()`, runs it, then submits the result
       via `bridge.deliver_result(task_id, result)` which resolves the
       Future.
-    - Tasks expire after TASK_TTL_S to avoid leaking if the extension
-      goes offline mid-task. Awaiters get a `BridgeTimeoutError`.
+    - Two separate budgets so a queue backlog can't kill a task that
+      never ran: QUEUE_TTL_S while waiting to be claimed, then a fresh
+      TASK_TTL_S to actually run. Either way the awaiter gets a
+      `BridgeTimeoutError` (with a message saying which one blew).
     - Bridge tracks extension liveness (last seen tab + status) so
       diagnostics endpoints can show "Extension offline" hints.
 """
@@ -37,9 +39,19 @@ from typing import Any, Optional
 
 log = logging.getLogger("redone.bridge")
 
-# How long a task can sit in the queue / be in-flight before we give up.
-# Tuned higher than typical API call latency to tolerate brief ext lag.
+# Execution budget: how long the extension may take to RUN a task once it has
+# CLAIMED it. The clock starts at claim, NOT at enqueue. The extension runs
+# tasks strictly one at a time (it can't poll while busy), so with N parallel
+# gens the last download legitimately queues for minutes. Charging that queue
+# wait against this budget killed tasks that had never even started — the
+# "Extension không phản hồi task proxy_fetch sau 120.0s" seen on 5-stream runs.
 TASK_TTL_S = 120.0
+
+# Queue budget: how long a task may sit UNCLAIMED before we give up. Generous,
+# because serialized downloads are normal backpressure, not a fault. The wait
+# aborts early if the extension stops heartbeating, so a closed Chrome doesn't
+# park the caller here for the full window.
+QUEUE_TTL_S = 300.0
 
 # Heartbeat freshness threshold. If the extension hasn't pinged within
 # this window we consider it disconnected (used by snapshot_state).
@@ -108,8 +120,10 @@ class _BridgeTask:
     """One outstanding task waiting on the extension.
 
     The `future` resolves with the result dict once the extension
-    posts back via /sync/task-result. If TASK_TTL_S elapses first, the
-    awaiter gets BridgeTimeoutError instead.
+    posts back via /sync/task-result. `claimed` is set the moment an
+    extension pops the task off the queue — that's what starts the
+    TASK_TTL_S execution clock in `_enqueue_and_wait`. Until then the task
+    is only spending its QUEUE_TTL_S budget.
 
     `sort_key` (klass, seq, enq) is the ONLY comparison field — it drives
     the PriorityQueue ordering. Every other field has compare=False so the
@@ -126,9 +140,12 @@ class _BridgeTask:
         default_factory=lambda: asyncio.get_event_loop().create_future(),
         compare=False,
     )
+    claimed: asyncio.Event = field(default_factory=asyncio.Event, compare=False)
 
     def is_expired(self) -> bool:
-        return (time.time() - self.created_at) > TASK_TTL_S
+        """Only ever consulted for tasks still sitting in `_pending` (i.e.
+        never claimed), so this is the QUEUE budget, not the execution one."""
+        return (time.time() - self.created_at) > QUEUE_TTL_S
 
     def to_dict(self) -> dict:
         """Wire format sent to the extension."""
@@ -262,6 +279,8 @@ class BrowserBridge:
             except asyncio.QueueEmpty:
                 return None
         self._in_flight[task.id] = task
+        # Starts the execution clock for the awaiter in _enqueue_and_wait.
+        task.claimed.set()
         return task
 
     def deliver_result(self, task_id: str, result: dict) -> bool:
@@ -307,13 +326,41 @@ class BrowserBridge:
             payload=payload,
         )
         await self._pending.put(task)
+
+        # Phase 1 — wait to be CLAIMED. The extension runs one task at a time,
+        # so queueing behind other downloads is normal and must NOT eat the
+        # execution budget. Poll in slices so a Chrome that closes mid-queue
+        # fails fast instead of parking the caller for the whole window.
+        queue_deadline = time.time() + QUEUE_TTL_S
+        while not task.claimed.is_set():
+            # A busy extension can't poll (see EXT_LIVE_THRESHOLD_S), so a
+            # stale heartbeat only means "dead" when nothing is in flight.
+            if not self.is_extension_live() and not self._in_flight:
+                raise BridgeExtensionOfflineError(
+                    f"Extension ngắt kết nối khi task {kind} còn đang xếp hàng. "
+                    "Mở lại Chrome có 'RedOne Auth Helper' + tab labs.google "
+                    "đã đăng nhập, rồi thử lại."
+                )
+            remaining = queue_deadline - time.time()
+            if remaining <= 0:
+                raise BridgeTimeoutError(
+                    f"Không extension nào nhận task {kind} sau {QUEUE_TTL_S}s "
+                    f"({self._pending.qsize()} task còn xếp hàng)"
+                )
+            try:
+                await asyncio.wait_for(task.claimed.wait(), timeout=min(remaining, 5.0))
+            except asyncio.TimeoutError:
+                pass
+
+        # Phase 2 — claimed, so now it gets the full execution budget.
         try:
             return await asyncio.wait_for(task.future, timeout=TASK_TTL_S)
         except asyncio.TimeoutError:
             # Drop from in_flight if it got claimed but never returned
             self._in_flight.pop(task.id, None)
             raise BridgeTimeoutError(
-                f"Extension không phản hồi task {kind} sau {TASK_TTL_S}s"
+                f"Extension đã nhận task {kind} nhưng không trả kết quả "
+                f"sau {TASK_TTL_S}s"
             )
 
     async def harvest_recaptcha(

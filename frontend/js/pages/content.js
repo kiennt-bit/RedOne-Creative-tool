@@ -37,11 +37,11 @@ const DURATION_BY_MODEL = {
   lite_lp:    [8],
 };
 
-// Models that work in each mode. As of 2026-05-20, Google Labs shows
-// "Frames for Omni Flash coming soon" → Omni Flash chỉ hỗ trợ T2V.
+// Models that work in each mode. Omni Flash gained I2V on 2026-07-20
+// (internal key abra_i2v_<N>s, confirmed via labs.google capture).
 const MODELS_FOR_MODE = {
   t2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
-  i2v: ['lite_lp', 'lite', 'fast', 'quality'],  // no omni_flash
+  i2v: ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'],
 };
 // Labels kept short so they fit the (narrow) config column without
 // overflowing into the dropdown arrow. The longer details (durations,
@@ -306,7 +306,6 @@ export function renderContent(root) {
   }
 
   // Populate Model dropdown based on current mode (T2V vs I2V).
-  // Omni Flash hidden in I2V because Google Labs hasn't enabled it yet.
   function refreshModelDropdown() {
     const sel = root.querySelector('#cnt-quality');
     const help = root.querySelector('#cnt-quality-help');
@@ -322,9 +321,7 @@ export function renderContent(root) {
     form.quality = allowed.includes(prev) ? prev : 'lite_lp';
     sel.value = form.quality;
     if (help) {
-      help.textContent = form.mode === 'i2v'
-        ? 'Omni Flash chưa hỗ trợ Image-to-Video (Google sẽ cập nhật sau)'
-        : 'Omni Flash hỗ trợ 4/6/8/10s, các model Veo 3.1 cố định 8s';
+      help.textContent = 'Omni Flash hỗ trợ 4/6/8/10s, các model Veo 3.1 cố định 8s';
     }
   }
   refreshModelDropdown();
@@ -797,18 +794,21 @@ export function renderContent(root) {
     } catch (e) { toast(e.message, 'error'); }
   });
 
-  // Bulk-remove watermark from selected video files using the built-in Veo
-  // mask. Backend processes sequentially and streams WS events
+  // Bulk-remove watermark from selected video files. `kind` picks the mask
+  // ('veo_mini' | 'gemini') — the toolbar asks the user before calling.
+  // Backend processes sequentially and streams WS events
   // (watermark_progress / _item_completed / _item_error) which tasks_store
   // translates into per-item wm_status flags — gallery chips update via the
   // normal notify path.
-  async function runBatchWatermark(paths) {
+  async function runBatchWatermark(paths, kind = 'veo_mini') {
     const handle = toast(
       `Đang xóa watermark cho ${paths.length} video… (mỗi video ~5-30s)`,
       'info', 0,
     );
     try {
-      const r = await api.media.videoWatermarkBatch(paths, { method: 'auto', device: 'auto' });
+      const r = await api.media.videoWatermarkBatch(paths, {
+        method: 'auto', device: 'auto', watermarkKind: kind,
+      });
       const okN = (r.completed || []).length;
       const errN = (r.errors || []).length;
       if (errN === 0) {
@@ -1026,8 +1026,8 @@ export function renderContent(root) {
           tasksStore.removeItemsByPath(taskState.id, paths);
           renderTaskGallery(tasksStore.get(taskState.id));
         },
-        onRemoveWatermark: async (paths) => {
-          await runBatchWatermark(paths);
+        onRemoveWatermark: async (paths, kind) => {
+          await runBatchWatermark(paths, kind);
         },
         onUpscaleVideo: async (paths) => {
           const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];

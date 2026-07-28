@@ -1,9 +1,27 @@
 // Selection toolbar + multi-select helpers for generator galleries (content,
 // image, long_video). Each page calls renderSelectionToolbar() above its
 // gallery grid; cards mark themselves with .selected when checkbox is ticked.
-import { el, toast } from './ui.js';
+import { el, toast, modal } from './ui.js';
 import { api } from './api.js';
 import { tasksStore } from './tasks_store.js';
+
+// Selection has to survive a re-render. Every page rebuilds its whole grid
+// from scratch each time a gen finishes (renderTaskGallery), and `.selected`
+// lives only in the DOM — so without this the user's ticks vanished the moment
+// another card completed. Keyed by server path: the same identity pathOf()
+// uses, and stable across rebuilds.
+const selectedPaths = new Set();
+
+/** Set/clear a card's selection in the DOM *and* in the surviving set. */
+function markCard(card, on) {
+  card.classList.toggle('selected', on);
+  const cb = card.querySelector('.card-checkbox');
+  if (cb) cb.checked = on;
+  const p = card.dataset.path;
+  if (!p) return;
+  if (on) selectedPaths.add(p);
+  else selectedPaths.delete(p);
+}
 
 /**
  * Build a toolbar element with: select-all, clear, download, clear-from-view.
@@ -25,9 +43,10 @@ import { tasksStore } from './tasks_store.js';
  *          that actually have a media_id. Responsible for showing progress.
  *          Does NOT auto-download — the upscaled file is saved server-side
  *          and offered per-card via its own "Tải <res>" button.
- * @param {(paths:string[]) => Promise} [opts.onRemoveWatermark]
+ * @param {(paths:string[], kind:string) => Promise} [opts.onRemoveWatermark]
  *        - called when user clicks "Xóa watermark". Receives selected card
- *          file paths. Responsible for showing progress + result.
+ *          file paths and the logo the user picked ('auto'|'veo_mini'|
+ *          'gemini'). Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
 export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen, onUpscaleVideo }) {
@@ -118,14 +137,18 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
     ? iconBtn('upscale', 'Nâng cấp 4K', () => runUpscale('4k'))
     : null;
 
-  // Watermark removal — uses built-in Veo mask. Only shown when caller
-  // wired an onRemoveWatermark handler (video pages do, image pages don't).
+  // Watermark removal. Only shown when caller wired an onRemoveWatermark
+  // handler (video pages do, image pages don't). The user must say which logo
+  // to erase first — each logo has its own mask, so a wrong pick leaves the
+  // watermark untouched.
   const wmEnabled = !!onRemoveWatermark;
   const btnWm = wmEnabled ? iconBtn('eraser', 'Xóa watermark', async () => {
     const paths = selectedCards().map(pathOf).filter(Boolean);
     if (!paths.length) return;
+    const kind = await pickWatermarkKind(paths.length);
+    if (!kind) return;   // user cancelled
     try {
-      await onRemoveWatermark(paths);
+      await onRemoveWatermark(paths, kind);
     } catch (e) {
       toast(`Xóa watermark lỗi: ${e.message}`, 'error');
     }
@@ -186,19 +209,11 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
 
   // Selection meta-controls — quiet (ghost), sit on the left.
   const selBtnAll = iconBtn('check', 'Chọn tất cả', () => {
-    getCards().forEach(c => {
-      c.classList.add('selected');
-      const cb = c.querySelector('.card-checkbox');
-      if (cb) cb.checked = true;
-    });
+    getCards().forEach(c => markCard(c, true));
     refreshCounter();
   }, 'btn-ghost');
   const selBtnNone = iconBtn('x', 'Bỏ chọn', () => {
-    getCards().forEach(c => {
-      c.classList.remove('selected');
-      const cb = c.querySelector('.card-checkbox');
-      if (cb) cb.checked = false;
-    });
+    getCards().forEach(c => markCard(c, false));
     refreshCounter();
   }, 'btn-ghost');
 
@@ -309,17 +324,27 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
 export function attachCardCheckbox(card, path, toolbar) {
   if (!path) return card;
   card.dataset.path = path;
+  // This card may be a fresh element replacing one the user had ticked (the
+  // grid is rebuilt whenever another gen finishes) — restore the tick.
+  const wasSelected = selectedPaths.has(path);
+  if (wasSelected) card.classList.add('selected');
   const cb = el('input', {
     type: 'checkbox',
     class: 'card-checkbox',
     onclick: (e) => {
       e.stopPropagation();
-      card.classList.toggle('selected', e.target.checked);
+      markCard(card, e.target.checked);
       if (toolbar && toolbar._refreshCounter) toolbar._refreshCounter();
     },
   });
+  cb.checked = wasSelected;
   const thumb = card.querySelector('.scene-thumb');
   if (thumb) thumb.appendChild(cb);
+  // Callers append the card to the grid AFTER this returns, so the toolbar
+  // can't count it yet — refresh once the current render pass is done.
+  if (wasSelected && toolbar && toolbar._refreshCounter) {
+    setTimeout(() => toolbar._refreshCounter(), 0);
+  }
   return card;
 }
 
@@ -455,4 +480,81 @@ export function makeItemRetryButton(taskId, itemId, retryFn) {
     el('span', { style: { marginLeft: '4px' } }, 'Gen lại'),
   );
   return btn;
+}
+
+
+/**
+ * Ask which watermark to erase. Each logo ships its own mask, so picking the
+ * wrong one silently leaves the watermark in place — hence a required choice
+ * rather than a silent default. There is no auto-detect option: template
+ * matching scored the Gemini logo the same on videos with and without it.
+ *
+ * @param {number} count - how many videos are queued, for the prompt text
+ * @returns {Promise<'veo_mini'|'gemini'|null>} null = cancelled
+ */
+export function pickWatermarkKind(count = 1) {
+  return new Promise(resolve => {
+    let picked = null;
+    let close = () => {};
+
+    // Descriptions are the point of this dialog: picking the wrong logo means
+    // the watermark survives, so tell the user how to recognise each one
+    // (position + appearance) instead of just naming them.
+    const OPTIONS = [
+      { kind: 'veo_mini', label: 'Veo 3 Mini',
+        desc: 'Chữ “Veo” nhỏ, nằm sát góc dưới bên phải.',
+        svg: '<path d="M4 7h16M9 7v10M4 17h10" stroke="currentColor" stroke-width="1.8" '
+           + 'fill="none" stroke-linecap="round"/>' },
+      { kind: 'gemini', label: 'Gemini',
+        desc: 'Ngôi sao lấp lánh, góc dưới phải nhưng to và cao hơn logo Veo.',
+        svg: '<path d="M12 3c.6 4.5 2.9 6.8 7.4 7.4-4.5.6-6.8 2.9-7.4 7.4-.6-4.5-2.9-6.8-7.4-7.4'
+           + 'C9.1 9.8 11.4 7.5 12 3z" stroke="currentColor" stroke-width="1.6" fill="none" '
+           + 'stroke-linejoin="round"/>' },
+    ];
+
+    const glyph = (inner) => {
+      const s = document.createElement('span');
+      s.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${inner}</svg>`;
+      return s.firstChild;
+    };
+    const chevron = () => glyph(
+      '<path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2" fill="none" '
+      + 'stroke-linecap="round" stroke-linejoin="round"/>');
+
+    const rows = el('div', { class: 'choice-list' },
+      ...OPTIONS.map(o => el('button', {
+        class: 'choice-row', type: 'button',
+        'aria-label': `Xóa logo ${o.label}. ${o.desc}`,
+        onclick: () => { picked = o.kind; close(); },
+      },
+        el('span', { class: 'choice-row-icon' }, glyph(o.svg)),
+        el('span', { class: 'choice-row-text' },
+          el('div', { class: 'choice-row-label' }, o.label),
+          el('div', { class: 'choice-row-desc' }, o.desc),
+        ),
+        el('span', { class: 'choice-row-chev' }, chevron()),
+      )),
+    );
+
+    close = modal({
+      title: 'Xóa logo nào?',
+      body: el('div', null,
+        el('p', { style: { marginBottom: '14px' } },
+          count > 1
+            ? `Áp cho ${count} video đã chọn. Chọn sai logo thì watermark sẽ không được xóa.`
+            : 'Chọn sai logo thì watermark sẽ không được xóa.'),
+        rows,
+      ),
+      actions: [
+        { label: 'Hủy', class: 'btn-ghost', onclick: (c) => c() },
+      ],
+    }).close;
+    // modal() closes on backdrop click without touching our actions, so resolve
+    // from the DOM going away rather than from the buttons.
+    const root = document.querySelector('#modal-root');
+    const obs = new MutationObserver(() => {
+      if (!root.querySelector('.modal')) { obs.disconnect(); resolve(picked); }
+    });
+    obs.observe(root, { childList: true, subtree: true });
+  });
 }

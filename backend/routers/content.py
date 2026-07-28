@@ -207,15 +207,11 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
         # where it started. No ref image → nothing to loop.
         loop = loop and bool(ref_media)
         mode = "i2v" if ref_media else "t2v"
-        # Omni Flash doesn't support I2V yet — fall back to Veo 3.1 Lite [LP]
-        # (free queue) when a ref image is set.
         eff_quality = quality
-        if quality == "omni_flash" and ref_media:
-            log.warning(
-                f"Item {item_id}: Omni Flash + ref image not supported; "
-                f"falling back to lite_lp for this item"
-            )
-            eff_quality = "lite_lp"
+        # Omni Flash now HAS a native I2V model (abra_i2v_<N>s, confirmed via
+        # labs.google HAR 2026-07-20), so the old fall-back to Veo lite_lp is
+        # gone. It still has no interpolation model though — `loop` below
+        # routes through interpolation_model_for(), which falls back on its own.
         duration_s = int(task.get("duration") or 8)
         if loop:
             # Interpolation model (first+last frame). Omni Flash has none → lite_lp.

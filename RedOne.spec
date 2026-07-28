@@ -13,8 +13,9 @@ project_root = Path('.').resolve()
 
 # Bundle ALL of frontend (HTML + CSS + JS) as data — server reads at runtime.
 # Also bundle backend/resources/ which holds the lama_inpaint.py runner script
-# and veo3watermark.png mask (Veo logo bottom-right) used by the video-watermark
-# removal feature.
+# and the wm_mask_*.png repaint masks (Veo 3 Mini / Gemini, bottom-right) used
+# by the video-watermark removal feature. The whole directory is bundled, so
+# new masks need no change here.
 datas = [
     (str(project_root / 'frontend'), 'frontend'),
     (str(project_root / 'backend' / 'resources'), 'backend/resources'),

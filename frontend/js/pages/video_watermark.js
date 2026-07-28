@@ -126,14 +126,14 @@ export function renderVideoWatermark(root) {
     el('div', { class: 'hero-text' },
       el('h2', null, 'Xóa Watermark Video'),
       el('p', null,
-        'Xóa logo Veo (hoặc watermark khác có mask sẵn) khỏi nhiều video cùng lúc. '
+        'Xóa logo Veo 3 Mini / Gemini (hoặc tự khoanh vùng) khỏi nhiều video cùng lúc. '
         + 'Sequential processing — mỗi video ~10-60s tùy độ dài.'),
     ),
   ));
 
   // ─── Mode toggle: Logo Veo (nhanh) | Chọn vùng (LaMa) ───
   const modeVeoBtn = el('button', { class: 'btn btn-sm', onclick: () => setMode('veo') },
-    icon('sparkles', 15), 'Logo Veo (nhanh)');
+    icon('sparkles', 15), 'Logo có sẵn (nhanh)');
   const modeRegionBtn = el('button', { class: 'btn btn-sm', onclick: () => setMode('region') },
     icon('image', 15), 'Khoanh vùng tự chọn');
   root.appendChild(el('div', {
@@ -162,6 +162,21 @@ export function renderVideoWatermark(root) {
         id: 'vwm-file', style: { display: 'none' },
       }),
     ),
+    // Each logo has its own mask, so the wrong pick silently leaves the
+    // watermark in place. No auto-detect: template-matching couldn't tell the
+    // Gemini logo apart from a clean corner, so the user chooses.
+    el('div', { className: 'field-group', style: { marginTop: '16px' } },
+      el('label', { className: 'field-label' }, 'Logo cần xóa'),
+      el('select', { className: 'select', id: 'vwm-kind' },
+        el('option', { value: 'veo_mini', selected: true },
+          'Veo 3 Mini — chữ “Veo” nhỏ, sát góc dưới phải'),
+        el('option', { value: 'gemini' },
+          'Gemini — ngôi sao lấp lánh, to và cao hơn'),
+      ),
+      el('div', { class: 'field-help', style: { marginTop: '6px' } },
+        'Cả lô dùng chung một logo — video khác loại thì chạy thành lô riêng. '
+        + 'Chọn sai thì watermark sẽ không được xóa.'),
+    ),
     el('div', { style: { display: 'flex', gap: '8px', marginTop: '16px' } },
       el('button', { class: 'btn btn-primary', style: { flex: 1 }, id: 'vwm-go' },
         icon('sparkles'), 'Bắt đầu xóa watermark'),
@@ -169,7 +184,7 @@ export function renderVideoWatermark(root) {
         icon('trash', 14), 'Xóa hàng đợi'),
     ),
     el('div', { class: 'field-help', style: { marginTop: '12px' } },
-      'Mặc định dùng mask Veo logo bottom-right + auto chọn engine tốt nhất có sẵn '
+      'Dùng mask có sẵn ở góc dưới-phải + auto chọn engine tốt nhất có sẵn '
       + '(LaMa AI nếu cài, OpenCV nếu không). Output lưu tại '
       + 'outputs/video/watermark_removed/<ngày>/<tên> [RedOne].mp4'),
   ));
@@ -456,6 +471,9 @@ export function renderVideoWatermark(root) {
         fd.append('use_default_mask', 'true');
         fd.append('method', 'auto');
         fd.append('device', 'auto');
+        // Read per-iteration: the select stays enabled during the run, so a
+        // late change applies to whatever hasn't been sent yet.
+        fd.append('watermark_kind', root.querySelector('#vwm-kind')?.value || 'veo_mini');
         const r = await api.media.videoWatermark(fd);
         it.status = 'done';
         it.progress = 100;

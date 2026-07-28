@@ -23,7 +23,6 @@ const DURATION_BY_MODEL = {
   lite_lp:    [8],
 };
 
-// Omni Flash doesn't support image-input yet → hide if start_image is set.
 // Short labels so they fit the narrow config column (see content.js).
 const MODEL_LABELS = {
   omni_flash: 'Omni Flash · 7–15 credit/cảnh (theo độ dài)',
@@ -32,8 +31,9 @@ const MODEL_LABELS = {
   fast:       'Veo 3.1 Fast · 10 credit/cảnh',
   quality:    'Veo 3.1 Quality · 100 credit/cảnh',
 };
+// Omni Flash gained I2V on 2026-07-20 → same list for both cases now.
 const MODELS_NO_IMAGE = ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'];
-const MODELS_WITH_IMAGE = ['lite_lp', 'lite', 'fast', 'quality'];
+const MODELS_WITH_IMAGE = ['omni_flash', 'lite_lp', 'lite', 'fast', 'quality'];
 
 function defaultTaskName() {
   const d = new Date();
@@ -133,9 +133,7 @@ export function renderLongVideo(root) {
     form.quality = allowed.includes(prev) ? prev : 'lite_lp';
     sel.value = form.quality;
     if (help) {
-      help.textContent = form.startImagePath
-        ? 'Có ảnh frame đầu → Omni Flash đang ẩn (chưa hỗ trợ I2V)'
-        : 'Omni Flash hỗ trợ 4/6/8/10s; các model Veo 3.1 cố định 8s';
+      help.textContent = 'Omni Flash hỗ trợ 4/6/8/10s; các model Veo 3.1 cố định 8s';
     }
   }
   refreshModelDropdown();
@@ -318,13 +316,16 @@ export function renderLongVideo(root) {
     toast('Đã xóa danh sách (file vẫn còn trên ổ đĩa)', 'info');
   }
 
-  // Bulk-remove watermark from selected scene videos (built-in Veo mask).
+  // Bulk-remove watermark from selected scene videos. `kind` picks the mask
+  // ('veo_mini' | 'gemini') — the toolbar asks the user before calling.
   // Backend streams WS events → tasks_store sets per-item wm_status; gallery
   // chips update via the normal notify path.
-  async function runBatchWatermark(paths) {
+  async function runBatchWatermark(paths, kind = 'veo_mini') {
     const handle = toast(`Đang xóa watermark cho ${paths.length} video… (mỗi video ~5-30s)`, 'info', 0);
     try {
-      const r = await api.media.videoWatermarkBatch(paths, { method: 'auto', device: 'auto' });
+      const r = await api.media.videoWatermarkBatch(paths, {
+        method: 'auto', device: 'auto', watermarkKind: kind,
+      });
       const okN = (r.completed || []).length;
       const errN = (r.errors || []).length;
       if (errN === 0) {
@@ -381,7 +382,7 @@ export function renderLongVideo(root) {
           tasksStore.resetErrorItems(_taskId);
           await api.tasks.retry(_taskId);
         },
-        onRemoveWatermark: async (paths) => { await runBatchWatermark(paths); },
+        onRemoveWatermark: async (paths, kind) => { await runBatchWatermark(paths, kind); },
         onUpscaleVideo: async (paths) => {
           const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
           const videoPaths = paths.filter(p => videoExts.some(e => p.toLowerCase().endsWith(e)));

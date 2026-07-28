@@ -6,22 +6,23 @@ REM   Usage:
 REM     1. Đảm bảo đã `pip install -r requirements.txt`
 REM     2. Double-click hoặc chạy `build.bat`
 REM     3. Output ở: dist\RedOne Creative\
-REM     4. Zip toàn bộ folder → upload làm GitHub release asset
+REM     4. File zip release ĐÃ được tạo sẵn (data đã sạch) ở dist\ —
+REM        chỉ việc upload lên GitHub release.
 REM ============================================================
 
 cd /d "%~dp0"
 
 echo.
-echo [1/3] Cài/upgrade PyInstaller...
+echo [1/5] Cài/upgrade PyInstaller...
 python -m pip install --upgrade pyinstaller
 
 echo.
-echo [2/3] Dọn dẹp build cũ...
+echo [2/5] Dọn dẹp build cũ...
 if exist build rmdir /s /q build
 if exist "dist\RedOne Creative" rmdir /s /q "dist\RedOne Creative"
 
 echo.
-echo [3/4] Đóng gói EXE (mất 2-5 phút)...
+echo [3/5] Đóng gói EXE (mất 2-5 phút)...
 pyinstaller RedOne.spec --noconfirm --clean
 
 if errorlevel 1 (
@@ -32,60 +33,53 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/4] Dọn dẹp dữ liệu cá nhân khỏi dist...
-REM ═══════════════════════════════════════════════════════════════
-REM QUAN TRỌNG: Xoá data cá nhân của DEV khỏi dist trước khi zip.
-REM Nếu không, auth_session.json (chứa email dev) sẽ bị đóng gói
-REM theo → user update lên sẽ tự đăng nhập bằng email dev!
-REM ═══════════════════════════════════════════════════════════════
-if exist "dist\RedOne Creative\data" (
-    echo   Xoa auth_session.json...
-    del /F /Q "dist\RedOne Creative\data\auth_session.json" 2>nul
-    echo   Xoa hub_session.json...
-    del /F /Q "dist\RedOne Creative\data\hub_session.json" 2>nul
-    echo   Xoa navtools.db...
-    del /F /Q "dist\RedOne Creative\data\navtools.db" 2>nul
-    echo   Xoa setup-state.json...
-    del /F /Q "dist\RedOne Creative\data\setup-state.json" 2>nul
-    echo   Xoa log files...
-    del /F /Q "dist\RedOne Creative\data\app.log" 2>nul
-    del /F /Q "dist\RedOne Creative\data\update.log" 2>nul
-    echo   Xoa cookies...
-    if exist "dist\RedOne Creative\data\cookies" rmdir /S /Q "dist\RedOne Creative\data\cookies"
-    echo   Xoa browser_profiles...
-    if exist "dist\RedOne Creative\data\browser_profiles" rmdir /S /Q "dist\RedOne Creative\data\browser_profiles"
-    echo   Xoa updates cache...
-    if exist "dist\RedOne Creative\data\updates" rmdir /S /Q "dist\RedOne Creative\data\updates"
-    echo   Da don dep xong data/ trong dist.
+echo [4/5] Bundle Chrome extension...
+REM Copy extension folder into the EXE bundle so user gets ext alongside
+REM the tool — bản portable (zip) Load-unpacked từ folder này.
+if exist "dist\RedOne Creative" (
+    xcopy /E /I /Y extension "dist\RedOne Creative\extension" >nul
+    echo   Da copy extension/ -^> dist\RedOne Creative\extension\
 )
 
 echo.
-echo [5/5] Bundle Chrome extension...
-REM Copy extension folder into the EXE bundle so user gets ext alongside
-REM the tool — no need to download separately. User loads via
-REM chrome://extensions Load unpacked.
-if exist "dist\RedOne Creative" (
-    xcopy /E /I /Y extension "dist\RedOne Creative\extension" >nul
-    echo Đã copy extension/ → dist\RedOne Creative\extension\
+echo [5/5] Xoa SACH data ca nhan cua DEV roi dong zip release...
+REM ═══════════════════════════════════════════════════════════════
+REM QUAN TRONG (chong ro ri tai khoan): data/ nam CANH exe. Neu dev
+REM tung chay app tu dist, data/ chua auth_session.json + navtools.db
+REM mang account dev -> user cai ve TU dang nhap bang account dev.
+REM   - Xoa NGUYEN thu muc data/ + outputs/ (KHONG xoa theo ten -> se
+REM     sot navtools.db-wal/-shm, file session moi...).
+REM   - Tao zip NGAY sau khi xoa: sau nay co chay thu tu dist (tao lai
+REM     data/) cung KHONG lot vao zip da dong.
+REM ═══════════════════════════════════════════════════════════════
+if exist "dist\RedOne Creative\data" rmdir /S /Q "dist\RedOne Creative\data"
+if exist "dist\RedOne Creative\outputs" rmdir /S /Q "dist\RedOne Creative\outputs"
+
+REM Lay version tu backend\config.py (dong: APP_VERSION = "x.y.z").
+set "APPVER=unknown"
+for /f tokens^=2^ delims^=^" %%v in ('findstr /b /c:"APP_VERSION" "backend\config.py"') do set "APPVER=%%v"
+
+set "RELZIP=dist\RedOne-Creative-v%APPVER%-win64.zip"
+if exist "%RELZIP%" del /F /Q "%RELZIP%"
+echo   Tao %RELZIP% ...
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\RedOne Creative\*' -DestinationPath '%RELZIP%' -Force"
+if errorlevel 1 (
+    echo   === TAO ZIP THAT BAI ===
+    pause
+    exit /b 1
 )
 
-REM Also produce a standalone ext zip in case bạn muốn distribute riêng
-REM (host trên GitHub Releases / Drive / Mega).
-if exist "dist\RedOne-AuthHelper-v1.0.0.zip" del "dist\RedOne-AuthHelper-v1.0.0.zip"
-powershell -NoProfile -Command "Compress-Archive -Path 'extension' -DestinationPath 'dist\RedOne-AuthHelper-v1.0.0.zip' -Force"
-echo Đã tạo dist\RedOne-AuthHelper-v1.0.0.zip (standalone)
+REM Ext standalone zip (optional — neu muon distribute rieng).
+if exist "dist\RedOne-AuthHelper.zip" del /F /Q "dist\RedOne-AuthHelper.zip"
+powershell -NoProfile -Command "Compress-Archive -Path 'extension' -DestinationPath 'dist\RedOne-AuthHelper.zip' -Force"
 
 echo.
 echo ============================================================
 echo BUILD XONG!
-echo Output: %CD%\dist\RedOne Creative\
-echo Chạy thử: dist\RedOne Creative\RedOne Creative.exe
+echo Release zip (data da sach): %CD%\%RELZIP%
+echo   -^> Upload file nay len GitHub release tag v%APPVER%.
 echo.
-echo Để release lên GitHub:
-echo   1. Zip toàn bộ folder dist\RedOne Creative\ (extension/ đã bundle bên trong)
-echo   2. Đặt tên zip: RedOne-Creative-v1.1.0-win64.zip
-echo   3. Tạo release tag v1.1.0, upload cả 2 file:
-echo      - RedOne-Creative-v1.1.0-win64.zip (tool + ext)
-echo      - RedOne-AuthHelper-v1.0.0.zip     (ext standalone, optional)
+echo Gio chay thu thoai mai (KHONG anh huong zip da dong):
+echo   dist\RedOne Creative\RedOne Creative.exe
 echo ============================================================
 pause

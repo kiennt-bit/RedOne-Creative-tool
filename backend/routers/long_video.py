@@ -108,14 +108,11 @@ async def _run_long_video(task_id: int):
                         ref_media = await client.upload_image(start_image)
                     mode = "i2v" if ref_media else "t2v"
                     duration_s = int(task.get("duration") or 8)
-                    eff_quality = quality
-                    if quality == "omni_flash" and ref_media:
-                        log.warning(
-                            "Omni Flash + start image not supported; "
-                            "falling back to lite_lp for the first scene"
-                        )
-                        eff_quality = "lite_lp"
-                    first_key = video_model_for(eff_quality, mode, duration_s)
+                    # Omni Flash gained a native I2V model on 2026-07-20
+                    # (abra_i2v_<N>s) — the old fall-back to lite_lp is gone.
+                    # Scenes 2+ still go through extend_video, which has no
+                    # Omni variant; see extend_key below.
+                    first_key = video_model_for(quality, mode, duration_s)
                     wf = await client.generate_video(
                         prompt=item["prompt"],
                         model_key=first_key,

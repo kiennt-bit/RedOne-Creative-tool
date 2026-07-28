@@ -298,14 +298,31 @@ async function _findLabsTab() {
 }
 
 /**
- * Verify the user is actually logged into Google in this Chrome instance.
- * We trust the presence of certain auth cookies.
+ * Verify this Chrome profile is actually signed into Google Labs FLOW —
+ * NOT merely logged into some Google service. We require the labs.google
+ * NextAuth session cookie (the SAME "final proof of login" the backend
+ * checks in routers/accounts.py: `__Secure-next-auth.session-token`).
+ *
+ * Why this must be Flow-specific, not generic google.com cookies:
+ * the extension can be force-installed in MULTIPLE Chrome profiles, all
+ * polling the SAME localhost backend. Task dispatch is "first `ready`
+ * poller wins" with no profile/account targeting. If a profile that has
+ * generic google.com auth cookies but is NOT signed into Flow reported
+ * "ready", it would claim Flow tasks and run them under a tab with no
+ * valid Flow session — the download would 401 "No session found" and a
+ * login-check would raise SessionDead (false "chưa đăng nhập" banner).
+ * Requiring the Flow session cookie makes such a profile report
+ * "no_login" so the backend never hands it a Flow task.
+ *
+ * NextAuth may split a large session token into chunked cookies
+ * (`…session-token.0`, `.1`, …) — startsWith() catches those too.
  */
 async function _isSignedIn() {
     try {
-        const cookies = await chrome.cookies.getAll({ domain: ".google.com" });
+        const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
         return cookies.some(c =>
-            c.name === "SID" || c.name === "__Secure-3PSID" || c.name === "SAPISID"
+            c.name.startsWith("__Secure-next-auth.session-token") ||
+            c.name.startsWith("next-auth.session-token")
         );
     } catch (_) {
         return false;
@@ -810,13 +827,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // open the Google login page — content_accounts.js fills it in.
         (async () => {
             try {
-                let r = null;
-                for (const host of BRIDGE_HOSTS) {
-                    try {
-                        r = await _bridgeGet(host, "/sync/shared-google");
-                        if (r && r.ok) break;
-                    } catch (_) {}
-                }
+                const r = await _bridgeGet("/sync/shared-google");
                 if (!r || !r.ok || !r.email || !r.password) {
                     sendResponse({ ok: false, error: (r && r.reason) || "Chưa có tài khoản chung" });
                     return;

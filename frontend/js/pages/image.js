@@ -152,6 +152,7 @@ export function renderImage(root) {
         el('select', { class: 'select', id: 'img-model' },
           el('option', { value: 'nano_banana_pro' }, 'Nano Banana Pro (mới nhất)'),
           el('option', { value: 'nano_banana_2' }, 'Nano Banana 2'),
+          el('option', { value: 'nano_banana_lite' }, 'Nano Banana Lite (nhanh)'),
         ),
       ),
       el('div', { class: 'form-row' },

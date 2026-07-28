@@ -126,7 +126,9 @@ export const api = {
     videoWatermark: (form) => request('POST', '/api/media/video-watermark-remove', { form }),
     videoWatermarkBatch: (paths, opts = {}) => request('POST', '/api/media/video-watermark-remove-batch',
       { body: { paths, method: opts.method || 'auto', device: opts.device || 'auto',
-                gpu_ratio: opts.gpuRatio || 70 } }),
+                gpu_ratio: opts.gpuRatio || 70,
+                // 'veo_mini' | 'gemini' — one mask for the whole batch.
+                watermark_kind: opts.watermarkKind || 'veo_mini' } }),
     lamaStatus: (force = false) => request('GET', '/api/media/lama-status', { params: { force } }),
     subtitle: (form) => request('POST', '/api/media/subtitle', { form }),
     subtitleStatus: (jobId) => request('GET', `/api/media/subtitle-status/${jobId}`),

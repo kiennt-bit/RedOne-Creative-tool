@@ -57,9 +57,48 @@ def get_lama_script() -> Path:
     return _bundled_root() / "backend" / "services" / "lama_inpaint.py"
 
 
+# Supported watermark kinds → bundled RGBA mask (alpha = region to repaint).
+# Masks are authored at 1280×720; the removal pipeline scales them to the
+# video's real resolution and derives the delogo box from the alpha bbox, so
+# any resolution works.
+#   veo_mini : small "Veo" text, bottom-right   — alpha bbox (1240,692) 26×15
+#   gemini   : Gemini sparkle (SynthID)         — alpha bbox (1133,573) 54×54
+WATERMARK_KINDS = ("veo_mini", "gemini")
+
+WATERMARK_LABELS = {
+    "veo_mini": "Veo 3 Mini",
+    "gemini": "Gemini",
+}
+
+
+def get_mask_for(kind: str) -> Path:
+    """Bundled mask PNG for a watermark kind. Unknown kind → veo_mini."""
+    res = _bundled_root() / "backend" / "resources"
+    name = {
+        "veo_mini": "wm_mask_veo_mini.png",
+        "gemini": "wm_mask_gemini.png",
+    }.get(kind, "wm_mask_veo_mini.png")
+    return res / name
+
+
 def get_default_veo_mask() -> Path:
-    """Bundled Veo3 watermark mask (1920×1080, "Veo" text bottom-right)."""
-    return _bundled_root() / "backend" / "resources" / "veo3watermark.png"
+    """Default mask when the caller doesn't pick a kind.
+
+    Kept for backwards compatibility with existing callers; now points at the
+    Veo 3 Mini mask (the watermark Google currently applies).
+    """
+    return get_mask_for("veo_mini")
+
+
+def normalize_kind(kind: str) -> str:
+    """Coerce a caller-supplied kind to a supported one, defaulting to veo_mini.
+
+    There is deliberately no auto-detection: template-matching scored the
+    Gemini logo at ~0.50 on videos with and without it, so "auto" could not
+    tell them apart and would silently repaint a clean corner. The user picks
+    the logo explicitly instead.
+    """
+    return kind if kind in WATERMARK_KINDS else "veo_mini"
 
 
 # ── External Python detection ─────────────────────────────────────────

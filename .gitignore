@@ -83,3 +83,8 @@ docs/shakker_capture/
 # extension parallel-dispatch change). Per-machine safety nets, not source.
 _backup_pre_*/
 addons/
+
+# Photoshop Firefly CEP panel — experimental, distributed separately (not part
+# of the RedOne tool release). Kept local only.
+photoshop-plugin-firefly/
+install_firefly_plugin.bat
