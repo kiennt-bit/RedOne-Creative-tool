@@ -188,6 +188,14 @@ class BrowserBridge:
         if status == "ready":
             self._ext_last_ready_poll = time.time()
 
+    def get_active_project_id(self) -> Optional[str]:
+        """Extract project ID from the last reported tab URL if available."""
+        if not self._ext_last_url:
+            return None
+        import re
+        m = re.search(r"/project/([a-zA-Z0-9_-]{36})", self._ext_last_url)
+        return m.group(1) if m else None
+
     def bump_liveness(self) -> None:
         """Refresh the 'extension is alive' timestamp WITHOUT touching
         tab status. Called by /sync/status — that endpoint pings while
@@ -454,6 +462,10 @@ class BrowserBridge:
             "source_path": source_path,
             "timeout_ms": timeout_ms,
         })
+
+    async def init_flow_project(self, timeout_ms: int = 25000) -> dict:
+        """Ask extension to verify or navigate flow.google.com tab to a project."""
+        return await self._enqueue_and_wait("init_flow_project", {}, timeout_ms=timeout_ms)
 
     async def proxy_fetch_binary(
         self,

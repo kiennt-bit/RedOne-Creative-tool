@@ -712,10 +712,13 @@ async function _doBatchExecuteTask(task) {
 
                     console.log(`[RedOne BOQ] Parsed ${chunks.length} chunks. rpcResult:`, rpcResult ? "OK" : "NULL", "rpcError:", rpcError);
 
+                    const projectMatch = (window.location.pathname || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
+                    const activeProjectId = projectMatch ? projectMatch[1] : null;
+
                     if (rpcError) {
-                        return { status: 200, error: "RPC error: " + JSON.stringify(rpcError), rpc_result: null, chunks };
+                        return { status: 200, error: "RPC error: " + JSON.stringify(rpcError), rpc_result: null, chunks, active_project_id: activeProjectId };
                     }
-                    return { status: 200, rpc_result: rpcResult, chunks };
+                    return { status: 200, rpc_result: rpcResult, chunks, active_project_id: activeProjectId };
                 } catch (err) {
                     return { status: 0, error: "batchexecute: " + (err.message || String(err)) };
                 }
@@ -726,6 +729,51 @@ async function _doBatchExecuteTask(task) {
     } catch (e) {
         return { status: 0, error: "executeScript batch_execute: " + String(e) };
     }
+}
+
+
+// ── Task: init_flow_project (ensure a project is active in Flow) ──────
+async function _doInitFlowProjectTask(task) {
+    const tab = await _findLabsTab();
+    if (!tab) return { error: "no flow.google.com tab open" };
+
+    const currentUrl = tab.url || tab.pendingUrl || "";
+    const match = currentUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
+    if (match && match[1]) {
+        return { project_id: match[1], status: "already_open" };
+    }
+
+    let newProjectId;
+    try {
+        newProjectId = crypto.randomUUID();
+    } catch (_) {
+        newProjectId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    const targetUrl = `https://flow.google.com/project/${newProjectId}`;
+    console.log(`[RedOne] Initializing Flow project in tab ${tab.id}: ${targetUrl}`);
+    await chrome.tabs.update(tab.id, { url: targetUrl });
+
+    await new Promise((resolve) => {
+        const listener = (id, info) => {
+            if (id === tab.id && info.status === "complete") {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+            }
+        };
+        chrome.tabs.onUpdated.addListener(listener);
+        setTimeout(() => {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+        }, 15000);
+    });
+
+    // Wait for Angular SPA state to hydrate
+    await new Promise(r => setTimeout(r, 2500));
+    return { project_id: newProjectId, status: "created" };
 }
 
 
@@ -814,6 +862,8 @@ async function _runTask(task) {
             result = await _doGetCookiesTask(task);
         } else if (task.kind === "batch_execute") {
             result = await _doBatchExecuteTask(task);
+        } else if (task.kind === "init_flow_project") {
+            result = await _doInitFlowProjectTask(task);
         } else {
             result = { error: `unknown task kind: ${task.kind}` };
         }

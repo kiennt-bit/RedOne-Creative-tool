@@ -92,6 +92,9 @@ class BridgeFlowClient(FlowClient):
     Public API matches FlowClient exactly — drop-in replacement.
     """
 
+    # Persistent verified project_id per account
+    _ACTIVE_PROJECT_IDS: dict[str, str] = {}
+
     def __init__(self, page=None, cookie_path: str = "", account_email: str = ""):
         # We pass page=None to the parent; everything that touches
         # self._page is overridden in this subclass.
@@ -104,6 +107,13 @@ class BridgeFlowClient(FlowClient):
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         )
         self.TRPC = "https://flow.google.com/fx/api/trpc"
+        if account_email in BridgeFlowClient._ACTIVE_PROJECT_IDS:
+            self.project_id = BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email]
+        else:
+            active_p = bridge.get_active_project_id()
+            if active_p:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email] = active_p
+                self.project_id = active_p
         # NOTE: no per-account proxy here — in bridge mode every Google call
         # (including download_video/download_image) executes inside the user's
         # real Chrome tab, so the egress IP is Chrome's, not this process's.
@@ -458,6 +468,74 @@ class BridgeFlowClient(FlowClient):
             log.error(f"(bridge) check_credits error: {e}")
             return {"error": str(e)}
 
+    # ── Project resolution (Auto-discovery & initialization) ─────────
+
+    async def fetch_user_projects(self) -> list[str]:
+        """Fetch existing project IDs for this account using BOQ RPC UpteDb."""
+        try:
+            r = await bridge.batch_execute(
+                rpc_id="UpteDb",
+                inner_payload=["projects/*", 21, None, None, None, None, [1]],
+                source_path="/",
+                timeout_ms=15000,
+            )
+            rpc_result = r.get("rpc_result")
+            if isinstance(rpc_result, list) and len(rpc_result) > 0 and isinstance(rpc_result[0], list):
+                projects = []
+                for item in rpc_result[0]:
+                    if isinstance(item, list) and len(item) > 0 and isinstance(item[0], str):
+                        projects.append(item[0])
+                log.info(f"[{self._account_email}] Discovered {len(projects)} existing Google Flow project(s)")
+                return projects
+        except Exception as e:
+            log.warning(f"[{self._account_email}] fetch_user_projects failed: {e}")
+        return []
+
+    async def ensure_project_id(self, force_refresh: bool = False) -> str:
+        """Ensure self.project_id points to a VALID, existing project in Google Flow.
+
+        Resolution order:
+        1. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh.
+        2. Check if the active tab in Chrome is currently open to /project/<uuid>.
+        3. Auto-discover the user's latest project via UpteDb RPC.
+        4. If 0 projects found, ask extension to navigate/provision a project in Flow tab.
+        """
+        if not force_refresh and self._account_email in BridgeFlowClient._ACTIVE_PROJECT_IDS:
+            self.project_id = BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email]
+            return self.project_id
+
+        # 1. Active tab check
+        active_tab_proj = bridge.get_active_project_id()
+        if active_tab_proj:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_tab_proj
+            self.project_id = active_tab_proj
+            log.info(f"[{self._account_email}] Using active project from Chrome tab: {active_tab_proj}")
+            return active_tab_proj
+
+        # 2. RPC UpteDb check
+        projects = await self.fetch_user_projects()
+        if projects:
+            latest_proj = projects[0]
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = latest_proj
+            self.project_id = latest_proj
+            log.info(f"[{self._account_email}] Auto-selected latest project from Google Flow: {latest_proj}")
+            return latest_proj
+
+        # 3. Provision new project via browser extension navigation
+        log.info(f"[{self._account_email}] No projects found. Requesting browser to initialize new project...")
+        try:
+            res = await bridge.init_flow_project(timeout_ms=25000)
+            new_proj = res.get("project_id") if isinstance(res, dict) else None
+            if new_proj:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = new_proj
+                self.project_id = new_proj
+                log.info(f"[{self._account_email}] Successfully initialized Flow project: {new_proj}")
+                return new_proj
+        except Exception as e:
+            log.warning(f"[{self._account_email}] bridge.init_flow_project failed: {e}")
+
+        return self.project_id
+
     # ── Upload Image (BOQ batchexecute `maseQ`) ─────────────────────
 
     async def _upload_image_raw(self, path: "Path") -> Optional[str]:
@@ -465,6 +543,7 @@ class BridgeFlowClient(FlowClient):
 
         Returns the media_id (UUID string) from the response, or raises ValueError.
         """
+        await self.ensure_project_id()
         import uuid as _uuid
         raw, mime = await asyncio.to_thread(_shrink_image_for_upload, path)
         b64 = base64.b64encode(raw).decode("utf-8")
@@ -499,6 +578,11 @@ class BridgeFlowClient(FlowClient):
             source_path=f"/project/{self.project_id}",
             timeout_ms=60000,
         )
+
+        active_p = r.get("active_project_id")
+        if active_p and active_p != self.project_id:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+            self.project_id = active_p
 
         rpc_result = r.get("rpc_result")
         if not rpc_result or not isinstance(rpc_result, list) or not rpc_result[0]:
@@ -547,6 +631,8 @@ class BridgeFlowClient(FlowClient):
 
         if seed is None:
             seed = _rand.randint(100000000, 2147483647)
+
+        await self.ensure_project_id()
 
         model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "GEM_PIX_2")
         ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
@@ -639,6 +725,11 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
+            active_p = r.get("active_project_id")
+            if active_p and active_p != self.project_id:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+                self.project_id = active_p
+
             if err and status == 0:
                 log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} error: {err}")
                 if attempt < 4:
@@ -654,6 +745,11 @@ class BridgeFlowClient(FlowClient):
 
             if err:
                 log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} RPC error: {err}")
+                if "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err):
+                    log.warning(f"[{self._account_email}] UNUSUAL_ACTIVITY detected for project {self.project_id}. Re-resolving project...")
+                    BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+                    await self.ensure_project_id(force_refresh=True)
+                    source_path = f"/project/{self.project_id}"
                 if attempt < 4:
                     continue
                 raise ValueError(f"Google RPC error: {err}")
@@ -749,6 +845,7 @@ class BridgeFlowClient(FlowClient):
                 - height: int
         """
         await self.ensure_token()
+        await self.ensure_project_id()
 
         quality_code = 1 if resolution.lower() == "2k" else 2
         log.info(
@@ -797,6 +894,11 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
+            active_p = r.get("active_project_id")
+            if active_p and active_p != self.project_id:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+                self.project_id = active_p
+
             if err and status == 0:
                 log.warning(f"(BOQ) SPrCad attempt {attempt + 1} error: {err}")
                 if attempt < 2:
@@ -812,6 +914,11 @@ class BridgeFlowClient(FlowClient):
 
             if err:
                 log.warning(f"(BOQ) SPrCad attempt {attempt + 1} RPC error: {err}")
+                if "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err):
+                    log.warning(f"[{self._account_email}] UNUSUAL_ACTIVITY detected for project {self.project_id}. Re-resolving project...")
+                    BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+                    await self.ensure_project_id(force_refresh=True)
+                    source_path = f"/project/{self.project_id}"
                 if attempt < 2:
                     continue
                 raise ValueError(f"Google RPC error: {err}")
@@ -924,6 +1031,7 @@ class BridgeFlowClient(FlowClient):
         Returns the generation/media ID.
         """
         import uuid as _uuid
+        await self.ensure_project_id()
 
         # Map aspect ratio: 2 = 16:9 (LANDSCAPE), 1 = 9:16 (PORTRAIT)
         ar_code = 1 if ("9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper()) else 2
@@ -984,6 +1092,11 @@ class BridgeFlowClient(FlowClient):
         status = r.get("status", 0)
         err = r.get("error")
         rpc_result = r.get("rpc_result")
+
+        active_p = r.get("active_project_id")
+        if active_p and active_p != self.project_id:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+            self.project_id = active_p
 
         if err or status != 200 or not rpc_result:
             log.error(f"(BOQ) eb1hJf failed: status={status}, err={err}")
