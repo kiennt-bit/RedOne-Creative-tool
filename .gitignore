@@ -88,3 +88,11 @@ addons/
 # of the RedOne tool release). Kept local only.
 photoshop-plugin-firefly/
 install_firefly_plugin.bat
+
+# Local 3rd-party binaries dropped in by hand (not our source, never shipped).
+backend/bin/
+
+# Local test outputs and docs
+docs/*.jpeg
+docs/khieu_vu_son_dau_28.png
+docs/kien_truc_role_tracking_video.md

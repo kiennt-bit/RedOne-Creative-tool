@@ -194,10 +194,11 @@ class FlowClient:
     async def _do_get_token(self):
         log.info(f"[{self._account_email}] Getting session token...")
         
-        # Navigate to labs.google if not already there
-        if "labs.google/fx/" not in (self._page.url or ""):
+        # Navigate to flow.google.com or labs.google if not already there
+        current_url = self._page.url or ""
+        if "labs.google/fx/" not in current_url and "flow.google.com" not in current_url:
             try:
-                await self._page.goto("https://labs.google/fx/tools/video-fx", wait_until="domcontentloaded", timeout=30000)
+                await self._page.goto("https://flow.google.com", wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 if "interrupted by another navigation" in str(e):
                     pass
@@ -233,11 +234,19 @@ class FlowClient:
         except Exception as e:
             log.warning(f"[{self._account_email}] Sign-in button check skipped: {e}")
         
-        # Fetch session token via browser
+        # Fetch session token via browser — try labs.google session endpoint
+        # first (NextAuth), then try flow.google.com internal endpoint
         result = await self._page.evaluate("""
             async () => {
                 try {
-                    const r = await fetch("/fx/api/auth/session");
+                    // Try labs.google session endpoint first (cross-origin with cookies)
+                    let r = await fetch("https://labs.google/fx/api/auth/session", {credentials: "include"});
+                    if (r.ok) {
+                        const data = await r.json();
+                        if (data && data.access_token) return data;
+                    }
+                    // Fallback: try same-origin on current domain
+                    r = await fetch("/fx/api/auth/session");
                     if (r.ok) return await r.json();
                     return {error: r.status};
                 } catch(e) { return {error: e.message}; }
@@ -269,7 +278,7 @@ class FlowClient:
             except Exception:
                 pass
     
-    async def renew_token(self):
+    async def renew_token(self, bad_token: Optional[str] = None):
         """Force refresh of session token AND reset reCAPTCHA risk score.
 
         Uses `page.reload()` (full F5) rather than `goto()` — reload wipes the
@@ -285,7 +294,7 @@ class FlowClient:
             log.warning(f"[{self._account_email}] reload failed during token renewal: {e}")
             # Fallback: try goto if reload errored
             try:
-                await self._page.goto("https://labs.google/fx/tools/video-fx",
+                await self._page.goto("https://flow.google.com",
                                        wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(2.0)
             except Exception as e2:
@@ -386,7 +395,7 @@ class FlowClient:
                     if "recaptcha" in err_text.lower() or "unusual_activity" in err_text.lower():
                         return {"error": f"HTTP {status}", "text": err_text}
                     try:
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     except SessionDeadError:
                         raise
                     token = self._token or ""
@@ -452,7 +461,7 @@ class FlowClient:
                     
                     if status in (401, 403) and attempt < MAX_RETRY_COUNT:
                         log.warning(f"Sandbox {endpoint}: HTTP {status}, renewing token...")
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                         headers["Authorization"] = f"Bearer {self._token}"
                         continue
                         
@@ -582,6 +591,10 @@ class FlowClient:
     IMAGE_MODEL_MAP = {
         "nano_banana_pro": "GEM_PIX_2",
         "nano_banana_2": "NARWHAL",
+        # Confirmed via labs.google HAR 2026-07-20. Unlike Imagen, HARBOR_SEAL
+        # keeps its own model name when reference images are attached (the
+        # capture included one) — no R2I swap needed.
+        "nano_banana_lite": "HARBOR_SEAL",
         "imagen_4": "IMAGEN_3_5",
     }
     
@@ -736,7 +749,7 @@ class FlowClient:
                         f"(attempt {attempt + 1}/5) — reloading page to reset score..."
                     )
                     try:
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     except Exception as e:
                         log.warning(f"renew_token during image-gen retry failed: {e}")
                     continue
@@ -966,7 +979,7 @@ class FlowClient:
                         f"(attempt {attempt + 1}/5) — reloading page to reset score..."
                     )
                     try:
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     except Exception as e:
                         log.warning(f"renew_token during genfill retry failed: {e}")
                     continue
@@ -1201,33 +1214,54 @@ class FlowClient:
                     "useV2ModelConfig": True,
                 }
             elif reference_image:
-                request_item = {
-                    "textInput": {
-                        "structuredPrompt": {
-                            "parts": [{"text": prompt}]
-                        }
-                    },
-                    "videoModelKey": model_key,
-                    "startImage": {
-                        "mediaId": reference_image
-                    },
+                # Image-to-Video. Payload mirrors the T2V shape (per labs.google
+                # HAR capture 2026-07-20) plus startImage. CONFIRMED identical
+                # for both Veo 3.1 (veo_3_1_i2v_lite_low_priority) and Omni
+                # Flash (abra_i2v_4s) — the only difference is videoModelKey.
+                import random as _rng_i2v
+                ar_i2v = ("VIDEO_ASPECT_RATIO_PORTRAIT"
+                          if ("9:16" in str(aspect_ratio)
+                              or "PORTRAIT" in str(aspect_ratio).upper())
+                          else "VIDEO_ASPECT_RATIO_LANDSCAPE")
+
+                client_context = {
+                    "projectId": self.project_id,
+                    "tool": "PINHOLE",
+                    # HAR shows userPaygateTier present even for the
+                    # _low_priority I2V model (unlike free T2V, which 500s when
+                    # it's sent) — replicate exactly so the validator accepts it.
+                    "userPaygateTier": "PAYGATE_TIER_TWO",
+                    "sessionId": f";{int(time.time() * 1000)}",
                 }
-                # NOTE: duration field name unknown — Google rejected
-                # `videoLengthSeconds`. Disabled until we capture the real
-                # payload from labs.google DevTools. Default model duration
-                # (usually 8s) applies.
+                if recaptcha_token:
+                    client_context["recaptchaContext"] = {
+                        "token": recaptcha_token,
+                        "applicationType": "RECAPTCHA_APPLICATION_TYPE_WEB",
+                    }
+
+                # Duration is encoded in model_key itself (Omni Flash:
+                # abra_i2v_<N>s). Veo 3.1 I2V keys carry no duration suffix and
+                # always render 8s — see VIDEO_DURATIONS_BY_MODEL in config.
                 _ = duration  # silence unused-var, keep API signature stable
 
+                # NOTE: Labs also sends startImage.cropCoordinates, but those
+                # come from its own crop UI. We never crop, so it's omitted.
                 payload = {
-                    "clientContext": {
-                        "tool": "VIDEO_FX",
-                        "sessionId": os.urandom(16).hex()
+                    "mediaGenerationContext": {
+                        "batchId": str(uuid.uuid4()),
+                        "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
                     },
-                    "requests": [request_item]
+                    "clientContext": client_context,
+                    "requests": [{
+                        "aspectRatio": ar_i2v,
+                        "textInput": {"structuredPrompt": {"parts": [{"text": prompt}]}},
+                        "videoModelKey": model_key,
+                        "seed": _rng_i2v.randint(10000, 99999),
+                        "metadata": {},
+                        "startImage": {"mediaId": reference_image},
+                    }],
+                    "useV2ModelConfig": True,
                 }
-                
-                if recaptcha_token:
-                    payload["clientContext"]["recaptchaToken"] = recaptcha_token
             else:
                 # Text-to-Video: completely different payload & endpoint
                 import random as _rng
@@ -1309,7 +1343,7 @@ class FlowClient:
                 if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_lc:
                     if "unusual_activity" in err_lc or "recaptcha" in err_lc:
                         log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     else:
                         log.warning(f"[{self._account_email}] reCAPTCHA rejected or 403 (attempt {attempt+1}), retrying with new token...")
                     continue
@@ -1387,7 +1421,7 @@ class FlowClient:
                 if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_str.lower():
                     if "unusual_activity" in err_str.lower() or "recaptcha" in err_str.lower():
                         log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     continue
                 raise ValueError(err_str)
             break
@@ -1447,7 +1481,7 @@ class FlowClient:
                 if "403" in err_str or "reCAPTCHA" in err_str or "PERMISSION_DENIED" in err_str or "execution context" in err_str.lower():
                     if "unusual_activity" in err_str.lower() or "recaptcha" in err_str.lower():
                         log.info(f"[{self._account_email}] Renewing session token due to reCAPTCHA error...")
-                        await self.renew_token()
+                        await self.renew_token(self._token)
                     continue
                 raise ValueError(err_str)
             break
@@ -2157,8 +2191,28 @@ class FlowClient:
             log.error("download_to: no media_id")
             return False
 
-        # Method 1: browser fetch (preferred — handles auth + redirects)
-        body = await self._fetch_mp4_via_browser(media_id)
+        # Method 1: browser fetch (preferred — handles auth + redirects).
+        # Retry a few times: the fetch runs inside the user's Chrome tab, so a
+        # concurrent CPU/RAM hog (watermark removal = ffmpeg + LaMa/torch) can
+        # starve that tab or get it discarded, making a *claimed* proxy_fetch
+        # blow its 120s budget. That timeout is transient — once the spike
+        # passes a retry usually succeeds, so don't lose the whole download on
+        # one miss. Only genuine failures hit the 120s wait; a healthy fetch
+        # returns in seconds, so the happy path adds no latency.
+        _browser_fetch_backoffs = (5, 15)   # sleeps BETWEEN the 3 attempts
+        body = None
+        for _attempt in range(3):
+            body = await self._fetch_mp4_via_browser(media_id)
+            if body:
+                break
+            if _attempt < len(_browser_fetch_backoffs):
+                wait = _browser_fetch_backoffs[_attempt]
+                log.warning(
+                    f"download_to: browser fetch trống "
+                    f"(attempt {_attempt + 1}/3) media_id={media_id} — "
+                    f"thử lại sau {wait}s (có thể do xóa WM/gen đang nghẽn máy)"
+                )
+                await asyncio.sleep(wait)
         if body:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(body)

@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, makeLazyVideoObserver, ensureFlowAccountOrWarn, openMediaViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
 
 // Form state survives navigation
 const form = {
@@ -14,6 +14,7 @@ const form = {
   resolution: '720p',
   duration: 8,
   concurrent: 1,
+  videosPerPrompt: 1, // 1..4 — số video tạo cho mỗi prompt (biến thể khác seed)
   loop: false,        // I2V "Loop video": dùng cùng 1 ảnh làm khung đầu + khung cuối
   taskName: '',
   // Per-prompt reference images (I2V): same index as prompts
@@ -25,6 +26,13 @@ const form = {
 // Restored on re-mount so the view doesn't auto-jump to the newest task
 // (e.g. one being upscaled/regenerated). Only explicit actions change it.
 let _lastViewedTaskId = null;
+
+// ⭐ favorite variant per prompt-group, for tasks with videosPerPrompt > 1.
+// Keyed `${taskId}:${groupIdx}` → the chosen item's output_path. Purely UI:
+// "Chọn tất cả" ticks only these (1 per prompt) so bulk actions (Xóa WM / Tải /
+// Upscale) run on the one video the user liked, not every duplicate variant.
+// Not persisted — lives for this session; a full reload falls back to defaults.
+const _favByGroup = new Map();
 
 // Duration options per model. Confirmed via labs.google network capture:
 //   Omni Flash internal key = abra_t2v_<N>s — has 4/6/8/10
@@ -168,6 +176,11 @@ export function renderContent(root) {
           el('div', { class: 'field-group' },
             el('label', { class: 'field-label' }, 'Số luồng song song'),
             el('input', { type: 'number', class: 'input', id: 'cnt-concurrent', value: form.concurrent, min: 1, max: 5 }),
+          ),
+          el('div', { class: 'field-group' },
+            el('label', { class: 'field-label' }, 'Số video / prompt'),
+            el('input', { type: 'number', class: 'input', id: 'cnt-count', value: form.videosPerPrompt, min: 1, max: 4 }),
+            el('div', { class: 'field-help' }, '1 prompt tạo ra N video khác nhau (tối đa 4). Xếp thành nhóm để chọn 1 video ưng ý.'),
           ),
           el('div', { style: { display: 'flex', gap: '8px', marginTop: '24px' } },
             el('button', { class: 'btn btn-primary', style: { flex: 1 }, id: 'cnt-start' },
@@ -734,6 +747,7 @@ export function renderContent(root) {
     form.resolution = root.querySelector('#cnt-resolution').value;
     form.duration = parseInt(root.querySelector('#cnt-duration').value || '8', 10);
     form.concurrent = parseInt(root.querySelector('#cnt-concurrent').value || '1', 10);
+    form.videosPerPrompt = Math.max(1, Math.min(4, parseInt(root.querySelector('#cnt-count').value || '1', 10)));
 
     let ref_images = null;
     if (form.mode === 'i2v') {
@@ -766,12 +780,20 @@ export function renderContent(root) {
         resolution: form.resolution,
         duration: form.duration,
         concurrent: form.concurrent,
+        videos_per_prompt: form.videosPerPrompt,
         reference_images: ref_images,
         loop: form.mode === 'i2v' && form.loop,   // chỉ I2V mới loop được
         task_name: taskName,
       });
+      // Nở seed gallery: N video mỗi prompt, giữ thứ tự prompt-major (khớp backend)
+      // → item thứ k thuộc nhóm k // videosPerPrompt.
+      const expandedItems = [];
+      for (const pr of promptsToSend) {
+        for (let k = 0; k < form.videosPerPrompt; k++) expandedItems.push(pr);
+      }
       tasksStore.register(res.task_id, 'content', {
-        items: promptsToSend,
+        items: expandedItems,
+        videosPerPrompt: form.videosPerPrompt,
         aspect: form.aspect,
         model: form.quality,
         name: taskName,
@@ -1005,6 +1027,27 @@ export function renderContent(root) {
     const grid = el('div', { class: 'scene-grid' });
     const aspectCls = aspectThumbClass(taskState.aspect);
 
+    // Số video / prompt. N>1 → gallery hiển thị THEO NHÓM: mỗi N item liền nhau
+    // là các biến thể của 1 prompt (backend thêm item prompt-major). N=1 → phẳng.
+    const N = Math.max(1, taskState.videosPerPrompt || 1);
+    const groupOf = (i) => Math.floor(i / N);
+    if (N > 1) {
+      // Mỗi nhóm cần 1 ⭐ hợp lệ; mặc định = biến thể done đầu tiên của nhóm.
+      const doneByGroup = new Map();  // g -> [output_path,...] done, đúng thứ tự
+      taskState.items.forEach((it, i) => {
+        if (it.status === 'done' && it.output_path) {
+          const g = groupOf(i);
+          if (!doneByGroup.has(g)) doneByGroup.set(g, []);
+          doneByGroup.get(g).push(it.output_path);
+        }
+      });
+      for (const [g, paths] of doneByGroup) {
+        const key = taskState.id + ':' + g;
+        const cur = _favByGroup.get(key);
+        if (!cur || !paths.includes(cur)) _favByGroup.set(key, paths[0]);
+      }
+    }
+
     const hasAnyDone = taskState.items.some(it => it.status === 'done' && it.output_path);
     let toolbar = null;
     if (hasAnyDone) {
@@ -1021,6 +1064,14 @@ export function renderContent(root) {
           await api.tasks.retryItems(taskState.id, ids);
           ids.forEach(iid => tasksStore.retryItemUI(taskState.id, iid, 'pending'));
         },
+        // N>1: "Chọn tất cả" chỉ tick ⭐ mỗi nhóm (1 video/prompt), không quét
+        // hết bản trùng — để Xóa WM / Tải / Upscale chạy đúng video ưng ý.
+        onSelectAll: N > 1 ? (cards, mark) => {
+          const prefix = taskState.id + ':';
+          const favSet = new Set();
+          for (const [k, p] of _favByGroup) if (k.startsWith(prefix)) favSet.add(p);
+          cards.forEach(c => mark(c, favSet.has(c.dataset.path)));
+        } : undefined,
         onChange: () => renderTaskGallery(tasksStore.get(taskState.id)),
         onClearSelected: (paths) => {
           tasksStore.removeItemsByPath(taskState.id, paths);
@@ -1052,6 +1103,17 @@ export function renderContent(root) {
     }
 
     taskState.items.forEach((it, i) => {
+      // Header nhóm (full-width) ở đầu mỗi nhóm khi N>1 — ngăn cách các biến thể
+      // của prompt này với prompt khác. gridColumn 1/-1 → chiếm trọn 1 hàng.
+      if (N > 1 && i % N === 0) {
+        grid.appendChild(el('div', {
+          class: 'scene-group-header',
+          style: {
+            gridColumn: '1 / -1', fontWeight: '600', fontSize: '13px',
+            color: 'var(--text-muted)', margin: '6px 0 -2px', padding: '0 2px',
+          },
+        }, `Prompt #${groupOf(i) + 1} · ${N} video`));
+      }
       const card = el('div', { class: 'scene-card' });
       const thumb = el('div', { class: `scene-thumb ${aspectCls}` },
         el('div', { class: 'scene-number' }, `#${i + 1}`),
@@ -1117,8 +1179,38 @@ export function renderContent(root) {
               navigator.clipboard.writeText(p);
               toast('Đã copy prompt', 'success');
             } }, icon('copy', 14)),
+            it.id != null
+              ? makePromptEditButton({ taskId: taskState.id, item: it })
+              : null,
           )
         : null;
+      // ⭐ đánh dấu video ưng ý của nhóm (chỉ khi N>1). Bấm sao → đặt biến thể
+      // này làm ⭐ của nhóm; các sao cùng nhóm cập nhật tại chỗ (KHÔNG re-render:
+      // taskState không đổi nên renderTaskGallery sẽ rơi vào fast-path wm-only).
+      if (N > 1 && sceneActions && it.status === 'done' && it.output_path) {
+        const g = groupOf(i);
+        const key = taskState.id + ':' + g;
+        const isFav = _favByGroup.get(key) === it.output_path;
+        const favBtn = el('button', {
+          class: 'btn btn-sm ' + (isFav ? 'btn-warm' : 'btn-ghost'),
+          'data-fav-group': String(g),
+          'data-fav-path': it.output_path,
+          title: isFav ? 'Video ưng ý của prompt này (được chọn khi bấm "Chọn tất cả")'
+                       : 'Đánh dấu là video ưng ý của prompt này',
+          onclick: () => {
+            _favByGroup.set(key, it.output_path);
+            grid.querySelectorAll('[data-fav-group="' + g + '"]').forEach(b => {
+              const on = b.dataset.favPath === it.output_path;
+              b.classList.toggle('btn-warm', on);
+              b.classList.toggle('btn-ghost', !on);
+              b.textContent = on ? '★' : '☆';
+              b.title = on ? 'Video ưng ý của prompt này (được chọn khi bấm "Chọn tất cả")'
+                           : 'Đánh dấu là video ưng ý của prompt này';
+            });
+          },
+        }, isFav ? '★' : '☆');
+        sceneActions.appendChild(favBtn);
+      }
       if (sceneActions) {
         if (it.wm_status === 'running') {
           sceneActions.appendChild(el('span', {

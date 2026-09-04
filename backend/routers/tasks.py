@@ -18,6 +18,15 @@ from ..config import OUTPUT_DIR, slugify_folder, TaskStatus, ItemStatus
 log = logging.getLogger("redone.tasks")
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
+# Task modes that run through the IMAGE pipeline. Storyboard stores
+# mode="storyboard" purely so Tasks Manager opens the Storyboard tab — it is
+# created with queue.enqueue("image", ..., _process_image_task) and must be
+# re-enqueued the same way. Miss it here and /resume + /retry silently hand a
+# storyboard to the video runner: every unfinished scene gets a Veo t2v clip
+# instead of an image, so the gallery <img> shows nothing while the counter
+# keeps climbing.
+IMAGE_MODES = ("image", "storyboard")
+
 
 def _queue_for_mode(mode: str):
     """Which queue a task lives on. Shakker has its own concurrent lane."""
@@ -169,7 +178,7 @@ async def _reenqueue_task(task_id: int, front: bool = False) -> dict:
     task = db.get_task(task_id) or {}
     mode = (task.get("mode") or "").lower()
     enqueue_q = queue
-    if mode == "image":
+    if mode in IMAGE_MODES:
         from . import image as image_mod
         runner = image_mod._process_image_task
         kind = "image"
@@ -385,6 +394,28 @@ async def _retry_items_runner(task: dict, item_ids: list[int], force: bool = Fal
                 pass
 
 
+class UpdateItemPromptRequest(BaseModel):
+    prompt: str
+
+
+@router.post("/item/{item_id}/prompt")
+async def update_item_prompt(item_id: int, body: UpdateItemPromptRequest):
+    """Rewrite one item's prompt so the next regen uses it.
+
+    Nothing else is needed to make it take effect: _retry_items_runner re-reads
+    every item with db.get_item() immediately before generating, and each
+    generator dereferences item["prompt"] from that fresh row. Shared by the
+    Shakker gallery too — its items live in the same task_items table.
+    """
+    if not db.get_item(item_id):
+        raise HTTPException(404, "Không tìm thấy item")
+    text = (body.prompt or "").strip()
+    if not text:
+        raise HTTPException(400, "Prompt không được để trống")
+    db.update_item(item_id, prompt=text)
+    return {"ok": True, "item_id": item_id, "prompt": text}
+
+
 @router.post("/item/{item_id}/retry")
 async def retry_item(item_id: int):
     """Regenerate a SINGLE item — even while the parent task is still
@@ -482,10 +513,7 @@ def _resolve_task_folder(task: dict) -> Path | None:
 
     # Fallback: compose by convention
     mode = (task.get("mode") or "").lower()
-    if mode in ("image",):
-        kind = "image"
-    else:
-        kind = "video"
+    kind = "image" if mode in IMAGE_MODES else "video"
 
     # Use task's created_at date (UTC string "YYYY-MM-DD HH:MM:SS")
     created = task.get("created_at") or ""

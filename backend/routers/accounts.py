@@ -247,9 +247,8 @@ async def _do_login(account_id: int, email: str) -> tuple[bool, str]:
         "--window-size=900,720",
         "--window-position=120,80",
         # Land at Flow directly — Google sẽ tự redirect sang accounts.google.com
-        # nếu chưa login; sau khi login xong sẽ tự về Flow → cookie cho labs.google
-        # sẽ được set ngay.
-        "https://labs.google/fx/tools/video-fx",
+        # nếu chưa login; sau khi login xong sẽ tự về Flow.
+        "https://flow.google.com",
     ]
     log.info(f"[login {email}] Chrome CDP port={debug_port}, profile={profile_dir}")
 
@@ -298,7 +297,8 @@ async def _do_login(account_id: int, email: str) -> tuple[bool, str]:
                 snap = await context.cookies()
                 labs_cookies = [
                     c for c in snap
-                    if "labs.google" in (c.get("domain") or "").lstrip(".")
+                    if ("labs.google" in (c.get("domain") or "").lstrip(".")
+                        or "flow.google.com" in (c.get("domain") or "").lstrip("."))
                 ]
                 # Look specifically for NextAuth session token (final proof of login)
                 has_session_token = any(
@@ -330,9 +330,9 @@ async def _do_login(account_id: int, email: str) -> tuple[bool, str]:
             try: proc.terminate()
             except Exception: pass
             return False, (
-                "Timeout 5 phút — chưa thấy session cookie cho labs.google.\n"
+                "Timeout 5 phút — chưa thấy session cookie.\n"
                 "• Đã đăng nhập Google chưa?\n"
-                "• Đã vào được app Flow (labs.google/fx/tools/video-fx) chưa?\n"
+                "• Đã vào được app Flow (flow.google.com) chưa?\n"
                 "Nếu Flow yêu cầu 'Try Flow' / 'Get Started' → bấm vào để vào app, đợi 2-3s rồi mới đóng popup này."
             )
 
@@ -348,6 +348,7 @@ async def _do_login(account_id: int, email: str) -> tuple[bool, str]:
                 encoding="utf-8",
             )
             labs_count = sum(1 for c in cookies if "labs.google" in (c.get("domain") or "")
+                             or "flow.google.com" in (c.get("domain") or "")
                              or "google.com" == (c.get("domain") or "").lstrip("."))
             log.info(f"[login {email}] Exported {len(sanitized)} cookies ({labs_count} for labs/google.com) → {cookie_path}")
 
@@ -422,7 +423,7 @@ async def _do_login_cloak(account_id: int, email: str) -> tuple[bool, str]:
         # Open Flow page (will redirect to login if not authenticated)
         page = context.pages[0] if context.pages else await context.new_page()
         try:
-            await page.goto("https://labs.google/fx/tools/video-fx",
+            await page.goto("https://flow.google.com",
                             wait_until="domcontentloaded", timeout=30000)
         except Exception:
             pass
@@ -438,7 +439,8 @@ async def _do_login_cloak(account_id: int, email: str) -> tuple[bool, str]:
                 snap = await context.cookies()
                 labs_cookies = [
                     c for c in snap
-                    if "labs.google" in (c.get("domain") or "").lstrip(".")
+                    if ("labs.google" in (c.get("domain") or "").lstrip(".")
+                        or "flow.google.com" in (c.get("domain") or "").lstrip("."))
                 ]
                 has_session = any(
                     "next-auth.session-token" in (c.get("name") or "")
@@ -459,7 +461,7 @@ async def _do_login_cloak(account_id: int, email: str) -> tuple[bool, str]:
 
         if not labs_session:
             return False, (
-                "Timeout 5 phút — chưa thấy session cookie cho labs.google.\n"
+                "Timeout 5 phút — chưa thấy session cookie.\n"
                 "Hãy login Google trong cửa sổ CloakBrowser vừa hiện rồi vào lại Flow."
             )
 

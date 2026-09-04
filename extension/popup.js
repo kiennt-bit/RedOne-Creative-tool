@@ -29,7 +29,7 @@ async function refresh() {
 
         // ── Google Labs ─────────────────────────────────────
         setStatus("status-tab", r.hasTab ? "ok" : "warn",
-            r.hasTab ? "Đã mở" : "Chưa mở labs.google");
+            r.hasTab ? "Đã mở" : "Chưa mở tab Flow");
         setStatus("status-login", r.signedIn ? "ok" : "warn",
             r.signedIn ? "Đã đăng nhập" : "Chưa đăng nhập Google");
         document.getElementById("token-count").textContent = r.tokenCount || 0;
@@ -56,7 +56,7 @@ async function refresh() {
 }
 
 document.getElementById("open-labs").addEventListener("click", () => {
-    chrome.tabs.create({ url: "https://labs.google/fx/tools/flow" });
+    chrome.tabs.create({ url: "https://flow.google.com" });
 });
 
 document.getElementById("open-shakker").addEventListener("click", () => {

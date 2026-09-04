@@ -111,7 +111,8 @@ _KEY_DEAD_MARKERS = (
 _MODEL_TRANSIENT_MARKERS = (
     "503", "500", "502", "unavailable", "overload", "internal", "deadline",
     "timeout", "not_found", "not found", "404", "invalid_argument",
-    "permission", "403",
+    "permission", "403", "does not exist", "unsupported", "unknown",
+    "not supported",
 )
 
 
@@ -299,7 +300,10 @@ async def _run_model_chain(
             if kind == "model_transient":
                 log.warning(f"Gemini {model}: transient ({err_str[:90]}) → next model")
                 continue
-            raise  # hard error — surface immediately
+            if model != chain[-1]:
+                log.warning(f"Gemini {model}: error ({err_str[:90]}) → falling back to next model")
+                continue
+            raise  # hard error on last model — surface immediately
     # Whole chain failed for this key.
     if saw_rotate_signal:
         raise _KeyExhausted(last_err)
@@ -345,7 +349,14 @@ async def generate_text(
 
     for ki, key in enumerate(keys):
         try:
-            client = genai.Client(api_key=key)
+            http_opt = (
+                gtypes.HttpOptions(
+                    retry_options=gtypes.HttpRetryOptions(attempts=1)
+                )
+                if hasattr(gtypes, "HttpOptions") and hasattr(gtypes, "HttpRetryOptions")
+                else None
+            )
+            client = genai.Client(api_key=key, http_options=http_opt)
         except Exception as e:
             last_rotate_err = e
             fallback_log.append({"key_index": ki, "error": f"client init: {str(e)[:120]}"})

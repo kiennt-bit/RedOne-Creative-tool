@@ -31,6 +31,7 @@ class StartTaskRequest(BaseModel):
     resolution: str = "720p"
     duration: int = 8                # 4 | 6 | 8 | 10 (10 only for omni_flash)
     concurrent: int = 1
+    videos_per_prompt: int = 1       # 1..4 — số video tạo cho mỗi prompt (i2v: cùng 1 ảnh → N video)
     reference_images: Optional[list[str]] = None  # uploaded image paths
     character_images: Optional[dict] = None
     loop: bool = False               # I2V "Loop video": reuse the image as first+last frame
@@ -83,6 +84,36 @@ TRANSIENT_PATTERNS = (
     "unavailable",
 )
 MAX_ITEM_RETRIES = 3
+
+# Ceiling for ONE item (gen + poll + download + xóa watermark). Nothing
+# legitimate comes near this — the slowest real video item is a few minutes.
+ITEM_HARD_TIMEOUT = 1800.0
+
+
+async def run_item_bounded(item: dict, coro, timeout: float = ITEM_HARD_TIMEOUT):
+    """Await one item's generator with a hard ceiling.
+
+    A coroutine still running after `timeout` is wedged, not slow. Without a
+    bound the batch's gather() never returns and the whole task freezes with
+    no error and no log — that was the 2026-08-03 storyboard hang, where
+    renew_token waited on a lock it already held.
+
+    Cancelling alone isn't enough: asyncio cancels via BaseException, so the
+    generator's own `except Exception` handler never runs and the item would
+    sit at GENERATING forever (stuck spinner, invisible to "Gen lại lỗi").
+    So flip it to ERROR here.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout)
+    except asyncio.TimeoutError:
+        msg = (f"Quá {int(timeout / 60)} phút không phản hồi — đã hủy mục này. "
+               "Bấm Gen lại để chạy lại.")
+        log.warning("Item %s treo quá %.0fs — hủy để lô chạy tiếp", item.get("id"), timeout)
+        db.update_item(item["id"], status=ItemStatus.ERROR.value, error_message=msg)
+        await hub.broadcast("item_error", {
+            "task_id": item.get("task_id"), "item_id": item["id"], "error": msg,
+        })
+        return False
 
 
 def _read_cooldown_range() -> tuple[float, float]:
@@ -280,6 +311,14 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
             "task_id": task_id, "item_id": item_id,
             "output_path": str(out_path),
         })
+        # ── Firebase tracking (best-effort) ──
+        try:
+            from ..services import tracking as _tracking
+            _email = task.get("user_email") or ""
+            if _email:
+                await _tracking.track_event(_email, "video_created")
+        except Exception:
+            pass
         if _reserved:
             await hub_client.commit_result(_rid, "done", kind="video", model=model_key,
                                            credit_cost=_cost, prompt=item.get("prompt", ""),
@@ -378,7 +417,8 @@ async def _process_task(task_id: int):
                 await queue.mark_paused(task_id)
                 return
             batch_results = await asyncio.gather(
-                *(generate_content_item(client, task, it) for it in batch),
+                *(run_item_bounded(it, generate_content_item(client, task, it))
+                  for it in batch),
                 return_exceptions=True,
             )
 
@@ -436,6 +476,8 @@ async def _process_task(task_id: int):
 async def start_content_task(body: StartTaskRequest):
     if not body.prompts:
         raise HTTPException(400, "Prompts required")
+    if not 1 <= body.videos_per_prompt <= 4:
+        raise HTTPException(400, "videos_per_prompt phải từ 1 đến 4")
     task_name = (body.task_name or "").strip() or f"video_{int(time.time())}"
     # Clamp duration to what the chosen model actually supports
     safe_duration = clamp_duration(body.quality, body.duration)
@@ -448,7 +490,7 @@ async def start_content_task(body: StartTaskRequest):
         resolution=body.resolution,
         duration=safe_duration,
         concurrent=body.concurrent,
-        total_count=len(body.prompts),
+        total_count=len(body.prompts) * body.videos_per_prompt,
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
     )
@@ -462,12 +504,14 @@ async def start_content_task(body: StartTaskRequest):
                 extra["reference_image"] = ref
                 if body.loop:
                     extra["loop"] = True   # reuse this image as the last frame too
-        db.add_task_item(task_id, p, extra=extra or None)
+        # N video mỗi prompt — mỗi bản mang cùng `extra` (i2v: cùng ảnh frame-đầu → N video khác seed).
+        for _ in range(body.videos_per_prompt):
+            db.add_task_item(task_id, p, extra=extra or None)
 
     position = await queue.enqueue("content", task_id, _process_task)
     return {
         "task_id": task_id,
-        "items": len(body.prompts),
+        "items": len(body.prompts) * body.videos_per_prompt,
         "queue_position": position,
         "queued": position > 0,
     }

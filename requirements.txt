@@ -14,6 +14,10 @@ Pillow>=10.0.0
 # shakker.ai API calls. Already a transitive dep of google-genai/fastapi
 # but pin it explicitly since we import it directly.
 httpx>=0.26.0
+# firebase-admin — Firebase Admin SDK for Cloud Firestore usage tracking.
+# Shares GCP credentials with google-genai (Vertex AI service account).
+# Only used when FIREBASE_TRACKING_ENABLED=True in private_config.py.
+firebase-admin>=6.0.0
 # oss2 — Alibaba Cloud OSS SDK. ONLY needed for Shakker img2img reference
 # image upload (lazy-imported in shakker_client.upload_reference_image).
 # Text-to-image works without it. ~few MB pure-python + crcmod.

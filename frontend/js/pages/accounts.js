@@ -310,17 +310,17 @@ export function renderAccounts(root) {
         '(extension chỉ thấy được Chrome thật của bạn).\n\n' +
         'Workflow đúng:\n' +
         '1) Mở Chrome THẬT (chrome.exe — chỗ đã cài extension "RedOne Auth Helper")\n' +
-        '2) Mở tab mới: https://labs.google/fx/tools/flow\n' +
+        '2) Mở tab mới: https://flow.google.com\n' +
         '3) Bấm Sign in → chọn account Google muốn dùng\n' +
         '4) Đợi tab load xong → quay lại RedOne UI → gen task\n\n' +
-        'Muốn t mở giúp tab labs.google không?',
+        'Muốn t mở giúp tab Flow không?',
         'Extension Bridge — không cần Login button',
       );
       if (proceed) {
-        // Best we can do from web UI — opens labs.google in user's default
+        // Best we can do from web UI — opens flow.google.com in user's default
         // browser. If their default is Chrome (with ext) → perfect.
-        window.open('https://labs.google/fx/tools/flow', '_blank');
-        toast('Đã mở labs.google. Login Google trong tab đó.', 'info', 8000);
+        window.open('https://flow.google.com', '_blank');
+        toast('Đã mở Flow. Login Google trong tab đó.', 'info', 8000);
       }
       return;
     }
@@ -329,7 +329,7 @@ export function renderAccounts(root) {
     if (!await confirm(
       'Sẽ mở 1 cửa sổ Chrome thật để bạn đăng nhập Google.\n\n' +
       '⚠️ BƯỚC QUAN TRỌNG sau khi nhập mật khẩu:\n' +
-      '1) Chrome sẽ tự về https://labs.google/fx/tools/video-fx\n' +
+      '1) Chrome sẽ tự về https://flow.google.com\n' +
       '2) Nếu vẫn ở landing page, bấm vào "Try Flow" / "Create with Flow"\n' +
       '3) Khi đã vào được app Flow → cookies tự lưu, Chrome tự tắt\n\n' +
       'Timeout: 5 phút.\n\nTiếp tục?', 'Đăng nhập Google',

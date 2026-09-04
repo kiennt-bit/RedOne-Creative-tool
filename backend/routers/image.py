@@ -189,6 +189,22 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             except Exception as e:
                 log.warning(f"Crop 16:9 failed (giữ ảnh gốc): {e}")
 
+        # Google Flow now stamps a Gemini ✦ watermark (bottom-right) on every
+        # nano_banana_* image. Strip it in place so outputs ship clean. Runs
+        # AFTER the 16:9 crop so the corner box maps to the final dimensions.
+        # Best-effort: never fails the gen (keeps the original on any error).
+        _wm_on = db.get_setting("auto_remove_image_watermark", True)
+        if (model in ("nano_banana_pro", "nano_banana_2", "nano_banana_lite")
+                and _wm_on):
+            from ..services.watermark_video import remove_gemini_watermark_inplace
+            await remove_gemini_watermark_inplace(out_path)
+        else:
+            # Say WHY we skipped — a silent skip is indistinguishable from a
+            # successful strip when someone asks "why does this one still have
+            # the watermark?".
+            log.info("Bỏ qua xóa WM ảnh (%s): model=%s setting=%s",
+                     out_path.name, model, _wm_on)
+
         # Persist media_id so the upscale endpoint can find it later.
         extra["media_id"] = result.get("media_id")
         db.update_item(
@@ -207,6 +223,14 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
             "media_id": result.get("media_id"),
             "prompt": item.get("prompt", ""),
         })
+        # ── Firebase tracking (best-effort) ──
+        try:
+            from ..services import tracking as _tracking
+            _email = task.get("user_email") or ""
+            if _email:
+                await _tracking.track_event(_email, "image_created")
+        except Exception:
+            pass
         await hub_client.commit_result(_rid, "done", kind="image", model=model,
                                        credit_cost=_cost, prompt=item.get("prompt", ""),
                                        path=str(out_path), is_video=False)
@@ -298,8 +322,10 @@ async def _process_image_task(task_id: int):
             if queue.is_paused(task_id):
                 await queue.mark_paused(task_id)
                 return
+            from .content import run_item_bounded
             batch_results = await asyncio.gather(
-                *(generate_image_item(client, task, it) for it in batch),
+                *(run_item_bounded(it, generate_image_item(client, task, it))
+                  for it in batch),
                 return_exceptions=True,
             )
 
@@ -436,6 +462,14 @@ async def _do_upscale_one(client, item_id: int, media_id: str, resolution: str, 
             raise RuntimeError("Tải ảnh upscaled thất bại")
     else:
         out_path = _save_upscaled(item_id, resolution, raw, task)
+
+    # Flow stamps a FRESH Gemini ✦ on every upscale — the source image having been
+    # cleaned at gen time does NOT carry over. Erase it BEFORE the crop below: the
+    # glyph is ~48px here (the size Google stamps it at, which the detector is
+    # calibrated for), while cover-cropping to 2K/4K shrinks it to ~45px/~34px.
+    if db.get_setting("auto_remove_image_watermark", True):
+        from ..services.watermark_video import remove_gemini_watermark_inplace
+        await remove_gemini_watermark_inplace(out_path)
 
     # Chuẩn hóa ra ĐÚNG kích thước 16:9 tiêu chuẩn: 2K=2560x1440, 4K=3840x2160.
     # Xoay theo hướng ảnh (ngang→2560x1440/3840x2160, dọc→1440x2560/2160x3840).

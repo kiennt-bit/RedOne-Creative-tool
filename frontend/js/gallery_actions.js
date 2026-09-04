@@ -12,6 +12,10 @@ import { tasksStore } from './tasks_store.js';
 // uses, and stable across rebuilds.
 const selectedPaths = new Set();
 
+// Anchor for Shift+click ranges — the last card the user clicked plainly or with
+// Ctrl. Stored as a path (not an element) so it survives the grid rebuilds.
+let anchorPath = null;
+
 /** Set/clear a card's selection in the DOM *and* in the surviving set. */
 function markCard(card, on) {
   card.classList.toggle('selected', on);
@@ -49,7 +53,7 @@ function markCard(card, on) {
  *          'gemini'). Responsible for showing progress + result.
  * @returns {HTMLElement}
  */
-export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen, onUpscaleVideo }) {
+export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelected, itemOf, onUpscale, onRemoveWatermark, onSendToI2V, onSendToUpscale, onRegen, onUpscaleVideo, onSelectAll }) {
   const counterEl = el('span', { class: 'text-muted text-sm' }, '0 đã chọn');
   // Live overall upscale progress ("Đang upscale 2/5"). Hidden until the
   // page calls toolbar._setUpscaleProgress() with an active batch.
@@ -208,8 +212,14 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
   }, 'btn-accent') : null;
 
   // Selection meta-controls — quiet (ghost), sit on the left.
+  // When the page supplies onSelectAll (content page with N videos/prompt), it
+  // decides which cards to tick — e.g. only the ⭐ variant of each prompt-group,
+  // not every duplicate. It gets (cards, mark) so it can drive selection through
+  // the same surviving-set bookkeeping. No handler → tick every card (default).
   const selBtnAll = iconBtn('check', 'Chọn tất cả', () => {
-    getCards().forEach(c => markCard(c, true));
+    const cards = getCards();
+    if (onSelectAll) onSelectAll(cards, markCard);
+    else cards.forEach(c => markCard(c, true));
     refreshCounter();
   }, 'btn-ghost');
   const selBtnNone = iconBtn('x', 'Bỏ chọn', () => {
@@ -294,6 +304,9 @@ export function makeSelectionToolbar({ getCards, pathOf, onChange, onClearSelect
   }
 
   toolbar._refreshCounter = refreshCounter;
+  // attachCardCheckbox needs the card list (in DOM order) to resolve a
+  // Shift+click range.
+  toolbar._getCards = getCards;
 
   // Page calls this each render with tasksStore.getUpscaleBatch(). Shows
   // "Đang upscale 2/5" while a batch runs, or "Chờ upscale N ảnh" before the
@@ -340,6 +353,40 @@ export function attachCardCheckbox(card, path, toolbar) {
   cb.checked = wasSelected;
   const thumb = card.querySelector('.scene-thumb');
   if (thumb) thumb.appendChild(cb);
+
+  // Click the card BODY to tick it. Selection is ADDITIVE — clicking a second
+  // card keeps the first, same as the checkboxes; clicking a ticked card unticks
+  // it. Shift+click adds the whole range from the last card you clicked. The
+  // preview area (.scene-thumb, which owns the lightbox click and the checkbox)
+  // and every button/link/field are excluded so those keep their own behaviour.
+  const isCardBody = (t) => !t.closest('.scene-thumb, button, a, input, select, textarea, label');
+
+  // Shift+click would otherwise drag a text selection across the card (the
+  // chips and prompt end up highlighted). It starts on mousedown, so blocking it
+  // in the click handler is too late — kill it here, and only when Shift is
+  // held, so plain text selection still works.
+  card.addEventListener('mousedown', (e) => {
+    if (e.shiftKey && isCardBody(e.target)) e.preventDefault();
+  });
+
+  card.addEventListener('click', (e) => {
+    if (!isCardBody(e.target)) return;
+    const cards = (toolbar && toolbar._getCards) ? toolbar._getCards() : [card];
+    if (e.shiftKey && anchorPath && anchorPath !== path) {
+      // Drop any stray highlight the browser managed to make anyway.
+      const sel = window.getSelection && window.getSelection();
+      if (sel) sel.removeAllRanges();
+      const from = cards.findIndex(c => c.dataset.path === anchorPath);
+      const to = cards.indexOf(card);
+      if (from >= 0 && to >= 0) {
+        for (let i = Math.min(from, to); i <= Math.max(from, to); i++) markCard(cards[i], true);
+      }
+    } else {
+      markCard(card, !card.classList.contains('selected'));
+      anchorPath = path;
+    }
+    if (toolbar && toolbar._refreshCounter) toolbar._refreshCounter();
+  });
   // Callers append the card to the grid AFTER this returns, so the toolbar
   // can't count it yet — refresh once the current render pass is done.
   if (wasSelected && toolbar && toolbar._refreshCounter) {
@@ -445,6 +492,89 @@ export function makeRetryFailedButton({ getTaskState, onResetUI, retryFn }) {
  *                            which always have an id by then)
  * @returns {HTMLElement}
  */
+/**
+ * Pencil button for a finished card: opens the item's prompt in a modal so it
+ * can be rewritten before regenerating.
+ *
+ * Saving is all it takes for the new text to be used — the retry endpoints
+ * re-read the prompt from the DB right before generating, so "Lưu" and
+ * "Lưu & Gen lại" are the same save followed (or not) by the normal regen.
+ *
+ * @param {Object} opts
+ * @param {number} opts.taskId
+ * @param {{id:number, prompt:string}} opts.item  - live store item
+ * @param {(itemId:number) => Promise} [opts.retryFn] - defaults to the Flow
+ *        retry-items endpoint; Shakker passes its own.
+ * @returns {HTMLElement}
+ */
+export function makePromptEditButton({ taskId, item, retryFn }) {
+  const doRetry = retryFn || ((iid) => api.tasks.retryItems(taskId, [iid]));
+
+  return el('button', {
+    class: 'btn btn-sm btn-ghost btn-icon',
+    title: 'Sửa prompt rồi gen lại',
+    onclick: () => {
+      const ta = el('textarea', {
+        class: 'textarea', rows: 6,
+        placeholder: 'Nhập prompt mới…',
+      }, item.prompt || '');
+
+      // Returns false (leaving the modal open) when the box is empty, so a
+      // mistyped edit can't wipe the prompt.
+      const save = async () => {
+        const text = ta.value.trim();
+        if (!text) { toast('Prompt không được để trống', 'warning'); return false; }
+        if (text === (item.prompt || '').trim()) return true;   // nothing changed
+        await api.tasks.updateItemPrompt(item.id, text);
+        tasksStore.updateItemPrompt(taskId, item.id, text);
+        return true;
+      };
+
+      modal({
+        title: 'Sửa prompt',
+        body: el('div', null,
+          el('div', { class: 'field-help', style: { marginBottom: '8px' } },
+            'Prompt mới được dùng cho lần gen lại tiếp theo của thẻ này.'),
+          ta,
+        ),
+        actions: [
+          { label: 'Hủy', class: 'btn-ghost' },
+          { label: 'Lưu', class: 'btn-ghost', onclick: async (c) => {
+            try {
+              if (await save()) { toast('Đã lưu prompt', 'success'); c(); }
+            } catch (e) { toast(`Lưu prompt lỗi: ${e.message}`, 'error'); }
+          } },
+          { label: 'Lưu & Gen lại', class: 'btn-primary', onclick: async (c) => {
+            try {
+              if (!await save()) return;
+              await doRetry(item.id);
+              tasksStore.retryItemUI(taskId, item.id, 'pending');
+              toast('Đang gen lại với prompt mới…', 'success');
+              c();
+            } catch (e) { toast(`Gen lại lỗi: ${e.message}`, 'error'); }
+          } },
+        ],
+      });
+      // Prompts need more room than the modal's 520px default.
+      const box = document.querySelector('#modal-root .modal');
+      if (box) box.style.maxWidth = '640px';
+      ta.focus();
+    },
+  }, pencilIcon());
+}
+
+/** Pencil glyph, inline so this file stays self-contained like its siblings. */
+function pencilIcon(size = 14) {
+  const wrap = document.createElement('span');
+  wrap.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}" `
+    + 'style="vertical-align:-2px">'
+    + '<path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" stroke-width="1.8" '
+    + 'fill="none" stroke-linejoin="round"/>'
+    + '<path d="M14 6l4 4" stroke="currentColor" stroke-width="1.8"/></svg>';
+  return wrap.firstChild;
+}
+
+
 export function makeItemRetryButton(taskId, itemId, retryFn) {
   // retryFn lets non-Flow galleries (e.g. Shakker) swap in their own
   // per-item retry endpoint. Defaults to the Flow tasks endpoint.

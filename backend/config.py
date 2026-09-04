@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.5.8"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -132,6 +132,89 @@ HUB_TIMEOUT_S = float(os.getenv("REDONE_HUB_TIMEOUT", "6"))
 HUB_SESSION_FILE = DATA_DIR / "hub_session.json"
 
 
+# ── Firebase Usage Tracking ───────────────────────────────────────────
+# Centralized behavioural tracking (images, videos, scripts created +
+# session time) pushed to Cloud Firestore so admins can monitor usage
+# across all local tool instances.
+#
+# Credentials are loaded from private_config.py (baked into EXE at build)
+# or environment variables — NEVER hardcoded in tracked source code.
+#
+# To DISABLE tracking on a specific machine, set
+#   FIREBASE_TRACKING_ENABLED = False  in private_config.py
+# or set env  REDONE_FIREBASE_TRACKING=0
+
+def _resolve_firebase() -> tuple[dict, str, bool]:
+    project_id = ""
+    enabled = False
+    sa_info: dict = {}
+
+    # 1. Resolve from private_config (baked into EXE or local)
+    try:
+        from . import private_config as _pc  # type: ignore
+        sa = getattr(_pc, "FIREBASE_SERVICE_ACCOUNT_INFO", None)
+        if isinstance(sa, dict) and sa.get("project_id"):
+            sa_info = sa
+            project_id = sa.get("project_id", "")
+        pid = getattr(_pc, "FIREBASE_PROJECT_ID", None)
+        if pid:
+            project_id = str(pid).strip()
+        e = getattr(_pc, "FIREBASE_TRACKING_ENABLED", None)
+        if e is not None:
+            enabled = bool(e)
+    except Exception:
+        pass
+
+    # 2. Env var overrides
+    env_val = os.getenv("REDONE_FIREBASE_TRACKING", "").strip()
+    if env_val in ("0", "false", "no"):
+        enabled = False
+    elif env_val in ("1", "true", "yes"):
+        enabled = True
+
+    env_pid = os.getenv("REDONE_FIREBASE_PROJECT_ID", "").strip()
+    if env_pid:
+        project_id = env_pid
+
+    env_sa = os.getenv("REDONE_FIREBASE_SA_JSON", "").strip()
+    if env_sa:
+        try:
+            parsed = json.loads(env_sa)
+            if isinstance(parsed, dict):
+                sa_info = parsed
+                if not project_id:
+                    project_id = sa_info.get("project_id", "")
+        except Exception:
+            pass
+
+    return sa_info, project_id, (enabled and bool(project_id))
+
+
+_FIREBASE_SA, FIREBASE_PROJECT_ID, FIREBASE_TRACKING_ENABLED = _resolve_firebase()
+FIREBASE_SERVICE_ACCOUNT_INFO: dict = _FIREBASE_SA
+
+# Heartbeat interval (seconds) for session-time tracking.
+FIREBASE_HEARTBEAT_INTERVAL_S = 60
+
+# Admin emails — only these users can see the Tracking tab and view stats.
+# Override in private_config.py to add/remove admins without changing code.
+def _resolve_tracking_admins() -> list[str]:
+    defaults = [
+        "kiennt@redone.vn",
+    ]
+    try:
+        from . import private_config as _pc  # type: ignore
+        custom = getattr(_pc, "TRACKING_ADMIN_EMAILS", None)
+        if custom is not None and isinstance(custom, (list, tuple)):
+            return [e.strip().lower() for e in custom if e.strip()]
+    except Exception:
+        pass
+    return [e.strip().lower() for e in defaults]
+
+
+TRACKING_ADMIN_EMAILS: list[str] = _resolve_tracking_admins()
+
+
 class TaskMode(str, Enum):
     IMAGE = "IMAGE"
     CHAR_IMAGE = "CHAR_IMAGE"
@@ -187,19 +270,20 @@ ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 RESOLUTIONS = ["720p", "1080p"]
 
 GEMINI_MODELS_CHAIN = [
-    "gemini-3.5-flash",        # GA (replaced the dead gemini-3-flash-preview id)
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemma-4-31b-it",
 ]
 
-# Chain for the "Ý tưởng → Prompt (Ảnh)" + Storyboard paths.
-# NOTE: gemini-3.1-pro-preview returns 429 RESOURCE_EXHAUSTED on free /
-# non-billing API keys (Pro models aren't in the free tier), so it is NOT the
-# default — using it first just wastes a failed call on every request. 3.5
-# Flash is GA, works on the free tier, and is plenty for prompt writing. Add
-# "gemini-3.1-pro-preview" back at the front ONLY on a billing-enabled key.
+# Chain for the "Ý tưởng → Prompt (Ảnh)" + Storyboard + Analyzer paths.
 GEMINI_IMAGE_PROMPT_CHAIN = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
@@ -215,7 +299,7 @@ SERVER_PORT = 8000
 AISANDBOX_BASE = "https://aisandbox-pa.googleapis.com/v1"
 TRPC_BASE = "https://labs.google/fx/api/trpc"
 SESSION_URL = "https://labs.google/fx/api/auth/session"
-FLOW_URL = "https://labs.google/fx/tools/video-fx"
+FLOW_URL = "https://flow.google.com"
 IMAGE_FX_URL = "https://labs.google/fx/tools/image-fx"
 
 # ── Browser Headers ──────────────────────────────────────────

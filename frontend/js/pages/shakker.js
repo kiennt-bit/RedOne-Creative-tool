@@ -8,7 +8,7 @@ import { tasksStore } from '../tasks_store.js';
 import { ws } from '../ws.js';
 import {
   makeSelectionToolbar, attachCardCheckbox,
-  makeRetryFailedButton,
+  makeRetryFailedButton, makePromptEditButton,
 } from '../gallery_actions.js';
 
 const FLUX_BASE_TYPE = 19;
@@ -725,7 +725,13 @@ export function renderShakker(root) {
             const p = (it.prompt || '').trim();
             if (!p) return toast('Không có prompt', 'warning');
             navigator.clipboard.writeText(p); toast('Đã copy prompt', 'success');
-          } }, icon('copy', 14))));
+          } }, icon('copy', 14)),
+          it.id != null
+            ? makePromptEditButton({
+                taskId: taskState.id, item: it,
+                retryFn: (iid) => api.shakker.retryItems(taskState.id, [iid]),
+              })
+            : null));
       }
       // (Per-card "Gen lại" removed — regen is on the selection toolbar:
       //  tick cards → "Gen lại".)

@@ -34,14 +34,18 @@ they got.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import random as _rand
+import re
 from pathlib import Path
 from typing import Optional
 
 from .flow_client import (
     FlowClient,
     SessionDeadError,
+    _shrink_image_for_upload,
 )
 from ..config import (
     AISANDBOX_BASE,
@@ -99,15 +103,19 @@ class BridgeFlowClient(FlowClient):
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         )
-        # Per-account proxy (G-Labs #8) — loaded from config
-        from ..config import ACCOUNT_PROXIES
-        self._proxy: str = ACCOUNT_PROXIES.get(account_email, "")
+        self.TRPC = "https://flow.google.com/fx/api/trpc"
+        # NOTE: no per-account proxy here — in bridge mode every Google call
+        # (including download_video/download_image) executes inside the user's
+        # real Chrome tab, so the egress IP is Chrome's, not this process's.
+        # Per-account proxying is impossible by construction: all accounts
+        # share one browser.
         # Per-account error tracking (G-Labs #5)
         self._consecutive_errors: int = 0
         self._consecutive_403_count: int = 0
         self._last_request_status: str = "ok"
         self._total_errors: int = 0
         self._total_success: int = 0
+        self._token_lock = asyncio.Lock()
 
     def _record_success(self) -> None:
         """Mark a successful API call."""
@@ -139,17 +147,17 @@ class BridgeFlowClient(FlowClient):
     # ── Auth / token ────────────────────────────────────────────────
 
     async def _do_get_token(self):
-        """Fetch `ya29.*` Bearer token via the extension. The /fx/api/auth/session
-        endpoint is same-origin with labs.google (the user's tab), so the
-        proxy_fetch carries valid cookies and returns the NextAuth session.
+        """Fetch `ya29.*` Bearer token via the extension.
+
+        The extension's background service worker fetches
+        labs.google/fx/api/auth/session with manually-built Cookie header
+        (from chrome.cookies API), so this works regardless of whether
+        the user's tab is on labs.google or flow.google.com.
 
         A `status == 0` reply means the extension couldn't even run the fetch —
-        almost always because the labs.google tab was momentarily not found
-        (Chrome discarded it via Memory Saver, it was navigating/redirecting,
-        or the MV3 service worker had just woken). That's TRANSIENT, so we
-        retry a few times before declaring the session dead — otherwise a
-        split-second blip disables the account + pops the red banner even
-        though the user IS logged in (the "thi thoảng Session hết hạn" bug).
+        almost always because the extension service worker had issues.
+        That's TRANSIENT, so we retry a few times before declaring the
+        session dead.
         """
         log.info(f"[{self._account_email}] (bridge) fetching NextAuth session...")
         attempts = 3
@@ -194,8 +202,7 @@ class BridgeFlowClient(FlowClient):
                     self._account_email,
                     f"Extension không fetch được /fx/api/auth/session ({err or 'no detail'}) "
                     f"sau {attempts} lần thử. Kiểm tra: chrome://extensions có 'RedOne Auth Helper' "
-                    "+ popup 3 dòng xanh + tab labs.google/fx đang mở, đã đăng nhập, và ĐỪNG để "
-                    "Chrome 'ngủ' (discard) tab đó.",
+                    "+ popup 3 dòng xanh + tab flow.google.com đang mở, đã đăng nhập.",
                 )
 
             # 200 OK but no access_token = page returned but user signed out.
@@ -205,7 +212,7 @@ class BridgeFlowClient(FlowClient):
                 raise SessionDeadError(
                     self._account_email,
                     "Chưa đăng nhập Google trong Chrome thật (không phải Cloak). "
-                    "Mở tab https://labs.google/fx/tools/flow trong Chrome thật, "
+                    "Mở tab https://flow.google.com trong Chrome thật, "
                     "click Sign in, chọn account Google. Sau đó retry task.",
                 )
 
@@ -215,26 +222,24 @@ class BridgeFlowClient(FlowClient):
                 f"Không lấy được session token (HTTP {status}, error: {err}). Login lại trong Chrome.",
             )
 
-    async def renew_token(self):
-        """Force a fresh /fx/api/auth/session. If 403s have cascaded
-        (3+ consecutive), push session commands to clear cookies and
-        reload the tab (G-Labs _applyThemeUpdates strategy)."""
-        log.info(f"[{self._account_email}] (bridge) renewing token...")
-        self._token = None
+    async def renew_token(self, bad_token: Optional[str] = None):
+        """Force a fresh /fx/api/auth/session."""
+        async with self._get_token_lock():
+            # If a concurrent task already successfully renewed the token, reuse it!
+            if bad_token and self._token != bad_token:
+                log.info(f"[{self._account_email}] (bridge) token already renewed by another task.")
+                return
 
-        # Aggressive reset when 403s cascade
-        if self._consecutive_403_count >= 3:
-            log.warning(
-                f"[{self._account_email}] 403 cascade ({self._consecutive_403_count}x) "
-                "→ pushing session commands: clear_cookies + reload_tab"
-            )
-            bridge.push_session_command("clear_cookies")
-            bridge.push_session_command("delay", {"ms": 2000})
-            bridge.push_session_command("reload_tab")
-            bridge.push_session_command("delay", {"ms": 3000})
-            self._consecutive_403_count = 0
+            log.info(f"[{self._account_email}] (bridge) renewing token...")
+            self._token = None
 
-        await self.ensure_token()
+
+            # _do_get_token, NOT ensure_token: we already hold _token_lock and
+            # ensure_token() takes the SAME lock. asyncio.Lock isn't reentrant,
+            # so calling it here waits on ourselves forever — no timeout, no
+            # error, the batch's gather() simply never returns. Fires on the
+            # first 403 of a run and freezes the whole task.
+            await self._do_get_token()
 
     # ── Sandbox HTTP calls (route via bridge) ───────────────────────
 
@@ -243,7 +248,7 @@ class BridgeFlowClient(FlowClient):
     ) -> dict:
         """Replacement for the Playwright-based version. Calls
         aisandbox-pa endpoint via bridge.proxy_fetch — runs inside the
-        user's labs.google tab so cookies + fingerprint are real.
+        user's flow.google.com tab so cookies + fingerprint are real.
         """
         await self.ensure_token()
         token = self._token or ""
@@ -308,7 +313,7 @@ class BridgeFlowClient(FlowClient):
                     return {"error": f"HTTP {status}", "text": err_text}
                 self._record_error(f"{status}")
                 try:
-                    await self.renew_token()
+                    await self.renew_token(token)
                 except SessionDeadError:
                     raise
                 token = self._token or ""
@@ -421,98 +426,719 @@ class BridgeFlowClient(FlowClient):
         except Exception as e:
             return {"error": str(e)}
 
-    # ── Credits check ──────────────────────────────────────────────
+    # ── Credits check (BOQ batchexecute) ─────────────────────────────
 
     async def check_credits(self) -> Optional[dict]:
-        """Hit /v1/credits via bridge and return {"remainingCredits": N}.
+        """Check remaining credits via batchexecute RPC `nzlxg`.
 
-        IMPORTANT: must return the SAME shape as the Playwright FlowClient
-        (`{"remainingCredits": <int>}`), because check_account() looks for
-        that exact key. The raw Google response uses `subscriptionCredits` /
-        `topUpCredits` / `credits` instead — returning it unparsed (the old
-        bug) made check_account never find `remainingCredits`, so the credit
-        column never updated on the accounts page even though gen worked.
-
-        We prefer `subscriptionCredits` (the "Tín dụng Flow" number Google
-        shows in the avatar popup), falling back to total `credits`.
+        Returns {"remainingCredits": N, "tier": "FREE|PRO|ULTRA"} on success.
         """
-        await self.ensure_token()
-        token = self._token or ""
         try:
-            r = await bridge.proxy_fetch(
-                url=f"{AISANDBOX_BASE}/credits",
-                method="GET",
-                headers={"Authorization": f"Bearer {token}"},
-                response_mode="json",
+            r = await bridge.batch_execute(
+                rpc_id="nzlxg",
+                inner_payload=[],
+                source_path="/",
                 timeout_ms=20000,
             )
-            status = r.get("status")
-            body = r.get("body")
-            if status == 200 and isinstance(body, dict):
-                val = body.get("subscriptionCredits")
-                if not isinstance(val, (int, float)):
-                    val = body.get("credits")
-                if isinstance(val, (int, float)):
-                    tier = _map_flow_tier(
-                        body.get("userPaygateTier"),
-                        body.get("serviceTier"),
-                        body.get("sku"),
-                    )
-                    return {"remainingCredits": int(val), "tier": tier}
-                log.warning(
-                    f"(bridge) check_credits: no credit field in body "
-                    f"keys={list(body.keys())}"
-                )
-                return {"error": "Không tìm thấy số credit trong response Google"}
-            log.warning(f"(bridge) check_credits: HTTP {status} {r.get('error')}")
-            return {"error": f"HTTP {status}"} if status else None
+            status = r.get("status", 0)
+            rpc_result = r.get("rpc_result")
+            err = r.get("error")
+            if status != 200 or err:
+                log.warning(f"(bridge) check_credits: status={status} error={err}")
+                return {"error": f"HTTP {status}: {err}"}
+
+            # nzlxg response: [totalCredits, ?, ?, ?, null, totalCredits]
+            # Example: [25021, 2, 3, 3, null, 25021]
+            if isinstance(rpc_result, list) and len(rpc_result) >= 1:
+                credits = rpc_result[0] if isinstance(rpc_result[0], (int, float)) else 0
+                return {"remainingCredits": int(credits), "tier": "FREE"}
+            log.warning(f"(bridge) check_credits: unexpected result: {rpc_result}")
+            return {"error": "Unexpected credits response format"}
         except Exception as e:
             log.error(f"(bridge) check_credits error: {e}")
             return {"error": str(e)}
 
+    # ── Upload Image (BOQ batchexecute `maseQ`) ─────────────────────
+
+    async def _upload_image_raw(self, path: "Path") -> Optional[str]:
+        """Upload image to Flow via batchexecute RPC `maseQ`.
+
+        Returns the media_id (UUID string) from the response, or raises ValueError.
+        """
+        import uuid as _uuid
+        raw, mime = await asyncio.to_thread(_shrink_image_for_upload, path)
+        b64 = base64.b64encode(raw).decode("utf-8")
+        recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+
+        client_ctx = [
+            None, 22, None, None, None,
+            self.project_id,
+            None, None, None, None,
+            [recaptcha_token, 1] if recaptcha_token else None,
+        ]
+
+        uuid1 = str(_uuid.uuid4()).upper()
+        uuid2 = str(_uuid.uuid4()).upper()
+
+        inner_payload = [
+            client_ctx,
+            b64,
+            mime,
+            1,
+            None, None, None, None,
+            path.name,
+            None,
+            uuid1,
+            uuid2,
+        ]
+
+        log.info(f"[{self._account_email}] (BOQ) Uploading ref image {path.name} ({len(raw)} bytes, {mime})...")
+        r = await bridge.batch_execute(
+            rpc_id="maseQ",
+            inner_payload=inner_payload,
+            source_path=f"/project/{self.project_id}",
+            timeout_ms=60000,
+        )
+
+        rpc_result = r.get("rpc_result")
+        if not rpc_result or not isinstance(rpc_result, list) or not rpc_result[0]:
+            err = r.get("error") or "Unknown upload failure"
+            log.error(f"[{self._account_email}] (BOQ) Upload failed: {err}")
+            raise ValueError(f"Upload ảnh tham chiếu lỗi: {err}")
+
+        media_id = rpc_result[0][0]
+        log.info(f"[{self._account_email}] (BOQ) Upload OK: {path.name} → {media_id}")
+        return media_id
+
+    # ── Image gen (BOQ batchexecute `ogiZ0b`) ────────────────────────
+
+    # Model name mapping for batchexecute (may differ from REST API)
+    BOQ_IMAGE_MODEL_MAP = {
+        "nano_banana_pro": "GEM_PIX_2",
+        "nano_banana_2": "GEM_PIX_2",
+        "imagen_4": "GEM_PIX_2",
+        "imagen_3_5": "GEM_PIX_2",
+    }
+
+    # Aspect ratio → numeric code used in batchexecute
+    BOQ_ASPECT_RATIO_MAP = {
+        "1:1": 3,
+        "16:9": 3,
+        "9:16": 3,
+        "3:4": 3,
+        "4:3": 3,
+    }
+
+    async def generate_image(
+        self,
+        prompt: str,
+        model_key: str = "nano_banana_pro",
+        aspect_ratio: str = "1:1",
+        reference_images: list[str] | None = None,
+        seed: int | None = None,
+    ) -> dict:
+        """Generate an image using BOQ batchexecute RPC `ogiZ0b`.
+
+        Supports text-to-image and image-to-image (reference images).
+        Returns dict with keys: media_id, download_url, seed, width, height
+        """
+        import random as _rand
+        import uuid as _uuid
+
+        if seed is None:
+            seed = _rand.randint(100000000, 2147483647)
+
+        model_name = self.BOQ_IMAGE_MODEL_MAP.get(model_key, "GEM_PIX_2")
+        ar_code = self.BOQ_ASPECT_RATIO_MAP.get(aspect_ratio, 3)
+
+        # Get reCAPTCHA token
+        recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+
+        # Build batch UUIDs
+        batch_uuid = str(_uuid.uuid4()).upper()
+        op_uuid = str(_uuid.uuid4()).upper()
+
+        # Build reference images array for index 2
+        # Format from HAR: [["<media_id>", null, null, null, 1], ...]
+        ref_arr = None
+        if reference_images:
+            ref_arr = [[ref_id, None, None, None, 1] for ref_id in reference_images]
+
+        client_ctx = [
+            None, 22, None, None, None,
+            self.project_id,
+            None, None, None, None,
+            [recaptcha_token, 1] if recaptcha_token else None,
+        ]
+        prompt_arr = [[[prompt]]]
+
+        inner_payload = [
+            None,
+            [
+                [
+                    None, None, ref_arr, seed, ar_code, model_name, None,
+                    client_ctx,
+                    prompt_arr,
+                    None, None, None,
+                    batch_uuid, op_uuid,
+                ]
+            ],
+            1,
+            client_ctx,
+            [str(_uuid.uuid4()).upper()],
+        ]
+
+        source_path = f"/project/{self.project_id}"
+
+        log.info(
+            f"[{self._account_email}] (BOQ) Generating image: model={model_name}, "
+            f"seed={seed}, refs={len(reference_images or [])}, project={self.project_id}"
+        )
+        log.info(
+            f"(BOQ) inner_payload structure: top={len(inner_payload)} items, "
+            f"req_item={len(inner_payload[1][0])} items, "
+            f"ctx={len(inner_payload[1][0][7])} items, "
+            f"payload_json={json.dumps(inner_payload, ensure_ascii=False)[:500]}"
+        )
+
+        # Retry loop
+        result = None
+        for attempt in range(5):
+            if attempt > 0:
+                await asyncio.sleep(_rand.uniform(1.5, 3.0))
+                # Refresh reCAPTCHA token
+                recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+                new_ctx = [
+                    None, 22, None, None, None,
+                    self.project_id,
+                    None, None, None, None,
+                    [recaptcha_token, 1] if recaptcha_token else None,
+                ]
+                inner_payload[1][0][7] = new_ctx
+                inner_payload[3] = new_ctx
+                # New seed on retry
+                seed = _rand.randint(100000000, 2147483647)
+                inner_payload[1][0][3] = seed
+
+            try:
+                r = await bridge.batch_execute(
+                    rpc_id="ogiZ0b",
+                    inner_payload=inner_payload,
+                    source_path=source_path,
+                    timeout_ms=120000,
+                )
+            except BridgeExtensionOfflineError as e:
+                raise ValueError(str(e))
+            except BridgeTimeoutError as e:
+                log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} timeout: {e}")
+                if attempt < 4:
+                    continue
+                raise ValueError(str(e))
+
+            status = r.get("status", 0)
+            err = r.get("error")
+            rpc_result = r.get("rpc_result")
+
+            if err and status == 0:
+                log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} error: {err}")
+                if attempt < 4:
+                    continue
+                raise ValueError(f"batchexecute error: {err}")
+
+            if status != 200:
+                err_text = r.get("body_text", err or "")
+                log.warning(f"(BOQ) ogiZ0b HTTP {status}: {err_text[:200]}")
+                if attempt < 4:
+                    continue
+                raise ValueError(f"batchexecute HTTP {status}: {err_text[:200]}")
+
+            if err:
+                log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} RPC error: {err}")
+                if attempt < 4:
+                    continue
+                raise ValueError(f"Google RPC error: {err}")
+
+            if rpc_result is None:
+                log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1}: no rpc_result in response")
+                if attempt < 4:
+                    continue
+                raise ValueError("No RPC result in batchexecute response")
+
+            result = rpc_result
+            break
+        else:
+            raise ValueError("Image gen failed after 5 attempts")
+
+        # Parse BOQ response
+        return self._extract_boq_image_result(result, seed)
+
+    def _extract_boq_image_result(self, rpc_result: list, seed: int) -> dict:
+        """Extract image data from ogiZ0b RPC response.
+
+        Response structure (from HAR):
+        [
+          [  # media array
+            [IMAGE_ID, null, BATCH_ID, null, null, null,
+              [  # image data
+                [null, SEED, ..., PROMPT, ..., BATCH_ID, null,
+                  DOWNLOAD_URL, AR_CODE, ..., IMAGE_ID
+                ],
+                null,
+                [WIDTH, HEIGHT]
+              ]
+            ]
+          ],
+          [  # workflow/batch metadata
+            [BATCH_ID, ...]
+          ]
+        ]
+        """
+        try:
+            media_arr = rpc_result[0]
+            if not media_arr or not isinstance(media_arr, list):
+                raise ValueError(f"Empty media array in BOQ response: {str(rpc_result)[:300]}")
+
+            first_media = media_arr[0]
+            image_id = first_media[0]
+
+            image_data = first_media[6]  # [[...], null, [W, H]]
+            gen_entry = image_data[0]    # [null, seed, ..., url, ...]
+            dims = image_data[2]         # [width, height]
+
+            actual_seed = gen_entry[1] if gen_entry[1] else seed
+            download_url = gen_entry[13]  # flow-content.google URL
+            media_id = gen_entry[17] if len(gen_entry) > 17 else image_id
+
+            width = dims[0] if dims and len(dims) > 0 else 0
+            height = dims[1] if dims and len(dims) > 1 else 0
+
+            self._record_success()
+            log.info(
+                f"[{self._account_email}] (BOQ) Image gen OK: "
+                f"{image_id}, {width}x{height}, seed={actual_seed}"
+            )
+
+            return {
+                "media_id": media_id or image_id,
+                "download_url": download_url,
+                "seed": actual_seed,
+                "width": width,
+                "height": height,
+            }
+        except (IndexError, TypeError, KeyError) as e:
+            log.error(
+                f"[{self._account_email}] (BOQ) Failed to parse ogiZ0b response: "
+                f"{e} — raw: {str(rpc_result)[:500]}"
+            )
+
+    # ── Upscale Image (BOQ batchexecute `SPrCad`) ─────────────────────
+
+    async def upscale_image(self, media_id: str, resolution: str = "4k") -> dict:
+        """Upscale an image to 2K or 4K via BOQ batchexecute RPC `SPrCad`.
+
+        Args:
+            media_id: The media_id / generation_id of the source image
+            resolution: "2k" or "4k"
+
+        Returns:
+            dict with:
+                - media_id: str
+                - download_url: Optional[str]
+                - encoded_image: bytes (raw JPEG/PNG bytes)
+                - width: int
+                - height: int
+        """
+        await self.ensure_token()
+
+        quality_code = 1 if resolution.lower() == "2k" else 2
+        log.info(
+            f"[{self._account_email}] (BOQ) Upscaling image {media_id} to {resolution} "
+            f"(code={quality_code})"
+        )
+
+        source_path = f"/project/{self.project_id}" if self.project_id else "/project"
+        result = None
+
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(_rand.uniform(2.0, 4.0))
+
+            recaptcha_token = await self.get_recaptcha_token("IMAGE_GENERATION")
+
+            client_ctx = [
+                None, 22, None, None, None,
+                self.project_id,
+                None, None, None, None,
+                [recaptcha_token, 1] if recaptcha_token else None,
+            ]
+
+            inner_payload = [
+                media_id,
+                quality_code,
+                client_ctx,
+            ]
+
+            try:
+                r = await bridge.batch_execute(
+                    rpc_id="SPrCad",
+                    inner_payload=inner_payload,
+                    source_path=source_path,
+                    timeout_ms=180000,
+                )
+            except BridgeExtensionOfflineError as e:
+                raise ValueError(str(e))
+            except BridgeTimeoutError as e:
+                log.warning(f"(BOQ) SPrCad attempt {attempt + 1} timeout: {e}")
+                if attempt < 2:
+                    continue
+                raise ValueError(str(e))
+
+            status = r.get("status", 0)
+            err = r.get("error")
+            rpc_result = r.get("rpc_result")
+
+            if err and status == 0:
+                log.warning(f"(BOQ) SPrCad attempt {attempt + 1} error: {err}")
+                if attempt < 2:
+                    continue
+                raise ValueError(f"batchexecute error: {err}")
+
+            if status != 200:
+                err_text = r.get("body_text", err or "")
+                log.warning(f"(BOQ) SPrCad HTTP {status}: {err_text[:200]}")
+                if attempt < 2:
+                    continue
+                raise ValueError(f"batchexecute HTTP {status}: {err_text[:200]}")
+
+            if err:
+                log.warning(f"(BOQ) SPrCad attempt {attempt + 1} RPC error: {err}")
+                if attempt < 2:
+                    continue
+                raise ValueError(f"Google RPC error: {err}")
+
+            if rpc_result is None:
+                log.warning(f"(BOQ) SPrCad attempt {attempt + 1}: no rpc_result in response")
+                if attempt < 2:
+                    continue
+                raise ValueError("No RPC result in batchexecute response")
+
+            result = rpc_result
+            break
+        else:
+            raise ValueError("Upscale failed after 3 attempts")
+
+        # Parse SPrCad response
+        raw_bytes = None
+        download_url = None
+        new_media_id = media_id
+
+        def _scan_for_data(val):
+            nonlocal raw_bytes, download_url, new_media_id
+            if isinstance(val, str):
+                if val.startswith("http://") or val.startswith("https://"):
+                    if "flow-content.google" in val or "googleusercontent" in val:
+                        download_url = val
+                elif len(val) > 200:
+                    try:
+                        decoded = base64.b64decode(val)
+                        if (
+                            decoded.startswith(b"\xff\xd8\xff")  # JPEG
+                            or decoded.startswith(b"\x89PNG")    # PNG
+                            or decoded.startswith(b"RIFF")       # WebP
+                        ):
+                            raw_bytes = decoded
+                    except Exception:
+                        pass
+                elif re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', val, re.I):
+                    if val != media_id:
+                        new_media_id = val
+            elif isinstance(val, list):
+                for item in val:
+                    _scan_for_data(item)
+                    if raw_bytes:
+                        break
+            elif isinstance(val, dict):
+                for item in val.values():
+                    _scan_for_data(item)
+                    if raw_bytes:
+                        break
+
+        _scan_for_data(result)
+
+        if not raw_bytes and not download_url:
+            log.error(
+                f"[{self._account_email}] (BOQ) SPrCad missing image data in response: "
+                f"{str(result)[:500]}"
+            )
+            raise ValueError("Upscale response thiếu cả image bytes lẫn download_url")
+
+        width, height = 0, 0
+        if raw_bytes:
+            try:
+                import io as _io
+                from PIL import Image as _Image
+                with _Image.open(_io.BytesIO(raw_bytes)) as _im:
+                    width, height = _im.size
+            except Exception:
+                width, height = {"2k": (2560, 1440), "4k": (3840, 2160)}.get(
+                    resolution.lower(), (3840, 2160)
+                )
+
+        self._record_success()
+        log.info(
+            f"[{self._account_email}] (BOQ) Upscale OK: {new_media_id}, "
+            f"resolution={resolution}, {width}x{height}, "
+            f"size={len(raw_bytes) if raw_bytes else 0}"
+        )
+
+        return {
+            "media_id": new_media_id,
+            "download_url": download_url,
+            "encoded_image": raw_bytes,
+            "width": width,
+            "height": height,
+        }
+
+    # ── Video gen (BOQ batchexecute `eb1hJf` + `jwpduf`) ───────────
+
+    BOQ_VIDEO_MODEL_MAP = {
+        "veo_3_generate_video_fast": "veo_3_1_t2v_fast",
+        "veo_3_generate_video_lite_lp": "veo_3_1_t2v_lite_low_priority",
+        "veo_3_1_t2v_lite_low_priority": "veo_3_1_t2v_lite_low_priority",
+        "veo_3_1_i2v_lite_low_priority": "veo_3_1_i2v_lite_low_priority",
+        "veo_2_i2v_fast": "veo_2_i2v_fast",
+        "veo_2_generate_video_fast": "veo_2_i2v_fast",
+    }
+
+    async def generate_video(
+        self,
+        prompt: str,
+        reference_image: Optional[str] = None,
+        end_image: Optional[str] = None,
+        model_key: str = "veo_3_generate_video_fast",
+        aspect_ratio: str = "LANDSCAPE",
+        duration: int = 8,
+    ) -> Optional[str]:
+        """Submit video generation request via BOQ batchexecute RPC `eb1hJf`.
+
+        Returns the generation/media ID.
+        """
+        import uuid as _uuid
+
+        # Map aspect ratio: 2 = 16:9 (LANDSCAPE), 1 = 9:16 (PORTRAIT)
+        ar_code = 1 if ("9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper()) else 2
+
+        # Map model name
+        if reference_image:
+            model_name = "veo_3_1_i2v_lite_low_priority"
+        else:
+            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_t2v_lite_low_priority")
+
+        recaptcha_token = await self.get_recaptcha_token("VIDEO_GENERATION")
+
+        client_ctx = [
+            None, 22, None, None, None,
+            self.project_id,
+            None, None, None, None,
+            [recaptcha_token, 1] if recaptcha_token else None,
+        ]
+
+        ref_config = None
+        if reference_image:
+            # reference_image is media_id
+            ref_config = [None, reference_image, None, None, None, [None, None, 1, 1]]
+
+        prompt_item = [None, None, [[[prompt or "Static shot"]]]]
+        uuid_a = str(_uuid.uuid4()).upper()
+        uuid_b = str(_uuid.uuid4()).upper()
+
+        candidate = [
+            prompt_item,
+            model_name,
+            ar_code,
+            None,
+            ref_config,
+            [None, None, None, None, uuid_a, uuid_b],
+        ]
+
+        batch_uuid = str(_uuid.uuid4()).upper()
+        inner_payload = [
+            [candidate],
+            client_ctx,
+            [batch_uuid, 2],
+        ]
+
+        source_path = f"/project/{self.project_id}"
+        log.info(
+            f"[{self._account_email}] (BOQ) Generating video: model={model_name}, "
+            f"has_ref={bool(reference_image)}, project={self.project_id}"
+        )
+
+        r = await bridge.batch_execute(
+            rpc_id="eb1hJf",
+            inner_payload=inner_payload,
+            source_path=source_path,
+            timeout_ms=120000,
+        )
+
+        status = r.get("status", 0)
+        err = r.get("error")
+        rpc_result = r.get("rpc_result")
+
+        if err or status != 200 or not rpc_result:
+            log.error(f"(BOQ) eb1hJf failed: status={status}, err={err}")
+            raise ValueError(f"Tạo video thất bại: {err or f'HTTP {status}'}")
+
+        try:
+            candidates = rpc_result[3] if len(rpc_result) > 3 and isinstance(rpc_result[3], list) else rpc_result[1]
+            generation_id = candidates[0][0]
+            log.info(f"[{self._account_email}] (BOQ) Video generation started: {generation_id}")
+            return generation_id
+        except (IndexError, TypeError) as e:
+            log.error(f"(BOQ) Could not extract generation_id from eb1hJf: {e}, res={str(rpc_result)[:300]}")
+            raise ValueError(f"Không thể trích xuất ID video: {e}")
+
+    async def poll_status(self, generation_id: str) -> dict:
+        """Poll video generation status via BOQ batchexecute RPC `jwpduf`."""
+        inner_payload = [
+            None,
+            None,
+            [[generation_id]],
+        ]
+
+        try:
+            r = await bridge.batch_execute(
+                rpc_id="jwpduf",
+                inner_payload=inner_payload,
+                source_path=f"/project/{self.project_id}",
+                timeout_ms=30000,
+            )
+            rpc_result = r.get("rpc_result")
+            if not rpc_result or not isinstance(rpc_result, list) or len(rpc_result) < 3:
+                return {"state": "RUNNING"}
+
+            items = rpc_result[2]
+            if not items or not isinstance(items, list):
+                return {"state": "COMPLETED"}
+
+            for it in items:
+                if isinstance(it, list) and len(it) > 0 and it[0] == generation_id:
+                    meta = it[5] if len(it) > 5 and isinstance(it[5], list) else []
+                    status_code = None
+                    if len(meta) > 8 and isinstance(meta[8], list) and len(meta[8]) > 0:
+                        status_code = meta[8][0]
+
+                    if status_code == 3:
+                        log.info(f"[{self._account_email}] (BOQ) Video {generation_id} COMPLETED")
+                        return {
+                            "state": "COMPLETED",
+                            "name": generation_id,
+                            "media_id": generation_id,
+                            "video_id": generation_id,
+                            "generation_id": generation_id,
+                            "mediaMetadata": {
+                                "mediaStatus": {"mediaGenerationStatus": "COMPLETED"},
+                                "videoUri": f"https://flow-content.google/video/{generation_id}",
+                            },
+                            "media": [{"name": generation_id}],
+                        }
+                    elif status_code == 6:
+                        return {"state": "RUNNING"}
+                    elif status_code is not None:
+                        log.warning(f"[{self._account_email}] (BOQ) Video {generation_id} status code: {status_code}")
+
+            return {"state": "RUNNING"}
+        except Exception as e:
+            log.warning(f"(BOQ) poll_status error for {generation_id}: {e}")
+            return {"state": "RUNNING"}
+
     # ── Binary downloads ───────────────────────────────────────────
 
+    async def get_download_url(self, media_id: str, for_video: bool = True) -> Optional[str]:
+        """Fetch signed download URL for media_id via BOQ RPC `as29s`.
+
+        Queries flow-content.google signed CDN URL directly from Google Flow.
+        For videos, prioritizes the `/video/` stream over the `/image/` thumbnail.
+        """
+        if not media_id:
+            return None
+
+        attempts = 3 if for_video else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                r = await bridge.batch_execute(
+                    rpc_id="as29s",
+                    inner_payload=[media_id],
+                    source_path=f"/project/{self.project_id}",
+                    timeout_ms=30000,
+                )
+                rpc_result = r.get("rpc_result")
+                if rpc_result:
+                    import re
+                    found_urls = re.findall(r'https://flow-content\.google/[^\s",\']+', json.dumps(rpc_result))
+                    if for_video:
+                        video_urls = [u for u in found_urls if "/video/" in u]
+                        if video_urls:
+                            url = video_urls[0]
+                            log.info(f"[{self._account_email}] (BOQ) Got signed VIDEO download URL (attempt {attempt}): {url[:80]}...")
+                            return url
+                        log.warning(
+                            f"[{self._account_email}] (BOQ) as29s attempt {attempt}/{attempts}: "
+                            f"found image URL but /video/ URL not ready yet"
+                        )
+                    elif found_urls:
+                        url = found_urls[0]
+                        log.info(f"[{self._account_email}] (BOQ) Got signed download URL: {url[:80]}...")
+                        return url
+                log.warning(f"[{self._account_email}] (BOQ) as29s returned no URL (attempt {attempt}): {rpc_result}")
+            except Exception as e:
+                log.warning(f"[{self._account_email}] (BOQ) get_download_url error (attempt {attempt}): {e}")
+
+            if attempt < attempts:
+                await asyncio.sleep(2)
+
+        return None
+
     async def _fetch_mp4_via_browser(self, media_id: str) -> Optional[bytes]:
-        """Fetch generated video bytes via bridge — runs inside the
-        user's labs.google tab so the 307 redirect to flow-content.google
-        gets authenticated via session cookies automatically.
+        """Fetch generated video bytes via bridge.
 
-        URL format matches the original Playwright FlowClient EXACTLY:
-            /fx/api/trpc/media.getMediaUrlRedirect?name=<media_id>
-        (NOT `?input={"json":{"mediaId":...}}` — that's wrong format
-        and returns 400.)
-
-        Browser fetch follows the 307 redirect automatically, so we
-        receive the CDN video bytes directly.
+        1. Query signed CDN video URL via as29s RPC (specifically /video/)
+        2. Fetch binary via bridge proxy_fetch_binary
+        3. Fallback to labs.google trpc redirect if as29s doesn't give a video URL
         """
-        url = f"{self.TRPC}/media.getMediaUrlRedirect?name={media_id}"
+        # Method 1: get signed /video/ URL via as29s
+        download_url = await self.get_download_url(media_id, for_video=True)
+        if download_url:
+            try:
+                status, body, _ = await bridge.proxy_fetch_binary(
+                    url=download_url,
+                    method="GET",
+                    timeout_ms=300000,
+                )
+                if status == 200 and body and len(body) > 100_000:
+                    if body.startswith(b"\xff\xd8\xff"):
+                        log.warning(f"(bridge) _fetch_mp4_via_browser: Got JPEG image instead of MP4 video!")
+                    else:
+                        log.info(f"(bridge) _fetch_mp4_via_browser OK via as29s: {len(body)} bytes (MP4)")
+                        return body
+                log.warning(f"(bridge) _fetch_mp4_via_browser status={status}, size={len(body) if body else 0}")
+            except Exception as e:
+                log.warning(f"(bridge) _fetch_mp4_via_browser error on signed URL: {e}")
+
+        # Method 2: fallback to labs.google trpc redirect
+        trpc_url = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}"
         try:
-            status, body, _ = await bridge.proxy_fetch_binary(
-                url=url,
+            status, body, resp_headers = await bridge.proxy_fetch_binary(
+                url=trpc_url,
                 method="GET",
-                # No headers needed — same-origin from labs.google tab,
-                # cookies attach automatically. Bearer token NOT required
-                # for this endpoint (session cookies authenticate).
-                timeout_ms=300000,  # videos can be big
+                timeout_ms=300000,
             )
-            if status == 200 and body and len(body) > 100_000:
-                log.info(f"(bridge) _fetch_mp4_via_browser OK: {len(body)} bytes")
+            if status == 200 and body and len(body) > 100_000 and not body.startswith(b"\xff\xd8\xff"):
+                log.info(f"(bridge) _fetch_mp4_via_browser OK via trpc: {len(body)} bytes")
                 return body
-            log.warning(f"(bridge) _fetch_mp4_via_browser: status={status}, size={len(body) if body else 0}")
-            return None
         except Exception as e:
-            log.error(f"(bridge) _fetch_mp4_via_browser error: {e}")
-            return None
+            log.error(f"(bridge) _fetch_mp4_via_browser trpc error: {e}")
 
-    async def get_download_url(self, media_id: str) -> Optional[str]:
-        """Override — original uses self._page.request which is None in
-        bridge mode. Bridge fetch follows redirects automatically and we
-        can't read Location header from a cross-origin 307 via JS fetch
-        (CORS blocks header access on opaqueredirect responses), so we
-        skip this fallback path. _fetch_mp4_via_browser handles download
-        directly anyway.
-        """
-        log.debug(f"(bridge) get_download_url skipped (bridge mode uses direct fetch)")
         return None
 
     async def download_video(self, url: str, output_path: str) -> bool:

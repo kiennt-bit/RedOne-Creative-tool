@@ -305,17 +305,17 @@ class BrowserBridge:
         if not self.is_extension_live():
             raise BridgeExtensionOfflineError(
                 "Extension chưa kết nối. Mở Chrome có cài 'RedOne Auth Helper' "
-                "+ tab labs.google đã đăng nhập."
+                "+ tab flow.google.com đã đăng nhập."
             )
         # An extension is polling, but does any instance actually hold a
-        # signed-in labs.google tab? If not — and nothing is mid-flight (which
+        # signed-in flow.google.com tab? If not — and nothing is mid-flight (which
         # would mean a ready instance is just busy) — fail fast with a clear
         # message instead of letting the task sit unclaimed until TASK_TTL_S.
         if not self.is_ready_extension_live() and not self._in_flight:
             raise BridgeExtensionOfflineError(
-                "Đã thấy extension nhưng CHƯA có tab labs.google đã đăng nhập. "
+                "Đã thấy extension nhưng CHƯA có tab Flow đã đăng nhập. "
                 "Trong Chrome (profile có 'RedOne Auth Helper'): mở tab "
-                "https://labs.google/fx/tools/flow, đăng nhập, ghim tab, rồi gen lại."
+                "https://flow.google.com, đăng nhập, ghim tab, rồi gen lại."
             )
         klass, seq = _gen_priority.get()
         enq = next(_enq_counter)
@@ -338,7 +338,7 @@ class BrowserBridge:
             if not self.is_extension_live() and not self._in_flight:
                 raise BridgeExtensionOfflineError(
                     f"Extension ngắt kết nối khi task {kind} còn đang xếp hàng. "
-                    "Mở lại Chrome có 'RedOne Auth Helper' + tab labs.google "
+                    "Mở lại Chrome có 'RedOne Auth Helper' + tab flow.google.com "
                     "đã đăng nhập, rồi thử lại."
                 )
             remaining = queue_deadline - time.time()
@@ -423,6 +423,37 @@ class BrowserBridge:
         {"cookies": [{domain,name,value,path,secure,hostOnly,expirationDate}], "count": N}.
         """
         return await self._enqueue_and_wait("get_cookies", {"domains": domains})
+
+    async def batch_execute(
+        self,
+        rpc_id: str,
+        inner_payload: Any,
+        source_path: str = "/",
+        timeout_ms: int = 120000,
+    ) -> dict:
+        """Execute a BOQ/WIZ batchexecute RPC from inside the user's
+        flow.google.com tab.
+
+        Google migrated Flow's API from aisandbox-pa REST (Bearer token)
+        to batchexecute RPC (cookie auth + CSRF token). This method sends
+        the RPC through the extension, which injects it into the tab
+        where the browser automatically attaches Google auth cookies.
+
+        Args:
+            rpc_id: The WIZ RPC ID (e.g. "ogiZ0b" for image gen)
+            inner_payload: The inner payload (Python value, will be JSON-serialized)
+            source_path: The source-path URL param (e.g. "/project/<uuid>")
+            timeout_ms: Timeout for the fetch call inside the tab
+
+        Returns:
+            dict with keys: status, rpc_result, chunks, error
+        """
+        return await self._enqueue_and_wait("batch_execute", {
+            "rpc_id": rpc_id,
+            "inner_payload": inner_payload,
+            "source_path": source_path,
+            "timeout_ms": timeout_ms,
+        })
 
     async def proxy_fetch_binary(
         self,

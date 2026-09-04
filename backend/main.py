@@ -31,6 +31,7 @@ from .routers import (
     batch_color as batch_color_router,
     hgstock as hgstock_router,
     ps_genfill as ps_genfill_router,
+    tracking as tracking_router,
 )
 from .queue_manager import queue as task_queue, shakker_queue
 
@@ -127,7 +128,39 @@ async def lifespan(app: FastAPI):
     task_queue.start()
     shakker_queue.start()   # independent lane → runs concurrently with Flow
     recover_interrupted_tasks()
+
+    # ── Firebase session-time heartbeat ──────────────────────────────
+    # Background task sends a heartbeat every 60s while the tool is open,
+    # so Firestore accumulates accurate session-time per user.
+    _heartbeat_task = None
+    try:
+        from .services import tracking as _tracking
+        from .config import FIREBASE_HEARTBEAT_INTERVAL_S
+        if _tracking.is_enabled():
+            async def _heartbeat_loop():
+                while True:
+                    await _asyncio.sleep(FIREBASE_HEARTBEAT_INTERVAL_S)
+                    try:
+                        from .services.oauth_auth import load_session as _ls
+                        sess = _ls()
+                        if sess:
+                            await _tracking.heartbeat(
+                                sess.get("email", ""),
+                                display_name=sess.get("name", ""),
+                            )
+                    except Exception:
+                        pass
+            _heartbeat_task = _asyncio.create_task(_heartbeat_loop())
+            log.info("Firebase tracking heartbeat started (interval=%ds)",
+                     FIREBASE_HEARTBEAT_INTERVAL_S)
+    except Exception as e:
+        log.debug("Firebase heartbeat setup skipped: %s", e)
+
     yield
+
+    # ── Shutdown ─────────────────────────────────────────────────────
+    if _heartbeat_task:
+        _heartbeat_task.cancel()
     task_queue.stop()
     shakker_queue.stop()
     log.info(f"=== {APP_NAME} shutting down ===")
@@ -235,6 +268,7 @@ app.include_router(video_editor_router.router)
 app.include_router(batch_color_router.router)
 app.include_router(hgstock_router.router)
 app.include_router(ps_genfill_router.router)
+app.include_router(tracking_router.router)
 
 
 @app.get("/api/health")

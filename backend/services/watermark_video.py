@@ -491,6 +491,168 @@ async def _run_ffmpeg_delogo(
     return output_video
 
 
+# ── Gemini watermark removal for a single IMAGE (nano banana outputs) ──
+# Google Flow stamps a small Gemini ✦ sparkle on every nano_banana_* image. We
+# repaint it with LaMa — the same engine the video pipeline treats as its
+# high-quality option — because cv2.inpaint left a visible soft blur on textured
+# backgrounds. There is deliberately NO cv2 fallback: if LaMa isn't installed we
+# keep the original image (watermark stays) rather than degrade it.
+#
+# WHERE the glyph is, is found by correlation — NOT by a calibrated table. Google
+# re-stamps the sparkle at a CONSTANT ~46-48px after an upscale (it is not scaled
+# with the image) and its margin off the corner does not grow proportionally
+# (69px at 1366x768, 89px at 2752x1536, 96px at 5504x3072), so fractional
+# per-ratio anchors only ever fit one resolution. Instead we template-match the
+# glyph's own shape against a high-passed bottom-right window: verified within
+# 1px on real 16:9/4:3/1:1/3:4/9:16 outputs AND exact at 2K/4K upscales, scoring
+# 0.65-0.87. This only LOCATES the glyph — LaMa does the erasing.
+_WM_RX = _WM_RY = 36       # mask half-extents (glyph half is ~24 → 12px of slack)
+# Distance of the glyph CENTRE from the right/bottom edges, measured on real
+# outputs. It barely moves for a given size class, which is why the prior below
+# is trustworthy even when the correlation is not:
+#   1366x768 (92,97)  768x1376 (98,97)  1024² (103,102)  1200x896/896x1200 (100,100)
+#   2752x1536 (113,113)            5504x3072 (120,120)
+_WM_MARGINS = ((1500, 98), (3000, 113))     # (max dimension, margin)
+_WM_MARGIN_BIG = 120                        # 4K and above
+_WM_INNER = 0.34           # inner-radius ratio → concave sparkle sides
+_WM_DILATE = 3             # px grown to swallow the soft halo / anti-alias edge
+
+# 4K/8K upscales exceed PIL's decompression-bomb ceiling (a 15360x8640 upscale is
+# ~133M px vs the 89M default). These are our own generated files, so lift it.
+try:
+    from PIL import Image as _PILImage
+    _PILImage.MAX_IMAGE_PIXELS = None
+except Exception:
+    pass
+
+
+def _star_points(cx: float, cy: float, rx: float, ry: float) -> list:
+    """4-point sparkle outline: tips at N/E/S/W, inner vertices on the diagonals."""
+    ix, iy = rx * _WM_INNER, ry * _WM_INNER
+    return [
+        (cx, cy - ry), (cx + ix, cy - iy), (cx + rx, cy), (cx + ix, cy + iy),
+        (cx, cy + ry), (cx - ix, cy + iy), (cx - rx, cy), (cx - ix, cy - iy),
+    ]
+
+
+def _write_gemini_mask(src: Path, dest: Path) -> tuple:
+    """Write an 8-bit repaint mask (white = repaint) over the Gemini glyph.
+
+    The position is a pure per-resolution lookup — measured accurate to ≤6px on
+    every real output, which the mask's 12px of slack absorbs.
+
+    Template matching was tried for this and REMOVED: over a bright background
+    (a book page) the semi-transparent white glyph nearly saturates, the true
+    correlation peak disappears, and the argmax ran 16-100px off — LaMa then
+    repainted clean scenery while the watermark survived. Its confidence score
+    can't even be used as a guard, since cleaned and watermarked images score
+    the same range. The lookup has no such failure mode. Returns the centre.
+    """
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    with Image.open(src) as im:
+        W, H = im.size
+
+    margin = _WM_MARGIN_BIG
+    for limit, m in _WM_MARGINS:
+        if max(W, H) <= limit:
+            margin = m
+            break
+    cx, cy = W - margin, H - margin
+
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).polygon(_star_points(cx, cy, _WM_RX, _WM_RY), fill=255)
+    grown = cv2.dilate(np.asarray(mask), np.ones((3, 3), np.uint8),
+                       iterations=_WM_DILATE)
+    Image.fromarray(grown).save(dest)
+    return cx, cy
+
+
+async def remove_gemini_watermark_inplace(image_path) -> bool:
+    """Repaint the bottom-right Gemini watermark off a generated image, IN PLACE.
+
+    Runs LaMa through the same external-Python subprocess the video pipeline
+    uses (torch is too big to bundle, so it can't run in-process). Best-effort:
+    returns True when the image was rewritten clean, False when LaMa isn't
+    installed or anything fails — the original is then kept untouched. Never
+    raises; callers must not let this break generation.
+    """
+    import time
+    p = Path(image_path)
+    t0 = time.monotonic()
+    try:
+        st = await lama_status()
+        if not st.get("lama_ok"):
+            log.warning(
+                "remove_gemini_watermark: LaMa chưa sẵn sàng (python=%s torch=%s "
+                "simple_lama=%s model=%s) — giữ ảnh gốc",
+                st.get("python_ok"), st.get("torch"),
+                st.get("simple_lama"), st.get("model_ok"),
+            )
+            return False
+
+        python = detect_python()
+        script = get_lama_script()
+        if not python or not script.exists():
+            log.warning("remove_gemini_watermark: thiếu python/script inpaint — giữ ảnh gốc")
+            return False
+
+        from PIL import Image
+        work = Path(tempfile.mkdtemp(prefix=f"redone_imgwm_{os.getpid()}_"))
+        try:
+            frames_in, frames_out = work / "in", work / "out"
+            frames_in.mkdir(); frames_out.mkdir()
+            mask = work / "mask.png"
+            # lama_inpaint globs *.png, so normalise to PNG regardless of the
+            # source format; the result is written back in the original format.
+            with Image.open(p) as im:
+                im.convert("RGB").save(frames_in / "00001.png")
+            cx, cy = await asyncio.to_thread(_write_gemini_mask, p, mask)
+            if not mask.exists():
+                log.warning("remove_gemini_watermark: không dựng được mask cho %s "
+                            "— giữ ảnh gốc", p.name)
+                return False
+
+            proc = await asyncio.create_subprocess_exec(
+                python, str(script), "lama",
+                str(frames_in), str(mask), str(frames_out),
+                "--device", "auto",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                **_subprocess_kwargs(),
+            )
+            _, err = await proc.communicate()
+            done = frames_out / "00001.png"
+            if proc.returncode != 0 or not done.exists():
+                log.warning(
+                    "remove_gemini_watermark: LaMa rc=%s (%s): %s — giữ ảnh gốc",
+                    proc.returncode, p.name,
+                    (err or b"").decode("utf-8", errors="replace")[-300:],
+                )
+                return False
+            with Image.open(done) as out_im:
+                rgb = out_im.convert("RGB")
+                if p.suffix.lower() in (".jpg", ".jpeg"):
+                    # Upscales are saved as JPEG; PIL's default q=75 would visibly
+                    # re-crush a 2K/4K image just to repaint a 48px corner.
+                    rgb.save(p, quality=95, subsampling=0, optimize=True)
+                else:
+                    rgb.save(p)                 # back in place, original format
+            # Log the SUCCESS too: without it a silent no-op and a clean run look
+            # identical in the log, which made "some images keep the watermark"
+            # impossible to diagnose.
+            log.info("Xóa WM ảnh OK: %s (tâm %d,%d — %.1fs)",
+                     p.name, cx, cy, time.monotonic() - t0)
+            return True
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    except Exception as e:
+        log.warning(f"remove_gemini_watermark thất bại ({p.name}): {e} — giữ ảnh gốc")
+        return False
+
+
 # ── Main entry point ──────────────────────────────────────────────────
 
 async def remove_watermark_from_video(

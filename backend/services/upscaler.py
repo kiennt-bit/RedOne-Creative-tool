@@ -271,7 +271,10 @@ async def upscale_video(
         if proc.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg extract frames thất bại: "
-                f"{stderr.decode(errors='replace')[:500]}"
+                # TAIL, not head: ffmpeg prints its build banner first and the
+                # actual reason last, so [:500] only ever showed the banner and
+                # made these failures impossible to diagnose from the log.
+                f"{stderr.decode(errors='replace').strip()[-1500:]}"
             )
 
         frame_files = sorted(frames_dir.glob("frame_*.jpg"))
@@ -391,7 +394,10 @@ async def upscale_video(
         if proc.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg merge thất bại: "
-                f"{stderr.decode(errors='replace')[:500]}"
+                # TAIL, not head: ffmpeg prints its build banner first and the
+                # actual reason last, so [:500] only ever showed the banner and
+                # made these failures impossible to diagnose from the log.
+                f"{stderr.decode(errors='replace').strip()[-1500:]}"
             )
 
         out_p = Path(output_path)

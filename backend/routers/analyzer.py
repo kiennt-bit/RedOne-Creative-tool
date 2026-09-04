@@ -135,6 +135,16 @@ async def analyze_script(body: ScriptAnalyzeRequest):
         text = re.sub(r"^```(?:json)?\s*", "", text.strip())
         text = re.sub(r"\s*```$", "", text)
         scenes = json.loads(text)
+        # ── Firebase tracking (best-effort) ──
+        try:
+            from ..services import tracking as _tracking
+            from ..services.oauth_auth import load_session as _load_sess
+            _sess = _load_sess()
+            _email = (_sess.get("email") or "") if _sess else ""
+            if _email:
+                await _tracking.track_event(_email, "script_created")
+        except Exception:
+            pass
         return {
             "scenes": scenes,
             "model_used": result["model_used"],

@@ -139,13 +139,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onInstalled.addListener(() => _pollLoop());
 chrome.runtime.onStartup.addListener(() => _pollLoop());
 
-// Restart poll loop when any labs.google tab completes load (might be a
-// new login).
+// Restart poll loop when any labs.google or flow.google.com tab completes load
+// (might be a new login).
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (
         changeInfo.status === "complete" &&
         tab.url &&
-        tab.url.includes("labs.google") &&
+        (tab.url.includes("labs.google") || tab.url.includes("flow.google.com")) &&
         !_polling
     ) {
         _pollLoop();
@@ -228,34 +228,28 @@ async function _findShakkerTab() {
 
 
 /**
- * Find the first labs.google tab that's signed in (not on accounts.google.com).
- * Returns { tabId, url, accountEmail } or null.
+ * Find the first labs.google / flow.google.com tab that's signed in.
+ * Returns the tab object or null.
  *
- * Account email is best-effort scraped from page DOM — Google Labs renders
- * the email in the top-right menu when signed in.
+ * Google migrated the Flow UI from labs.google to flow.google.com in
+ * Sep 2026 — we accept both domains so the extension works regardless
+ * of which URL the user has open.
  */
 async function _findLabsTab() {
-    // Retry a few times: a labs.google tab can momentarily be invisible to
-    // chrome.tabs.query while it's navigating/redirecting, freshly discarded by
-    // Chrome's Memory Saver, or right when the MV3 service worker wakes up.
-    // Returning null too eagerly here makes the backend declare the account's
-    // session "dead" on a split-second blip — the intermittent bug.
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             const tabs = await chrome.tabs.query({});
             const labsTabs = tabs.filter(t => {
-                // During navigation `url` may be empty but `pendingUrl` holds
-                // the target — accept either.
                 const u = t.url || t.pendingUrl || "";
-                return u.includes("labs.google") && !u.includes("accounts.google.com");
+                return (u.includes("labs.google") || u.includes("flow.google.com")) &&
+                       !u.includes("accounts.google.com");
             });
             if (labsTabs.length > 0) {
                 // Rank: non-discarded first, then a Flow tab (reCAPTCHA loaded).
-                // Match "/tools/flow" (locale-agnostic) — real URLs include a
-                // locale segment, e.g. /fx/vi/tools/flow, /fx/en/tools/flow.
                 const score = (t) => {
                     const u = t.url || t.pendingUrl || "";
-                    return (t.discarded ? 2 : 0) + (u.includes("/tools/flow") ? 0 : 1);
+                    return (t.discarded ? 2 : 0) +
+                           ((u.includes("/tools/flow") || u.includes("flow.google.com")) ? 0 : 1);
                 };
                 return labsTabs.sort((a, b) => score(a) - score(b))[0];
             }
@@ -274,7 +268,7 @@ async function _findLabsTab() {
         _lastPrefetchAt = Date.now();
         try {
             const newTab = await chrome.tabs.create({
-                url: "https://labs.google/fx/tools/flow",
+                url: "https://flow.google.com",
                 active: false,
             });
             // Wait for page to finish loading
@@ -319,11 +313,24 @@ async function _findLabsTab() {
  */
 async function _isSignedIn() {
     try {
-        const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
-        return cookies.some(c =>
+        // Check labs.google cookies (NextAuth session token lives here)
+        const labsCookies = await chrome.cookies.getAll({ domain: "labs.google" });
+        const hasLabsSession = labsCookies.some(c =>
             c.name.startsWith("__Secure-next-auth.session-token") ||
             c.name.startsWith("next-auth.session-token")
         );
+        if (hasLabsSession) return true;
+
+        // Fallback: check flow.google.com cookies (future-proof if Google
+        // migrates session cookies to the new domain)
+        const flowCookies = await chrome.cookies.getAll({ domain: "flow.google.com" });
+        const hasFlowSession = flowCookies.some(c =>
+            c.name.startsWith("__Secure-next-auth.session-token") ||
+            c.name.startsWith("next-auth.session-token") ||
+            // Google GAIA auth cookies — used if they switch from NextAuth
+            c.name === "SID" || c.name === "HSID" || c.name === "SSID"
+        );
+        return hasFlowSession;
     } catch (_) {
         return false;
     }
@@ -378,7 +385,7 @@ async function _doRecaptchaTask(task) {
                     if (typeof grecaptcha === "undefined" || !grecaptcha.enterprise) {
                         return { token: null, error: "grecaptcha.enterprise not loaded" };
                     }
-                    let key = siteKeyArg;
+                    let key = (siteKeyArg && !siteKeyArg.includes("@") && siteKeyArg.startsWith("6")) ? siteKeyArg : "";
                     if (!key) {
                         // Try the internal grecaptcha config — most reliable source
                         try {
@@ -464,6 +471,41 @@ async function _doProxyFetchTask(task) {
     const timeoutMs = Math.max(1000, Math.min(600000, Number(p.timeout_ms) || 60000));
 
     if (!url) return { status: 0, error: "missing url" };
+
+    // ── Special path: labs.google session endpoint ──────────────────
+    // When the user's tab is on flow.google.com, fetching
+    // labs.google/fx/api/auth/session from inside the tab is CROSS-ORIGIN
+    // → same-origin credentials won't attach labs.google cookies → the
+    // endpoint returns {} instead of the real session.
+    //
+    // Fix: for this specific auth URL, fetch from the background service
+    // worker and manually build the Cookie header from chrome.cookies.
+    // The extension has "cookies" permission + host_permissions for
+    // labs.google, so this is fully authorised.
+    if (url.includes("labs.google/fx/api/auth/session")) {
+        try {
+            const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
+            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+            const fetchHeaders = { ...headers, "Cookie": cookieStr };
+            const ac = new AbortController();
+            const timer = setTimeout(() => ac.abort(), timeoutMs);
+            const res = await fetch(url, {
+                method,
+                headers: fetchHeaders,
+                signal: ac.signal,
+            });
+            clearTimeout(timer);
+            const status = res.status;
+            let body = null;
+            try {
+                const txt = await res.text();
+                try { body = JSON.parse(txt); } catch (_) { body = txt; }
+            } catch (_) { /* empty */ }
+            return { status, body };
+        } catch (e) {
+            return { status: 0, error: "bg-fetch auth/session: " + String(e) };
+        }
+    }
 
     const tab = await _findLabsTab();
     if (!tab) return { status: 0, error: "no labs.google tab" };
@@ -555,6 +597,138 @@ async function _doProxyFetchTask(task) {
 }
 
 
+// ── Task: batch_execute (BOQ/WIZ batchexecute RPC on flow.google.com) ─
+//
+// Google migrated Flow's API from aisandbox-pa REST (Bearer token) to
+// BOQ/WIZ batchexecute RPC (cookie auth + CSRF token). This function
+// executes a batchexecute call from INSIDE the flow.google.com tab,
+// so the browser automatically attaches all Google auth cookies.
+
+async function _doBatchExecuteTask(task) {
+    const p = task.payload || {};
+    const rpcId = String(p.rpc_id || "");
+    const innerPayload = p.inner_payload; // JS value — will be JSON.stringify'd
+    const sourcePath = String(p.source_path || "/");
+    const timeoutMs = Math.max(5000, Math.min(300000, Number(p.timeout_ms) || 120000));
+
+    if (!rpcId) return { status: 0, error: "missing rpc_id" };
+
+    const tab = await _findLabsTab();
+    if (!tab) return { status: 0, error: "no flow.google.com tab" };
+
+    try {
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            world: "MAIN",
+            func: async (rpcIdArg, innerPayloadJson, sourcePathArg, timeoutMsArg) => {
+                try {
+                    // 1) Read WIZ_global_data for CSRF token + build label
+                    // SNlM0e = CSRF/XSRF token (at= param), FdrFJe = session ID (f.sid param)
+                    const wgd = window.WIZ_global_data || {};
+                    const atToken = wgd.SNlM0e || "";
+                    const buildLabel = wgd.cfb2h || "";
+                    const fSid = wgd.FdrFJe || "-1";
+                    if (!atToken) {
+                        return { status: 0, error: "WIZ_global_data.SNlM0e (CSRF token) not found — page not fully loaded?" };
+                    }
+
+                    // 2) Build f.req in BOQ format
+                    const fReq = JSON.stringify([[[rpcIdArg, innerPayloadJson, null, "generic"]]]);
+                    const body = new URLSearchParams();
+                    body.set("f.req", fReq);
+                    body.set("at", atToken);
+
+                    // DEBUG: log what we're sending
+                    console.log("[RedOne BOQ] rpcId:", rpcIdArg);
+                    console.log("[RedOne BOQ] innerPayloadJson (first 300):", innerPayloadJson.substring(0, 300));
+                    console.log("[RedOne BOQ] fReq (first 300):", fReq.substring(0, 300));
+                    console.log("[RedOne BOQ] at:", atToken.substring(0, 30) + "...");
+                    console.log("[RedOne BOQ] buildLabel:", buildLabel);
+
+                    // 3) Build URL
+                    const url = `/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
+
+                    // 4) POST (same-origin, browser attaches cookies automatically)
+                    const ac = new AbortController();
+                    const timer = setTimeout(() => ac.abort(), timeoutMsArg);
+                    const res = await fetch(url, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                            "X-Same-Domain": "1",
+                        },
+                        body: body.toString(),
+                        signal: ac.signal,
+                    });
+                    clearTimeout(timer);
+                    const status = res.status;
+                    const rawText = await res.text();
+
+                    // 5) Parse BOQ response format:
+                    //    )]}'\n\n<length>\n<JSON array>\n<length>\n<JSON array>\n...
+                    if (status !== 200) {
+                        return { status, error: `batchexecute HTTP ${status}`, body_text: rawText.substring(0, 500) };
+                    }
+                    // 5) Parse chunks: Google batchexecute responses consist of length lines
+                    // followed by single-line JSON arrays. Parsing by line avoids character/byte
+                    // offset desynchronization issues with CRLF vs LF.
+                    const chunks = [];
+                    const lines = rawText.split('\n');
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (!line || line.startsWith(")]}'") || /^\d+$/.test(line)) {
+                            continue;
+                        }
+                        try {
+                            chunks.push(JSON.parse(line));
+                        } catch (_) {}
+                    }
+
+                    // 6) Extract the RPC result
+                    //    Format: [["wrb.fr", rpcId, "<inner JSON string>", ...], ...]
+                    //    When error: entry[2] = null, entry[5] = [errorCode]
+                    let rpcResult = null;
+                    let rpcError = null;
+                    for (const chunk of chunks) {
+                        if (!Array.isArray(chunk)) continue;
+                        for (const entry of chunk) {
+                            if (Array.isArray(entry) && entry[0] === "wrb.fr" && entry[1] === rpcIdArg) {
+                                if (entry[2] != null) {
+                                    // Success — entry[2] is a JSON string with the actual result
+                                    try {
+                                        rpcResult = JSON.parse(entry[2]);
+                                    } catch (_) {
+                                        rpcResult = entry[2];
+                                    }
+                                } else {
+                                    // Error — entry[5] may contain error code array (e.g. [13])
+                                    rpcError = entry[5] || "unknown RPC error (entry[2]=null)";
+                                }
+                                break;
+                            }
+                        }
+                        if (rpcResult !== null || rpcError !== null) break;
+                    }
+
+                    console.log(`[RedOne BOQ] Parsed ${chunks.length} chunks. rpcResult:`, rpcResult ? "OK" : "NULL", "rpcError:", rpcError);
+
+                    if (rpcError) {
+                        return { status: 200, error: "RPC error: " + JSON.stringify(rpcError), rpc_result: null, chunks };
+                    }
+                    return { status: 200, rpc_result: rpcResult, chunks };
+                } catch (err) {
+                    return { status: 0, error: "batchexecute: " + (err.message || String(err)) };
+                }
+            },
+            args: [rpcId, JSON.stringify(innerPayload), sourcePath, timeoutMs],
+        });
+        return (results && results[0] && results[0].result) || { status: 0, error: "no script result" };
+    } catch (e) {
+        return { status: 0, error: "executeScript batch_execute: " + String(e) };
+    }
+}
+
+
 // ── Poll loop ────────────────────────────────────────────────────────
 
 // ── Server-driven session commands ──────────────────────────────────
@@ -569,11 +743,13 @@ async function _executeSessionCommand(cmd) {
             chrome.storage.local.set({ targetGoogleEmail: _targetGoogleEmail });
             console.log(`[Extension] Set target Google login email: ${_targetGoogleEmail}`);
         } else if (command === "clear_cookies") {
-            // Clear ALL labs.google cookies → force session re-login
-            const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
-            for (const c of cookies) {
-                const url = `https://${c.domain.replace(/^\./, "")}${c.path}`;
-                await chrome.cookies.remove({ url, name: c.name });
+            // Clear ALL labs.google + flow.google.com cookies → force session re-login
+            for (const domain of ["labs.google", "flow.google.com"]) {
+                const cookies = await chrome.cookies.getAll({ domain });
+                for (const c of cookies) {
+                    const url = `https://${c.domain.replace(/^\./, "")}${c.path}`;
+                    await chrome.cookies.remove({ url, name: c.name });
+                }
             }
         } else if (command === "reload_tab") {
             // F5 reload the labs.google tab
@@ -599,9 +775,9 @@ async function _executeSessionCommand(cmd) {
             const tab = await _findLabsTab();
             if (tab) {
                 const currentUrl = (tab.url || "");
-                const nextUrl = currentUrl.includes("/tools/flow")
+                const nextUrl = currentUrl.includes("flow.google.com")
                     ? "https://labs.google/fx"
-                    : "https://labs.google/fx/tools/flow";
+                    : "https://flow.google.com";
                 await chrome.tabs.update(tab.id, { url: nextUrl });
                 await new Promise((resolve) => {
                     const listener = (id, info) => {
@@ -636,6 +812,8 @@ async function _runTask(task) {
             result = await _doProxyFetchTask(task);
         } else if (task.kind === "get_cookies") {
             result = await _doGetCookiesTask(task);
+        } else if (task.kind === "batch_execute") {
+            result = await _doBatchExecuteTask(task);
         } else {
             result = { error: `unknown task kind: ${task.kind}` };
         }
@@ -834,7 +1012,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                 }
                 _pendingGoogleLogin = { email: r.email, password: r.password, ts: Date.now() };
                 await chrome.tabs.create({
-                    url: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Flabs.google%2Ffx%2Ftools%2Fflow",
+                    url: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fflow.google.com",
                 });
                 sendResponse({ ok: true });
             } catch (e) {

@@ -159,7 +159,7 @@ export function renderSettings(root) {
               `✓ Extension đã kết nối · Chrome tab: ${br.last_tab_status}`));
           } else {
             stWrap.appendChild(el('div', { class: 'chip chip-yellow' },
-              'Extension chưa kết nối — cài extension và mở Chrome có tab labs.google'));
+              'Extension chưa kết nối — cài extension và mở Chrome có tab flow.google.com'));
           }
         }
       } catch (e) { /* ignore */ }

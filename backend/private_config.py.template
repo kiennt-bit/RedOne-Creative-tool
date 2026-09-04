@@ -75,7 +75,7 @@ HUB_BASE_URL = ""
 #     "type": "service_account",
 #     "project_id": "resonant-forge-497503-e0",
 #     "private_key_id": "...",
-#     "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+#     "private_key": "<PASTE_PRIVATE_KEY_FROM_JSON_HERE>",
 #     "client_email": "redone-vertex-client@resonant-forge-497503-e0.iam.gserviceaccount.com",
 #     "client_id": "...",
 #     ...
@@ -98,6 +98,20 @@ VERTEX_REGION = "us-central1"   # us-central1 has Veo. Gemini Image uses global 
 # keys for Vertex to be "bound" to a service account, and that UI flow
 # is buggy. Service account auth alone covers everything.
 VERTEX_API_KEY = ""
+
+
+# ── Firebase Usage Tracking ──────────────────────────────────────────
+# Centralized behavioural tracking (images, videos, scripts created +
+# session time) pushed to Cloud Firestore so admins can monitor each
+# user's activity from the "Tracking" admin page.
+#
+# Uses the SAME service-account credentials as Vertex AI above
+# (VERTEX_SERVICE_ACCOUNT_INFO). Just set the project ID and enable
+# Firestore API in GCP Console → APIs & Services → Library.
+#
+# Set "" or False to disable — tool works exactly as before.
+FIREBASE_PROJECT_ID = "resonant-forge-497503-e0"
+FIREBASE_TRACKING_ENABLED = True
 
 
 # ── Session config ───────────────────────────────────────────────────

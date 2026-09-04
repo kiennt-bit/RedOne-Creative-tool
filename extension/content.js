@@ -12,7 +12,7 @@ try {
 } catch (_) { /* extension may not be fully alive yet */ }
 
 function autoClickSignIn() {
-    if (!location.href.includes("labs.google")) return;
+    if (!location.href.includes("labs.google") && !location.href.includes("flow.google.com")) return;
     
     const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
     const signInBtn = buttons.find(el => {

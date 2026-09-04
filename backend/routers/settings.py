@@ -25,6 +25,8 @@ class SettingsUpdate(BaseModel):
     theme: str | None = None
     auto_rotate_accounts: bool | None = None
     auto_save_outputs: bool | None = None
+    # Auto-strip the Gemini ✦ watermark from nano_banana_* image outputs.
+    auto_remove_image_watermark: bool | None = None
     browser_backend: str | None = None    # "chrome" | "cloak" (legacy, only when auth_mode=playwright)
     # New: route all Google calls through the Chrome extension bridge
     # instead of Playwright. Default "extension" — proven to dramatically

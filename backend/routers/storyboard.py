@@ -149,6 +149,17 @@ async def start_storyboard(
     if not prompts:
         raise HTTPException(500, "Model không trả về phân cảnh nào — thử lại.")
 
+    # ── Firebase tracking (best-effort) ──
+    try:
+        from ..services import tracking as _tracking
+        from ..services.oauth_auth import load_session as _load_sess
+        _sess = _load_sess()
+        _email = (_sess.get("email") or "") if _sess else ""
+        if _email:
+            await _tracking.track_event(_email, "storyboard_created")
+    except Exception:
+        pass
+
     # ── Step 2: hand the prompts to the existing image pipeline ──
     name = (task_name or "").strip() or f"storyboard_{int(time.time())}"
     from ..services import hub_client

@@ -110,6 +110,10 @@ export const tasksStore = {
       // Sub-type within a kind: shakker tasks are either gen (false) or upscale
       // (true). Lets the Shakker page keep the two galleries independent.
       upscale: !!meta.upscale,
+      // Video-gen only: how many videos each prompt produced (1..4). The
+      // content gallery groups every N contiguous items as one prompt's
+      // variants. Defaults to 1 (flat gallery) for every other page.
+      videosPerPrompt: meta.videosPerPrompt || 1,
       items: (meta.items || []).map(p => ({
         id: null,
         prompt: typeof p === 'string' ? p : (p.prompt || ''),
@@ -294,6 +298,23 @@ export const tasksStore = {
    *
    * Returns true if the item was found + flipped.
    */
+  /**
+   * Point an item at its newly-saved prompt. Needed because only the image
+   * path echoes `prompt` back over WS (item_status/item_completed); on the
+   * video + Shakker galleries the card renders the STORE's copy, which was
+   * seeded once at register() — without this it would keep showing the old
+   * text after an edit.
+   */
+  updateItemPrompt(taskId, itemId, prompt) {
+    const t = tasks.get(taskId);
+    if (!t) return false;
+    const it = t.items.find(x => x.id === itemId);
+    if (!it) return false;
+    it.prompt = prompt;
+    notify(taskId);
+    return true;
+  },
+
   retryItemUI(taskId, itemId, asStatus = 'generating') {
     const t = tasks.get(taskId);
     if (!t) return false;
@@ -493,11 +514,17 @@ ws.on('upscale_batch_done', () => {
 // backend echoes them in `src` so we can find the right item to update.
 function _findItemByPath(srcPath) {
   if (!srcPath) return null;
-  const norm = String(srcPath).replace(/\\/g, '/');
+  // Match by EXACT basename. The backend sends a bare filename for progress
+  // (src.name) but a full absolute path for completion (str(src)); the old
+  // loose endsWith matched the WRONG item for numeric names — "16.mp4" ends
+  // with "6.mp4" — so completion mis-routed and finished videos never flipped
+  // to "done", leaving the whole processed prefix stuck showing "Xóa WM …%".
+  const base = String(srcPath).replace(/\\/g, '/').split('/').pop();
+  if (!base) return null;
   for (const t of tasks.values()) {
     for (const it of t.items) {
-      const op = (it.output_path || '').replace(/\\/g, '/');
-      if (op && (op === norm || op.endsWith(norm) || norm.endsWith(op))) {
+      const op = (it.output_path || '').replace(/\\/g, '/').split('/').pop();
+      if (op && op === base) {
         return { task: t, item: it };
       }
     }

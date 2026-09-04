@@ -220,13 +220,14 @@ async def video_watermark_remove_batch(body: VideoWatermarkBatchRequest):
             counter += 1
 
         async def _emit(label: str, pct: float, _src=src.name, _idx=idx) -> None:
-            # Map per-video 0..100 into the batch's slice
-            global_pct = ((_idx - 1) + pct / 100.0) / total * 100
+            # Per-card progress must be THIS video's own 0..100, not the batch
+            # slice — a global % made every card read "batch position" (video 16
+            # shows 15%) and never look done. Batch position stays in `status`.
             await hub.broadcast("watermark_progress", {
                 "job_id": job_id,
                 "source": _src,
                 "status": f"[{_idx}/{total}] {label}",
-                "progress": round(global_pct, 1),
+                "progress": round(pct, 1),
             })
 
         try:

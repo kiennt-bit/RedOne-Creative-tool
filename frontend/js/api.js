@@ -238,6 +238,9 @@ export const api = {
     retryItem: (itemId) => request('POST', `/api/tasks/item/${itemId}/retry`),
     // Regenerate a SPECIFIC LIST of items (gallery "Gen lại" over ticked cards).
     retryItems: (taskId, itemIds) => request('POST', `/api/tasks/${taskId}/retry-items`, { body: { item_ids: itemIds } }),
+    // Rewrite one item's prompt. The retry endpoints re-read it from the DB, so
+    // calling this before a regen is what makes the edited prompt take effect.
+    updateItemPrompt: (itemId, prompt) => request('POST', `/api/tasks/item/${itemId}/prompt`, { body: { prompt } }),
     queue: () => request('GET', '/api/tasks/_/queue'),
     openFolder: (id) => request('POST', `/api/tasks/${id}/open-folder`),
   },
@@ -269,5 +272,18 @@ export const api = {
   psGenfill: {
     generate: (form) => request('POST', '/api/ps-genfill/generate', { form }),
     health: () => request('GET', '/api/ps-genfill/health'),
+  },
+
+  // Firebase usage tracking (admin dashboard)
+  tracking: {
+    status: () => request('GET', '/api/tracking/status'),
+    stats: () => request('GET', '/api/tracking/stats'),
+    userDaily: (email, days = 30) => request('GET', `/api/tracking/stats/${encodeURIComponent(email)}`, { params: { days } }),
+    heartbeat: () => request('POST', '/api/tracking/heartbeat'),
+    // Role management
+    listRoles: () => request('GET', '/api/tracking/roles'),
+    addRole: (email, role) => request('POST', '/api/tracking/roles', { body: { email, role } }),
+    updateRole: (email, role) => request('PUT', `/api/tracking/roles/${encodeURIComponent(email)}`, { body: { role } }),
+    deleteRole: (email) => request('DELETE', `/api/tracking/roles/${encodeURIComponent(email)}`),
   },
 };

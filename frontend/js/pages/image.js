@@ -3,7 +3,7 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
 
 // ── Per-form state that survives navigation (singleton, module-level) ──
 const form = {
@@ -178,6 +178,20 @@ export function renderImage(root) {
           'Số ảnh tạo đồng thời. 2-3 là tốt nhất, cao hơn dễ bị reCAPTCHA 403.'),
       ),
       el('div', { class: 'field-group' },
+        el('label', {
+          class: 'field-label',
+          style: { display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' },
+        },
+          el('label', { class: 'toggle' },
+            el('input', { type: 'checkbox', id: 'img-wm-remove' }),
+            el('span', { class: 'toggle-track' }),
+          ),
+          el('span', null, 'Tự xóa watermark Gemini trên ảnh'),
+        ),
+        el('div', { class: 'field-help' },
+          'Xóa logo ✦ Gemini ở góc ảnh ngay khi tạo xong (Nano Banana). Mặc định bật.'),
+      ),
+      el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Ảnh tham chiếu (nhân vật / phong cách)'),
         el('div', { class: 'dropzone', id: 'img-dropzone' },
           el('div', { class: 'dropzone-icon' }, icon('image', 22)),
@@ -216,6 +230,22 @@ export function renderImage(root) {
   const nameInput = left.querySelector('#img-taskname');
   nameInput.value = form.taskName || defaultTaskName();
   nameInput.addEventListener('input', (e) => { form.taskName = e.target.value; });
+
+  // Watermark-removal toggle (default ON): reflect the saved value + persist on
+  // change. Lives here (Tạo ảnh tab), not in Settings, per product decision.
+  const wmCb = root.querySelector('#img-wm-remove');
+  if (wmCb) {
+    api.settings.get().then(r => {
+      const v = r?.settings?.auto_remove_image_watermark;
+      wmCb.checked = (v === undefined ? true : !!v);
+    }).catch(() => { wmCb.checked = true; });
+    wmCb.addEventListener('change', async () => {
+      try {
+        await api.settings.update({ auto_remove_image_watermark: wmCb.checked });
+        toast(wmCb.checked ? 'Đã bật tự xóa watermark Gemini' : 'Đã tắt tự xóa watermark Gemini', 'success');
+      } catch (err) { toast(err.message || 'Lỗi lưu cài đặt', 'error'); }
+    });
+  }
 
   // ── RIGHT: prompts + gallery ──────────────────────────
   const right = el('div', { class: 'gen-results' });
@@ -783,6 +813,9 @@ export function renderImage(root) {
             toast('Đã copy prompt', 'success');
           },
         }, icon('copy', 14)));
+        if (it.id != null) {
+          actions.appendChild(makePromptEditButton({ taskId: taskState.id, item: it }));
+        }
         info.appendChild(actions);
       }
       // (Per-card "Gen lại" removed — regen is now on the selection toolbar:

@@ -139,6 +139,16 @@
             <span>Quản trị</span>
           </button>
         </div>
+
+        <!-- Tracking — always visible (Firebase-based, independent of Hub).
+             Visibility controlled by JS after checking /api/tracking/status. -->
+        <div class="nav-group" id="nav-group-tracking" style="display:none">
+          <div class="nav-label">Tracking</div>
+          <button class="nav-item" data-page="user-tracking">
+            <svg viewBox="0 0 24 24" class="ni"><path d="M3 3v18h18 M7 14l4-4 4 4 5-6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Tracking</span>
+          </button>
+        </div>
       </nav>
 
       <div class="sidebar-footer">

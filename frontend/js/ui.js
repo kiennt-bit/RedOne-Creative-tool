@@ -275,7 +275,7 @@ export async function ensureFlowAccountOrWarn() {
             + 'Hãy đăng nhập lại trước khi tạo.'
           : 'Bạn chưa có tài khoản Google Flow nào. Cần đăng nhập Google Flow để tạo ảnh / video.'),
       el('p', { style: { margin: '0', color: 'var(--text-muted)', fontSize: '12.5px' } },
-        'Vào tab "Tài Khoản" → mở labs.google trong Chrome → đăng nhập Google. '
+        'Vào tab "Tài Khoản" → mở flow.google.com trong Chrome → đăng nhập Google. '
         + '(Cần cài Extension "RedOne Auth Helper" nếu chưa có.)'),
     ),
     actions: [

@@ -50,6 +50,11 @@ let _rNextId = 1;
 // In-flight batch run. Module-level so per-video progress survives tab switches;
 // the painters below re-target whatever DOM is currently mounted on each render.
 const _rrun = { active: false, activeId: null, jobId: null };
+// Same idea for the Veo-logo mode: the run loop lives in a render closure and
+// keeps going after the user switches tab, so the flag must outlive the DOM.
+// Re-entering the page then shows "Đang xử lý k/N…" instead of an enabled
+// button that would start a second, overlapping pass over the same queue.
+const _vwmRun = { active: false, done: 0, total: 0 };
 let _rQueueEl = null;   // current render's #vwmr-queue (per-video rows)
 let _rGoBtnEl = null;   // current render's "Xóa watermark" button
 let _rOnRemove = null;  // current render's removeItem(id) (queue rows call it)
@@ -268,6 +273,13 @@ export function renderVideoWatermark(root) {
   // Render entire queue list (called on every change — small list, no diff needed)
   function renderQueue() {
     const wrap = root.querySelector('#vwm-queue');
+    // Page unmounted: navigating away clears the shared #page-container
+    // (app.js), so these lookups return null. Paint nothing and let the run
+    // loop carry on — the same guard paintRegionQueue() already has.
+    // Without it `#vwm-summary`.textContent throws, and that TypeError escapes
+    // the run loop's finally → the whole batch dies mid-way with the button
+    // stuck on "Đang xử lý k/N…".
+    if (!wrap) return;
     clear(wrap);
     if (queue.size === 0) {
       wrap.appendChild(el('div', { class: 'empty' },
@@ -430,9 +442,25 @@ export function renderVideoWatermark(root) {
   });
   obs.observe(document.body, { childList: true, subtree: true });
 
+  // Reflect run state on the start button. Safe to call when the page is
+  // unmounted (returns early), so the run loop can call it freely.
+  function paintGoBtn() {
+    const btn = root.querySelector('#vwm-go');
+    if (!btn) return;
+    btn.disabled = _vwmRun.active;
+    clear(btn);
+    if (_vwmRun.active) {
+      btn.append(`Đang xử lý ${_vwmRun.done}/${_vwmRun.total}…`);
+    } else {
+      btn.appendChild(icon('sparkles'));
+      btn.append(' Bắt đầu xóa watermark');
+    }
+  }
+
   // ─── Buttons ────────────────────────────────────────
   root.querySelector('#vwm-clear').addEventListener('click', () => {
-    const running = [...queue.values()].find(x => x.status === 'running');
+    const running = _vwmRun.active
+      || [...queue.values()].find(x => x.status === 'running');
     if (running) return toast('Đang xử lý, không thể xóa hàng đợi', 'warning');
     queue.clear();
     renderQueue();
@@ -449,51 +477,56 @@ export function renderVideoWatermark(root) {
         'error',
       );
     }
-    const btn = root.querySelector('#vwm-go');
-    btn.disabled = true;
-    btn.textContent = `Đang xử lý 0/${pending.length}…`;
+    if (_vwmRun.active) return toast('Đang xử lý, đợi xong đã nhé', 'warning');
+    _vwmRun.active = true;
+    _vwmRun.done = 0;
+    _vwmRun.total = pending.length;
+    paintGoBtn();
 
-    for (let i = 0; i < pending.length; i++) {
-      const it = pending[i];
-      btn.textContent = `Đang xử lý ${i + 1}/${pending.length}…`;
-      it.status = 'running';
-      it.progress = 0;
-      it.label = 'Upload…';
-      it.error = null;
-      it.outputUrl = null;
-      it.job_id = null;
-      activeQueueId = it.id;
-      renderQueue();
-
-      try {
-        const fd = new FormData();
-        fd.append('file', it.file);
-        fd.append('use_default_mask', 'true');
-        fd.append('method', 'auto');
-        fd.append('device', 'auto');
-        // Read per-iteration: the select stays enabled during the run, so a
-        // late change applies to whatever hasn't been sent yet.
-        fd.append('watermark_kind', root.querySelector('#vwm-kind')?.value || 'veo_mini');
-        const r = await api.media.videoWatermark(fd);
-        it.status = 'done';
-        it.progress = 100;
-        it.label = 'Hoàn thành';
-        it.outputUrl = r.url;
-        it.outputPath = r.path;
-      } catch (e) {
-        it.status = 'error';
-        it.error = e.message || 'Lỗi không xác định';
-        it.label = 'Lỗi';
-      } finally {
-        activeQueueId = null;
+    try {
+      for (let i = 0; i < pending.length; i++) {
+        const it = pending[i];
+        _vwmRun.done = i + 1;
+        paintGoBtn();
+        it.status = 'running';
+        it.progress = 0;
+        it.label = 'Upload…';
+        it.error = null;
+        it.outputUrl = null;
+        it.job_id = null;
+        activeQueueId = it.id;
         renderQueue();
-      }
-    }
 
-    btn.disabled = false;
-    btn.innerHTML = '';
-    btn.appendChild(icon('sparkles'));
-    btn.append(' Bắt đầu xóa watermark');
+        try {
+          const fd = new FormData();
+          fd.append('file', it.file);
+          fd.append('use_default_mask', 'true');
+          fd.append('method', 'auto');
+          fd.append('device', 'auto');
+          // Read per-iteration: the select stays enabled during the run, so a
+          // late change applies to whatever hasn't been sent yet.
+          fd.append('watermark_kind', root.querySelector('#vwm-kind')?.value || 'veo_mini');
+          const r = await api.media.videoWatermark(fd);
+          it.status = 'done';
+          it.progress = 100;
+          it.label = 'Hoàn thành';
+          it.outputUrl = r.url;
+          it.outputPath = r.path;
+        } catch (e) {
+          it.status = 'error';
+          it.error = e.message || 'Lỗi không xác định';
+          it.label = 'Lỗi';
+        } finally {
+          activeQueueId = null;
+          renderQueue();
+        }
+      }
+    } finally {
+      // Always clear the flag, even if something unexpected throws — a stuck
+      // flag would lock the button out for the rest of the session.
+      _vwmRun.active = false;
+      paintGoBtn();
+    }
 
     const stats = [...queue.values()];
     const okN = stats.filter(x => x.status === 'done').length;
@@ -804,6 +837,13 @@ export function renderVideoWatermark(root) {
   // tự vẽ lại từng dòng theo trạng thái hiện tại (đang chạy + % / đã xong + tải
   // về / lỗi), nên một batch đang chạy dở cũng nối lại đúng tiến trình mỗi video.
   updateGoLabel();
+  // Repaint the persisted queue on entry. A running job survives navigation in
+  // the module-level `queue`, but the queue card is (re)built with only the
+  // empty placeholder — without this, a job in flight stays invisible until the
+  // next watermark_progress WS tick repaints it, which looked like a long "lag"
+  // when switching away and back mid-processing.
+  renderQueue();
+  paintGoBtn();                       // a run started before navigation is still going
   if (_rst.items.length) loadRep();   // re-show the representative video
   paintRegionQueue();
   setMode(_vwmMode);

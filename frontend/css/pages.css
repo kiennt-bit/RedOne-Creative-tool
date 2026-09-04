@@ -198,6 +198,19 @@
   background: var(--bg-1);
 }
 
+/* Thanh chọn của gallery — bám đỉnh khi cuộn.
+   Bám theo ancestor cuộn gần nhất: .gen-results ở tab Tạo video / Tạo ảnh (bố
+   cục 2 cột, cột phải tự cuộn), .page-container ở các tab còn lại. Cả hai đều
+   nằm DƯỚI .topbar nên top:0 là đúng, không phải trừ chiều cao header.
+   .card xen giữa không đặt overflow nên không cắt sticky.
+   Nền/viền/bo góc do gallery_actions.js đặt inline; ở đây chỉ thêm position +
+   z-index nên không chọi với inline style. */
+.selection-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;   /* trên thẻ kết quả, dưới modal */
+}
+
 /* Scene grid */
 .scene-grid {
   display: grid;
@@ -371,6 +384,12 @@
   flex-direction: column;
   gap: 9px;
   flex: 1;
+}
+/* Clicking the body of a selectable card ticks it (Ctrl/Shift for many), so
+   hint that it's clickable. [data-path] is set by attachCardCheckbox, i.e. only
+   on finished cards that can actually be selected. */
+.scene-card[data-path] .scene-info {
+  cursor: pointer;
 }
 .scene-meta {
   display: flex;

@@ -6,7 +6,7 @@
 import { el, clear, toast, setLoading, icon, makeThumbnail, ensureFlowAccountOrWarn, geminiKeyNotice, openMediaViewer, openCompareViewer } from '../ui.js';
 import { api } from '../api.js';
 import { tasksStore } from '../tasks_store.js';
-import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton } from '../gallery_actions.js';
+import { makeSelectionToolbar, attachCardCheckbox, makeRetryFailedButton, makePromptEditButton } from '../gallery_actions.js';
 
 const IMAGE_MODELS = [
   { key: 'nano_banana_pro',  label: '🍌 Nano Banana Pro' },
@@ -376,7 +376,7 @@ export function renderStoryboard(root) {
           ids.forEach(iid => tasksStore.retryItemUI(state.id, iid, 'pending'));
         },
       });
-      actions.appendChild(toolbar);
+      wrap.appendChild(toolbar);
     }
 
     // "Gen lại N lỗi" — regen ALL failed scenes at once. Error scenes have no
@@ -391,7 +391,7 @@ export function renderStoryboard(root) {
         onResetUI: (id) => tasksStore.resetErrorItems(id),
       });
       retryBtn.refresh(state);
-      actions.appendChild(retryBtn);
+      wrap.appendChild(retryBtn);
     }
 
     const aspectStyle = ratioToStyle(state.aspect || form.aspect);
@@ -442,6 +442,9 @@ export function renderStoryboard(root) {
         class: 'btn btn-sm btn-ghost btn-icon', title: 'Copy prompt', style: { marginLeft: 'auto' },
         onclick: () => { navigator.clipboard.writeText(it.prompt || ''); toast('Đã copy prompt', 'success'); },
       }, icon('copy', 14)));
+      if (it.id != null) {
+        actionsRow.appendChild(makePromptEditButton({ taskId: state.id, item: it }));
+      }
       // (Per-scene "Gen lại" removed — regen is on the selection toolbar:
       //  tick scenes → "Gen lại". Keeps the card from overflowing.)
 

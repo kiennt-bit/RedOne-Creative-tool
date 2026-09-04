@@ -30,6 +30,7 @@ import { renderSettings } from './pages/settings.js';
 import { renderTasksManager } from './pages/tasks_manager.js';
 import { renderTeam } from './pages/team.js';
 import { renderAdmin } from './pages/admin.js';
+import { renderUserTracking } from './pages/user_tracking.js';
 import { renderFeatureStore } from './pages/feature_store.js';
 import { renderHGStock } from './pages/hgstock.js';
 import { loadCatalog, getFeature, getCatalog } from './features/catalog.js';
@@ -61,6 +62,7 @@ const PAGES = {
   'hgstock':       { title: 'HG Stock',          subtitle: 'Upload ảnh/video/audio lên HG Stock — gắn tag, chọn dự án',       render: renderHGStock },
   'team':          { title: 'Team',              subtitle: 'Theo dõi task & credit của thành viên dưới quyền',       render: renderTeam },
   'admin':         { title: 'Quản trị',          subtitle: 'Người dùng, nhóm, hạn mức credit nội bộ (Hub)',          render: renderAdmin },
+  'user-tracking': { title: 'Tracking',           subtitle: 'Theo dõi hành vi sử dụng tool: ảnh, video, kịch bản, thời lượng (Firebase)', render: renderUserTracking },
 };
 
 export const store = {
@@ -477,7 +479,7 @@ async function maybeShowExtensionReminder() {
           el('li', null, 'Bật ', el('b', null, 'Chế độ dành cho nhà phát triển'), ' (góc trên bên phải)'),
           el('li', null, 'Bấm ', el('b', null, 'Tải tiện ích đã giải nén'), ' (Load unpacked)'),
           el('li', null, 'Chọn thư mục ', codeSpan('extension/'), ' trong thư mục cài tool'),
-          el('li', null, 'Mở một tab ', codeSpan('labs.google'), ' và đăng nhập Google'),
+          el('li', null, 'Mở một tab ', codeSpan('flow.google.com'), ' và đăng nhập Google'),
         ),
       ),
     ),
@@ -584,7 +586,7 @@ function maybeShowUpdateNotice() {
         class: 'mono',
         style: { background: 'rgba(255,255,255,0.18)', padding: '2px 8px', borderRadius: '99px', margin: '0 4px' },
       }, 'chrome://extensions'),
-      ' → bấm ↻ Reload extension "RedOne Auth Helper", rồi refresh lại tab labs.google + shakker.ai.',
+      ' → bấm ↻ Reload extension "RedOne Auth Helper", rồi refresh lại tab flow.google.com + shakker.ai.',
     ));
     banner.appendChild(el('button', {
       class: 'btn btn-close',
@@ -901,6 +903,15 @@ async function init() {
   // Reveal Team/Quản trị tabs if this user is a Hub lead/admin (no-op when
   // the Hub is disabled). Fire-and-forget so a slow Hub never blocks boot.
   refreshHubStatus();
+
+  // Firebase tracking: show the Tracking nav group only if tracking is
+  // enabled AND the current user is in TRACKING_ADMIN_EMAILS.
+  api.tracking.status()
+    .then(r => {
+      const g = document.getElementById('nav-group-tracking');
+      if (g && r && r.enabled && r.is_admin) g.style.display = '';
+    })
+    .catch(() => {});
 
   // HG Stock: show sidebar tab if user has upload permission (fire-and-forget).
   import('./pages/hgstock.js').then(m => m.checkHGStockNav && m.checkHGStockNav()).catch(() => {});
