@@ -108,14 +108,14 @@ class BridgeFlowClient(FlowClient):
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         )
         self.TRPC = "https://flow.google.com/fx/api/trpc"
-        cached_p = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(account_email)
-        if cached_p and cached_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
-            self.project_id = cached_p
+        active_p = bridge.get_active_project_id()
+        if active_p and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email] = active_p
+            self.project_id = active_p
         else:
-            active_p = bridge.get_active_project_id()
-            if active_p and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
-                BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email] = active_p
-                self.project_id = active_p
+            cached_p = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(account_email)
+            if cached_p and cached_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                self.project_id = cached_p
         # NOTE: no per-account proxy here — in bridge mode every Google call
         # (including download_video/download_image) executes inside the user's
         # real Chrome tab, so the egress IP is Chrome's, not this process's.
@@ -218,17 +218,27 @@ class BridgeFlowClient(FlowClient):
                 )
 
             # 200 OK but no access_token = page returned but user signed out.
-            # 404 = labs.google has no NextAuth session for current Chrome user.
-            # These are NOT transient → fail fast.
+            # 404 = labs.google has no NextAuth session for current Chrome user (normal on flow.google.com).
             if status == 404 or (status == 200 and not (isinstance(body, dict) and body.get("access_token"))):
+                if bridge.is_extension_live():
+                    log.info(
+                        f"[{self._account_email}] (bridge) NextAuth session not present on labs.google, "
+                        "but Chrome extension bridge is live on flow.google.com. Proceeding with BOQ cookie auth."
+                    )
+                    self._token = "BOQ_COOKIE_AUTH"
+                    return
                 raise SessionDeadError(
                     self._account_email,
-                    "Chưa đăng nhập Google trong Chrome thật (không phải Cloak). "
+                    "Chưa đăng nhập Google trong Chrome thật. "
                     "Mở tab https://flow.google.com trong Chrome thật, "
                     "click Sign in, chọn account Google. Sau đó retry task.",
                 )
 
             log.error(f"[{self._account_email}] (bridge) token fetch failed: HTTP {status} {body}")
+            if bridge.is_extension_live():
+                log.info(f"[{self._account_email}] (bridge) Fallback to BOQ cookie auth.")
+                self._token = "BOQ_COOKIE_AUTH"
+                return
             raise SessionDeadError(
                 self._account_email,
                 f"Không lấy được session token (HTTP {status}, error: {err}). Login lại trong Chrome.",
@@ -510,17 +520,29 @@ class BridgeFlowClient(FlowClient):
         """Ensure self.project_id points to a VALID, existing project in Google Flow.
 
         Resolution order:
-        1. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh (must not be blacklisted).
-        2. Auto-discover the user's existing projects via UpteDb RPC (Google Cloud source of truth).
-        3. Check if active tab in Chrome is open to a project (must not be blacklisted).
-        4. If 0 projects found, ask extension to click "+ Dự án mới" in DOM to create a real project.
+        1. ACTIVE TAB CHECK: If Chrome tab is open to a project (/project/<id>)
+           and not blacklisted, use it immediately (user's real active view).
+        2. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh.
+        3. Auto-discover the user's existing projects via UpteDb RPC.
+        4. If 0 projects found, ask extension to click "+ Dự án mới" in DOM.
         """
+        # 1. Active tab check (Chrome tab URL) — HIGHEST PRIORITY
+        # If user opened or created a new project in Chrome, adopt it immediately!
+        active_tab_proj = bridge.get_active_project_id()
+        if active_tab_proj and active_tab_proj not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            if not force_refresh or active_tab_proj != self.project_id:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_tab_proj
+                self.project_id = active_tab_proj
+                log.info(f"[{self._account_email}] Using active project from Chrome tab: {active_tab_proj}")
+                return active_tab_proj
+
+        # 2. Check memory cache
         cached = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(self._account_email)
         if not force_refresh and cached and cached not in BridgeFlowClient._FAILED_PROJECT_IDS:
             self.project_id = cached
             return self.project_id
 
-        # 1. RPC UpteDb check (Google Cloud source of truth for user's real projects)
+        # 3. RPC UpteDb check (Google Cloud source of truth for user's real projects)
         projects = await self.fetch_user_projects()
         valid_projects = [p for p in projects if p not in BridgeFlowClient._FAILED_PROJECT_IDS]
         if valid_projects:
@@ -529,14 +551,6 @@ class BridgeFlowClient(FlowClient):
             self.project_id = latest_proj
             log.info(f"[{self._account_email}] Auto-selected latest Google Flow project: {latest_proj}")
             return latest_proj
-
-        # 2. Active tab check (Chrome tab URL)
-        active_tab_proj = bridge.get_active_project_id()
-        if active_tab_proj and active_tab_proj not in BridgeFlowClient._FAILED_PROJECT_IDS:
-            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_tab_proj
-            self.project_id = active_tab_proj
-            log.info(f"[{self._account_email}] Using active project from Chrome tab: {active_tab_proj}")
-            return active_tab_proj
 
         # 3. Provision new project via browser extension (click "+ Dự án mới" in DOM)
         log.info(f"[{self._account_email}] No projects found. Requesting browser to initialize new project...")

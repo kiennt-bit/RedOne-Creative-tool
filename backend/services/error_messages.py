@@ -46,7 +46,7 @@ def friendly_error(raw: str) -> str:
     # failed" — so it ALSO contains "429"/"resource_exhausted". It must NOT be
     # labeled "hết quota hôm nay": it's temporary and the tool auto-retries.
     if has("recaptcha", "captcha", "unusual_activity", "unusual activity",
-           "unusual traffic", "too_much_traffic", "too much traffic"):
+           "unusual traffic", "too_much_traffic", "too much traffic", "[7]", "error: [7]"):
         return (
             "Google tạm chặn vì gửi quá nhiều/quá nhanh (nghi là bot — "
             "reCAPTCHA). Đây là lỗi TẠM THỜI, tool sẽ tự thử lại sau ít giây. "
@@ -59,7 +59,7 @@ def friendly_error(raw: str) -> str:
     # Reached only when the 429 is NOT the transient throttle above — i.e. a
     # genuine per-model daily limit. Resets the next day.
     if has("per_model_daily_quota", "daily", "resource_exhausted", "quota",
-           "429", "resource has been exhausted"):
+           "429", "resource has been exhausted", "[8]", "error: [8]"):
         return (
             "Tài khoản này đã hết lượt tạo miễn phí trong hôm nay (Google "
             "giới hạn quota theo ngày). Đổi sang tài khoản Google khác ở tab "
@@ -134,7 +134,7 @@ def friendly_error(raw: str) -> str:
     # ── Timeout — also Google's PUBLIC_ERROR_VIDEO_GENERATION_TIMED_OUT, whose
     # raw spells it "timed_out" (underscore), NOT caught by "timed out". ──
     if has("timeout", "timed out", "timed_out", "deadline", "deadline_exceeded",
-           "etimedout"):
+           "etimedout", "[4]", "error: [4]"):
         return (
             "Google xử lý quá lâu nên hết thời gian chờ (máy chủ Google đang "
             "quá tải hoặc nội dung phức tạp). Lỗi TẠM THỜI phía Google — bấm "
@@ -162,10 +162,11 @@ def friendly_error(raw: str) -> str:
     # PUBLIC_ERROR_INTERNAL, not caught by "internal error". Checked near the end
     # so the more specific buckets above win first. ──
     if has("internal error", "internal_error", "internal", "500", "503", "502",
-           "unavailable", "try again", "backend error", "service is currently"):
+           "unavailable", "try again", "backend error", "service is currently",
+           "[13]", "error: [13]", "[14]", "error: [14]"):
         return (
-            "Google gặp lỗi nội bộ ở phía máy chủ. Lỗi TẠM THỜI — chờ vài giây "
-            "rồi bấm 'Gen lại'."
+            "Google gặp lỗi nội bộ ở phía máy chủ (Mã 13: máy chủ Google quá tải hoặc lỗi xử lý tạm thời). "
+            "Lỗi TẠM THỜI — chờ vài giây rồi bấm 'Gen lại', hoặc giảm bớt ảnh tham chiếu/số luồng gen."
         )
 
     # ── Unsafe generation — RAI/content-safety block (PERMANENT for this

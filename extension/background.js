@@ -313,24 +313,25 @@ async function _findLabsTab() {
  */
 async function _isSignedIn() {
     try {
-        // Check labs.google cookies (NextAuth session token lives here)
-        const labsCookies = await chrome.cookies.getAll({ domain: "labs.google" });
-        const hasLabsSession = labsCookies.some(c =>
+        // 1) Check cookies for flow.google.com (returns all cookies sent to flow.google.com,
+        // including .google.com cookies like SID, HSID, SSID, __Secure-1PSID, etc.)
+        const flowCookies = await chrome.cookies.getAll({ url: "https://flow.google.com" });
+        const hasFlowSession = flowCookies.some(c =>
+            c.name === "SID" || c.name === "HSID" || c.name === "SSID" ||
+            c.name.startsWith("__Secure-1PSID") || c.name.startsWith("__Secure-3PSID") ||
             c.name.startsWith("__Secure-next-auth.session-token") ||
             c.name.startsWith("next-auth.session-token")
         );
-        if (hasLabsSession) return true;
+        if (hasFlowSession) return true;
 
-        // Fallback: check flow.google.com cookies (future-proof if Google
-        // migrates session cookies to the new domain)
-        const flowCookies = await chrome.cookies.getAll({ domain: "flow.google.com" });
-        const hasFlowSession = flowCookies.some(c =>
+        // 2) Fallback: check labs.google cookies
+        const labsCookies = await chrome.cookies.getAll({ url: "https://labs.google" });
+        const hasLabsSession = labsCookies.some(c =>
             c.name.startsWith("__Secure-next-auth.session-token") ||
             c.name.startsWith("next-auth.session-token") ||
-            // Google GAIA auth cookies — used if they switch from NextAuth
-            c.name === "SID" || c.name === "HSID" || c.name === "SSID"
+            c.name === "SID"
         );
-        return hasFlowSession;
+        return hasLabsSession;
     } catch (_) {
         return false;
     }
@@ -739,41 +740,69 @@ async function _doInitFlowProjectTask(task) {
 
     const currentUrl = tab.url || tab.pendingUrl || "";
     const match = currentUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
-    if (match && match[1]) {
+    if (match && match[1] && !task.payload?.force_new) {
         return { project_id: match[1], status: "already_open" };
     }
 
-    let newProjectId;
+    // Try to trigger real project navigation / creation via the DOM in the tab
     try {
-        newProjectId = crypto.randomUUID();
-    } catch (_) {
-        newProjectId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-            const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
+        await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            world: "MAIN",
+            func: () => {
+                // 1) Look for existing project links if not forcing new
+                const projLinks = Array.from(document.querySelectorAll('a[href*="/project/"]'));
+                for (const a of projLinks) {
+                    const m = (a.getAttribute("href") || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
+                    if (m && m[1]) {
+                        a.click();
+                        return { action: "clicked_existing", id: m[1] };
+                    }
+                }
+
+                // 2) Look for "+ Dự án mới" / "+ New project" button
+                const allButtons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                const newProjBtn = allButtons.find(b => {
+                    const txt = (b.textContent || "").trim().toLowerCase();
+                    const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+                    return txt.includes("dự án mới") || txt.includes("new project") ||
+                           aria.includes("dự án mới") || aria.includes("new project") ||
+                           b.classList.contains("sidebar-upload-btn");
+                });
+
+                if (newProjBtn) {
+                    newProjBtn.click();
+                    return { action: "clicked_new_button" };
+                }
+
+                return { action: "none_found" };
+            },
         });
+
+        // Wait up to 10s for the tab URL to navigate to /project/<uuid>
+        for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const updatedTab = await chrome.tabs.get(tab.id).catch(() => null);
+            const u = updatedTab ? (updatedTab.url || "") : "";
+            const m = u.match(/\/project\/([a-zA-Z0-9_-]{36})/);
+            if (m && m[1]) {
+                console.log(`[RedOne] Successfully navigated to Flow project: ${m[1]}`);
+                return { project_id: m[1], status: "navigated" };
+            }
+        }
+    } catch (err) {
+        console.warn("[RedOne] DOM init project error:", err);
     }
 
-    const targetUrl = `https://flow.google.com/project/${newProjectId}`;
-    console.log(`[RedOne] Initializing Flow project in tab ${tab.id}: ${targetUrl}`);
-    await chrome.tabs.update(tab.id, { url: targetUrl });
+    // Check tab URL one last time
+    const finalTab = await chrome.tabs.get(tab.id).catch(() => null);
+    const finalUrl = finalTab ? (finalTab.url || "") : "";
+    const finalMatch = finalUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
+    if (finalMatch && finalMatch[1]) {
+        return { project_id: finalMatch[1], status: "found_in_url" };
+    }
 
-    await new Promise((resolve) => {
-        const listener = (id, info) => {
-            if (id === tab.id && info.status === "complete") {
-                chrome.tabs.onUpdated.removeListener(listener);
-                resolve();
-            }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-        setTimeout(() => {
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve();
-        }, 15000);
-    });
-
-    // Wait for Angular SPA state to hydrate
-    await new Promise(r => setTimeout(r, 2500));
-    return { project_id: newProjectId, status: "created" };
+    return { error: "Không thể tự tạo dự án qua giao diện. Vui lòng bấm '+ Dự án mới' trong tab flow.google.com rồi thử lại." };
 }
 
 
