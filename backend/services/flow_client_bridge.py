@@ -94,6 +94,7 @@ class BridgeFlowClient(FlowClient):
 
     # Persistent verified project_id per account
     _ACTIVE_PROJECT_IDS: dict[str, str] = {}
+    _FAILED_PROJECT_IDS: set[str] = set()
 
     def __init__(self, page=None, cookie_path: str = "", account_email: str = ""):
         # We pass page=None to the parent; everything that touches
@@ -107,11 +108,12 @@ class BridgeFlowClient(FlowClient):
             "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         )
         self.TRPC = "https://flow.google.com/fx/api/trpc"
-        if account_email in BridgeFlowClient._ACTIVE_PROJECT_IDS:
-            self.project_id = BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email]
+        cached_p = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(account_email)
+        if cached_p and cached_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            self.project_id = cached_p
         else:
             active_p = bridge.get_active_project_id()
-            if active_p:
+            if active_p and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
                 BridgeFlowClient._ACTIVE_PROJECT_IDS[account_email] = active_p
                 self.project_id = active_p
         # NOTE: no per-account proxy here — in bridge mode every Google call
@@ -473,10 +475,12 @@ class BridgeFlowClient(FlowClient):
     async def fetch_user_projects(self) -> list[str]:
         """Fetch existing project IDs for this account using BOQ RPC UpteDb."""
         try:
+            active_p = bridge.get_active_project_id()
+            source_path = f"/project/{active_p}" if (active_p and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS) else "/"
             r = await bridge.batch_execute(
                 rpc_id="UpteDb",
                 inner_payload=["projects/*", 21, None, None, None, None, [1]],
-                source_path="/",
+                source_path=source_path,
                 timeout_ms=15000,
             )
             rpc_result = r.get("rpc_result")
@@ -484,53 +488,68 @@ class BridgeFlowClient(FlowClient):
                 projects = []
                 for item in rpc_result[0]:
                     if isinstance(item, list) and len(item) > 0 and isinstance(item[0], str):
-                        projects.append(item[0])
-                log.info(f"[{self._account_email}] Discovered {len(projects)} existing Google Flow project(s)")
+                        pid = item[0]
+                        if pid not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                            projects.append(pid)
+                log.info(f"[{self._account_email}] Discovered {len(projects)} existing valid Google Flow project(s)")
                 return projects
         except Exception as e:
             log.warning(f"[{self._account_email}] fetch_user_projects failed: {e}")
         return []
 
+    async def _handle_project_error(self, status: int, err: Any) -> None:
+        """Mark current project_id as rejected, invalidate cache, and re-resolve."""
+        bad_proj = self.project_id
+        if bad_proj:
+            log.warning(f"[{self._account_email}] Blacklisting rejected project {bad_proj} (status={status}, err={err})")
+            BridgeFlowClient._FAILED_PROJECT_IDS.add(bad_proj)
+            BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+        await self.ensure_project_id(force_refresh=True)
+
     async def ensure_project_id(self, force_refresh: bool = False) -> str:
         """Ensure self.project_id points to a VALID, existing project in Google Flow.
 
         Resolution order:
-        1. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh.
-        2. Check if the active tab in Chrome is currently open to /project/<uuid>.
-        3. Auto-discover the user's latest project via UpteDb RPC.
-        4. If 0 projects found, ask extension to navigate/provision a project in Flow tab.
+        1. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh (must not be blacklisted).
+        2. Auto-discover the user's existing projects via UpteDb RPC (Google Cloud source of truth).
+        3. Check if active tab in Chrome is open to a project (must not be blacklisted).
+        4. If 0 projects found, ask extension to click "+ Dự án mới" in DOM to create a real project.
         """
-        if not force_refresh and self._account_email in BridgeFlowClient._ACTIVE_PROJECT_IDS:
-            self.project_id = BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email]
+        cached = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(self._account_email)
+        if not force_refresh and cached and cached not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            self.project_id = cached
             return self.project_id
 
-        # 1. Active tab check
+        # 1. RPC UpteDb check (Google Cloud source of truth for user's real projects)
+        projects = await self.fetch_user_projects()
+        valid_projects = [p for p in projects if p not in BridgeFlowClient._FAILED_PROJECT_IDS]
+        if valid_projects:
+            latest_proj = valid_projects[0]
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = latest_proj
+            self.project_id = latest_proj
+            log.info(f"[{self._account_email}] Auto-selected latest Google Flow project: {latest_proj}")
+            return latest_proj
+
+        # 2. Active tab check (Chrome tab URL)
         active_tab_proj = bridge.get_active_project_id()
-        if active_tab_proj:
+        if active_tab_proj and active_tab_proj not in BridgeFlowClient._FAILED_PROJECT_IDS:
             BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_tab_proj
             self.project_id = active_tab_proj
             log.info(f"[{self._account_email}] Using active project from Chrome tab: {active_tab_proj}")
             return active_tab_proj
 
-        # 2. RPC UpteDb check
-        projects = await self.fetch_user_projects()
-        if projects:
-            latest_proj = projects[0]
-            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = latest_proj
-            self.project_id = latest_proj
-            log.info(f"[{self._account_email}] Auto-selected latest project from Google Flow: {latest_proj}")
-            return latest_proj
-
-        # 3. Provision new project via browser extension navigation
+        # 3. Provision new project via browser extension (click "+ Dự án mới" in DOM)
         log.info(f"[{self._account_email}] No projects found. Requesting browser to initialize new project...")
         try:
-            res = await bridge.init_flow_project(timeout_ms=25000)
+            res = await bridge.init_flow_project(force_new=force_refresh, timeout_ms=25000)
             new_proj = res.get("project_id") if isinstance(res, dict) else None
-            if new_proj:
+            if new_proj and new_proj not in BridgeFlowClient._FAILED_PROJECT_IDS:
                 BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = new_proj
                 self.project_id = new_proj
-                log.info(f"[{self._account_email}] Successfully initialized Flow project: {new_proj}")
+                log.info(f"[{self._account_email}] Successfully initialized Flow project via DOM: {new_proj}")
                 return new_proj
+            elif res and res.get("error"):
+                log.warning(f"[{self._account_email}] init_flow_project error: {res['error']}")
         except Exception as e:
             log.warning(f"[{self._account_email}] bridge.init_flow_project failed: {e}")
 
@@ -579,16 +598,22 @@ class BridgeFlowClient(FlowClient):
             timeout_ms=60000,
         )
 
-        active_p = r.get("active_project_id")
-        if active_p and active_p != self.project_id:
-            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
-            self.project_id = active_p
-
         rpc_result = r.get("rpc_result")
+        err = r.get("error")
+        status = r.get("status", 0)
+
+        if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err))):
+            await self._handle_project_error(status, err)
+
         if not rpc_result or not isinstance(rpc_result, list) or not rpc_result[0]:
-            err = r.get("error") or "Unknown upload failure"
+            err = err or "Unknown upload failure"
             log.error(f"[{self._account_email}] (BOQ) Upload failed: {err}")
             raise ValueError(f"Upload ảnh tham chiếu lỗi: {err}")
+
+        active_p = r.get("active_project_id")
+        if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+            self.project_id = active_p
 
         media_id = rpc_result[0][0]
         log.info(f"[{self._account_email}] (BOQ) Upload OK: {path.name} → {media_id}")
@@ -725,10 +750,14 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
-            active_p = r.get("active_project_id")
-            if active_p and active_p != self.project_id:
-                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
-                self.project_id = active_p
+            if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err))):
+                log.warning(f"[{self._account_email}] Project rejected (HTTP {status}, {err}). Auto-recovering...")
+                await self._handle_project_error(status, err)
+                source_path = f"/project/{self.project_id}"
+                if attempt < 4:
+                    await asyncio.sleep(2.0)
+                    continue
+                raise ValueError(f"batchexecute HTTP {status}: {err}")
 
             if err and status == 0:
                 log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} error: {err}")
@@ -745,11 +774,6 @@ class BridgeFlowClient(FlowClient):
 
             if err:
                 log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} RPC error: {err}")
-                if "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err):
-                    log.warning(f"[{self._account_email}] UNUSUAL_ACTIVITY detected for project {self.project_id}. Re-resolving project...")
-                    BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
-                    await self.ensure_project_id(force_refresh=True)
-                    source_path = f"/project/{self.project_id}"
                 if attempt < 4:
                     continue
                 raise ValueError(f"Google RPC error: {err}")
@@ -759,6 +783,11 @@ class BridgeFlowClient(FlowClient):
                 if attempt < 4:
                     continue
                 raise ValueError("No RPC result in batchexecute response")
+
+            active_p = r.get("active_project_id")
+            if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+                self.project_id = active_p
 
             result = rpc_result
             break
@@ -894,10 +923,14 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
-            active_p = r.get("active_project_id")
-            if active_p and active_p != self.project_id:
-                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
-                self.project_id = active_p
+            if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err))):
+                log.warning(f"[{self._account_email}] Project rejected (HTTP {status}, {err}). Auto-recovering...")
+                await self._handle_project_error(status, err)
+                source_path = f"/project/{self.project_id}"
+                if attempt < 2:
+                    await asyncio.sleep(2.0)
+                    continue
+                raise ValueError(f"batchexecute HTTP {status}: {err}")
 
             if err and status == 0:
                 log.warning(f"(BOQ) SPrCad attempt {attempt + 1} error: {err}")
@@ -914,11 +947,6 @@ class BridgeFlowClient(FlowClient):
 
             if err:
                 log.warning(f"(BOQ) SPrCad attempt {attempt + 1} RPC error: {err}")
-                if "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err):
-                    log.warning(f"[{self._account_email}] UNUSUAL_ACTIVITY detected for project {self.project_id}. Re-resolving project...")
-                    BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
-                    await self.ensure_project_id(force_refresh=True)
-                    source_path = f"/project/{self.project_id}"
                 if attempt < 2:
                     continue
                 raise ValueError(f"Google RPC error: {err}")
@@ -928,6 +956,11 @@ class BridgeFlowClient(FlowClient):
                 if attempt < 2:
                     continue
                 raise ValueError("No RPC result in batchexecute response")
+
+            active_p = r.get("active_project_id")
+            if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+                self.project_id = active_p
 
             result = rpc_result
             break
@@ -1093,14 +1126,17 @@ class BridgeFlowClient(FlowClient):
         err = r.get("error")
         rpc_result = r.get("rpc_result")
 
-        active_p = r.get("active_project_id")
-        if active_p and active_p != self.project_id:
-            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
-            self.project_id = active_p
+        if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err))):
+            await self._handle_project_error(status, err)
 
         if err or status != 200 or not rpc_result:
             log.error(f"(BOQ) eb1hJf failed: status={status}, err={err}")
             raise ValueError(f"Tạo video thất bại: {err or f'HTTP {status}'}")
+
+        active_p = r.get("active_project_id")
+        if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+            self.project_id = active_p
 
         try:
             candidates = rpc_result[3] if len(rpc_result) > 3 and isinstance(rpc_result[3], list) else rpc_result[1]

@@ -242,14 +242,14 @@ async function _findLabsTab() {
             const labsTabs = tabs.filter(t => {
                 const u = t.url || t.pendingUrl || "";
                 return (u.includes("labs.google") || u.includes("flow.google.com")) &&
-                       !u.includes("accounts.google.com");
+                    !u.includes("accounts.google.com");
             });
             if (labsTabs.length > 0) {
                 // Rank: non-discarded first, then a Flow tab (reCAPTCHA loaded).
                 const score = (t) => {
                     const u = t.url || t.pendingUrl || "";
                     return (t.discarded ? 2 : 0) +
-                           ((u.includes("/tools/flow") || u.includes("flow.google.com")) ? 0 : 1);
+                        ((u.includes("/tools/flow") || u.includes("flow.google.com")) ? 0 : 1);
                 };
                 return labsTabs.sort((a, b) => score(a) - score(b))[0];
             }
@@ -681,7 +681,7 @@ async function _doBatchExecuteTask(task) {
                         }
                         try {
                             chunks.push(JSON.parse(line));
-                        } catch (_) {}
+                        } catch (_) { }
                     }
 
                     // 6) Extract the RPC result
@@ -747,7 +747,7 @@ async function _doInitFlowProjectTask(task) {
     try {
         newProjectId = crypto.randomUUID();
     } catch (_) {
-        newProjectId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        newProjectId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
             const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
@@ -978,7 +978,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                             _connected = true;
                             break;
                         }
-                    } catch (_) {}
+                    } catch (_) { }
                 }
             } catch (_) {
                 _connected = false;
@@ -1031,7 +1031,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                     try {
                         r = await _bridgePost(host, "/sync/shakker-account", msg.state || {});
                         if (r && r.ok) break;
-                    } catch (_) {}
+                    } catch (_) { }
                 }
                 if (r && r.ok) {
                     _shakkerEmail = (msg.state && msg.state.email) || _shakkerEmail;
