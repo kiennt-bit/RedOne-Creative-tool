@@ -463,9 +463,17 @@ class BrowserBridge:
             "timeout_ms": timeout_ms,
         })
 
-    async def init_flow_project(self, timeout_ms: int = 25000) -> dict:
+    async def init_flow_project(
+        self,
+        target_project_id: str = "",
+        force_new: bool = False,
+        timeout_ms: int = 25000,
+    ) -> dict:
         """Ask extension to verify or navigate flow.google.com tab to a project."""
-        return await self._enqueue_and_wait("init_flow_project", {}, timeout_ms=timeout_ms)
+        payload: dict[str, Any] = {"force_new": force_new}
+        if target_project_id:
+            payload["target_project_id"] = target_project_id
+        return await self._enqueue_and_wait("init_flow_project", payload)
 
     async def proxy_fetch_binary(
         self,

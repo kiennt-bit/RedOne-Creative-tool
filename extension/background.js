@@ -712,8 +712,7 @@ async function _doBatchExecuteTask(task) {
                     }
 
                     console.log(`[RedOne BOQ] Parsed ${chunks.length} chunks. rpcResult:`, rpcResult ? "OK" : "NULL", "rpcError:", rpcError);
-
-                    const projectMatch = (window.location.pathname || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
+                const projectMatch = (window.location.pathname || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
                     const activeProjectId = projectMatch ? projectMatch[1] : null;
 
                     if (rpcError) {
@@ -736,17 +735,40 @@ async function _doBatchExecuteTask(task) {
 // ── Task: init_flow_project (ensure a project is active in Flow) ──────
 async function _doInitFlowProjectTask(task) {
     const tab = await _findLabsTab();
-    if (!tab) return { error: "no flow.google.com tab open" };
+    if (!tab) return { error: "no flow.google.com tab" };
 
     const currentUrl = tab.url || tab.pendingUrl || "";
+    const targetPid = task.payload?.target_project_id;
+
+    // A) If a target project was specified, navigate directly to it
+    if (targetPid) {
+        const targetUrl = `https://flow.google.com/project/${targetPid}`;
+        if (!currentUrl.includes(targetPid)) {
+            console.log(`[RedOne] Navigating Flow tab to target project: ${targetPid}`);
+            await chrome.tabs.update(tab.id, { url: targetUrl });
+            for (let i = 0; i < 30; i++) {
+                await new Promise(r => setTimeout(r, 500));
+                const updatedTab = await chrome.tabs.get(tab.id).catch(() => null);
+                const u = updatedTab ? (updatedTab.url || "") : "";
+                if (u.includes(targetPid)) {
+                    // Give Angular SPA time to initialize grecaptcha.enterprise
+                    await new Promise(r => setTimeout(r, 1500));
+                    return { project_id: targetPid, status: "navigated" };
+                }
+            }
+        }
+        return { project_id: targetPid, status: "already_open" };
+    }
+
+    // B) If already open to a project and not forcing new
     const match = currentUrl.match(/\/project\/([a-zA-Z0-9_-]{36})/);
     if (match && match[1] && !task.payload?.force_new) {
         return { project_id: match[1], status: "already_open" };
     }
 
-    // Try to trigger real project navigation / creation via the DOM in the tab
+    // C) Try to trigger real project navigation / creation via the DOM in the tab
     try {
-        await chrome.scripting.executeScript({
+        const domResult = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             world: "MAIN",
             func: () => {
@@ -755,8 +777,7 @@ async function _doInitFlowProjectTask(task) {
                 for (const a of projLinks) {
                     const m = (a.getAttribute("href") || "").match(/\/project\/([a-zA-Z0-9_-]{36})/);
                     if (m && m[1]) {
-                        a.click();
-                        return { action: "clicked_existing", id: m[1] };
+                        return { action: "found_existing", id: m[1] };
                     }
                 }
 
@@ -779,6 +800,14 @@ async function _doInitFlowProjectTask(task) {
             },
         });
 
+        const res = (domResult && domResult[0] && domResult[0].result) || {};
+        if (res.action === "found_existing" && res.id) {
+            console.log(`[RedOne] Navigating to existing project from DOM: ${res.id}`);
+            await chrome.tabs.update(tab.id, { url: `https://flow.google.com/project/${res.id}` });
+            await new Promise(r => setTimeout(r, 2000));
+            return { project_id: res.id, status: "navigated" };
+        }
+
         // Wait up to 10s for the tab URL to navigate to /project/<uuid>
         for (let i = 0; i < 20; i++) {
             await new Promise(r => setTimeout(r, 500));
@@ -787,6 +816,7 @@ async function _doInitFlowProjectTask(task) {
             const m = u.match(/\/project\/([a-zA-Z0-9_-]{36})/);
             if (m && m[1]) {
                 console.log(`[RedOne] Successfully navigated to Flow project: ${m[1]}`);
+                await new Promise(r => setTimeout(r, 1500));
                 return { project_id: m[1], status: "navigated" };
             }
         }

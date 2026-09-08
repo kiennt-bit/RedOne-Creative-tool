@@ -494,6 +494,12 @@ class BridgeFlowClient(FlowClient):
                 timeout_ms=15000,
             )
             rpc_result = r.get("rpc_result")
+            log.info(
+                f"[{self._account_email}] UpteDb response: status={r.get('status')} "
+                f"error={r.get('error')} rpc_result_type={type(rpc_result)} "
+                f"rpc_result_preview={str(rpc_result)[:300]} "
+                f"blacklisted={list(BridgeFlowClient._FAILED_PROJECT_IDS)[:5]}"
+            )
             if isinstance(rpc_result, list) and len(rpc_result) > 0 and isinstance(rpc_result[0], list):
                 projects = []
                 for item in rpc_result[0]:
@@ -510,6 +516,13 @@ class BridgeFlowClient(FlowClient):
     async def _handle_project_error(self, status: int, err: Any) -> None:
         """Mark current project_id as rejected, invalidate cache, and re-resolve."""
         bad_proj = self.project_id
+        err_str = str(err)
+        # UNUSUAL_ACTIVITY / [7] is rate-limit / captcha / bot check, NOT an invalid project ID!
+        # Never blacklist the user's valid project on error 7!
+        if "UNUSUAL_ACTIVITY" in err_str or "[7]" in err_str or "[7," in err_str:
+            log.warning(f"[{self._account_email}] Error is rate limit/reCAPTCHA, not a bad project ID. Invalidate cache but DO NOT blacklist {bad_proj}.")
+            BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+            return
         if bad_proj:
             log.warning(f"[{self._account_email}] Blacklisting rejected project {bad_proj} (status={status}, err={err})")
             BridgeFlowClient._FAILED_PROJECT_IDS.add(bad_proj)
@@ -523,7 +536,8 @@ class BridgeFlowClient(FlowClient):
         1. ACTIVE TAB CHECK: If Chrome tab is open to a project (/project/<id>)
            and not blacklisted, use it immediately (user's real active view).
         2. Check memory cache (_ACTIVE_PROJECT_IDS) unless force_refresh.
-        3. Auto-discover the user's existing projects via UpteDb RPC.
+        3. Auto-discover the user's existing projects via UpteDb RPC, and NAVIGATE
+           tab to it so grecaptcha.enterprise is loaded.
         4. If 0 projects found, ask extension to click "+ Dự án mới" in DOM.
         """
         # 1. Active tab check (Chrome tab URL) — HIGHEST PRIORITY
@@ -540,6 +554,12 @@ class BridgeFlowClient(FlowClient):
         cached = BridgeFlowClient._ACTIVE_PROJECT_IDS.get(self._account_email)
         if not force_refresh and cached and cached not in BridgeFlowClient._FAILED_PROJECT_IDS:
             self.project_id = cached
+            # If tab is not currently on this cached project, navigate to it!
+            if not active_tab_proj or active_tab_proj != cached:
+                try:
+                    await bridge.init_flow_project(target_project_id=cached, timeout_ms=20000)
+                except Exception as ex:
+                    log.warning(f"[{self._account_email}] Tab navigation to cached {cached} failed: {ex}")
             return self.project_id
 
         # 3. RPC UpteDb check (Google Cloud source of truth for user's real projects)
@@ -550,9 +570,17 @@ class BridgeFlowClient(FlowClient):
             BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = latest_proj
             self.project_id = latest_proj
             log.info(f"[{self._account_email}] Auto-selected latest Google Flow project: {latest_proj}")
+            # Ensure the Chrome tab navigates to this project so grecaptcha is loaded!
+            active_tab_proj = bridge.get_active_project_id()
+            if not active_tab_proj or active_tab_proj != latest_proj:
+                log.info(f"[{self._account_email}] Tab not on {latest_proj} (currently {bridge._ext_last_url}). Navigating tab...")
+                try:
+                    await bridge.init_flow_project(target_project_id=latest_proj, timeout_ms=20000)
+                except Exception as ex:
+                    log.warning(f"[{self._account_email}] Tab navigation to {latest_proj} failed: {ex}")
             return latest_proj
 
-        # 3. Provision new project via browser extension (click "+ Dự án mới" in DOM)
+        # 4. Provision new project via browser extension (click "+ Dự án mới" in DOM)
         log.info(f"[{self._account_email}] No projects found. Requesting browser to initialize new project...")
         try:
             res = await bridge.init_flow_project(force_new=force_refresh, timeout_ms=25000)
@@ -764,7 +792,7 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
-            if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err))):
+            if status == 400 or (err and ("PROJECT_NOT_FOUND" in str(err) or "[5," in str(err) or "[5]" in str(err))):
                 log.warning(f"[{self._account_email}] Project rejected (HTTP {status}, {err}). Auto-recovering...")
                 await self._handle_project_error(status, err)
                 source_path = f"/project/{self.project_id}"
@@ -937,7 +965,7 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             rpc_result = r.get("rpc_result")
 
-            if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err) or "[7]" in str(err))):
+            if status == 400 or (err and ("PROJECT_NOT_FOUND" in str(err) or "[5," in str(err) or "[5]" in str(err))):
                 log.warning(f"[{self._account_email}] Project rejected (HTTP {status}, {err}). Auto-recovering...")
                 await self._handle_project_error(status, err)
                 source_path = f"/project/{self.project_id}"
