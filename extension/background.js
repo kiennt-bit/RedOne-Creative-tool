@@ -245,11 +245,19 @@ async function _findLabsTab() {
                     !u.includes("accounts.google.com");
             });
             if (labsTabs.length > 0) {
-                // Rank: non-discarded first, then a Flow tab (reCAPTCHA loaded).
+                // Rank: non-discarded first, then an active Flow project tab (full CSRF + reCAPTCHA),
+                // then any Flow tab, then general labs.google.
                 const score = (t) => {
                     const u = t.url || t.pendingUrl || "";
-                    return (t.discarded ? 2 : 0) +
-                        ((u.includes("/tools/flow") || u.includes("flow.google.com")) ? 0 : 1);
+                    let s = t.discarded ? 10 : 0;
+                    if (u.match(/\/project\/[a-zA-Z0-9_-]{36}/)) {
+                        s += 0; // Best: inside project workspace
+                    } else if (u.includes("flow.google.com") || u.includes("/tools/flow")) {
+                        s += 2; // Flow homepage
+                    } else {
+                        s += 4; // Other labs.google page
+                    }
+                    return s;
                 };
                 return labsTabs.sort((a, b) => score(a) - score(b))[0];
             }

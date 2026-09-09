@@ -666,18 +666,22 @@ class BridgeFlowClient(FlowClient):
     # Model name mapping for batchexecute (may differ from REST API)
     BOQ_IMAGE_MODEL_MAP = {
         "nano_banana_pro": "GEM_PIX_2",
-        "nano_banana_2": "GEM_PIX_2",
-        "imagen_4": "GEM_PIX_2",
-        "imagen_3_5": "GEM_PIX_2",
+        "nano_banana_2": "NARWHAL",
+        "nano_banana_lite": "HARBOR_SEAL",
+        "imagen_4": "IMAGEN_3_5",
+        "imagen_3_5": "IMAGEN_3_5",
+        "imagen_3": "IMAGEN_3",
+        "imagen_3_fast": "IMAGEN_3_FAST",
     }
 
-    # Aspect ratio → numeric code used in batchexecute
+    # Aspect ratio → numeric code used in batchexecute (_.PI & _.HSa in Google bundle)
+    # SQUARE: 1, PORTRAIT (9:16): 2, LANDSCAPE (16:9): 3, PORTRAIT_3_4: 4, LANDSCAPE_4_3: 5
     BOQ_ASPECT_RATIO_MAP = {
-        "1:1": 3,
+        "1:1": 1,
+        "9:16": 2,
         "16:9": 3,
-        "9:16": 3,
-        "3:4": 3,
-        "4:3": 3,
+        "3:4": 4,
+        "4:3": 5,
     }
 
     async def generate_image(
@@ -816,6 +820,8 @@ class BridgeFlowClient(FlowClient):
 
             if err:
                 log.warning(f"(BOQ) ogiZ0b attempt {attempt + 1} RPC error: {err}")
+                if "QUOTA_REACHED" in str(err) or "PER_MODEL_DAILY_QUOTA" in str(err):
+                    raise ValueError(f"Google RPC error: {err}")
                 if attempt < 4:
                     continue
                 raise ValueError(f"Google RPC error: {err}")
