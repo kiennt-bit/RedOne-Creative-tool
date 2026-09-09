@@ -14,6 +14,7 @@ const IMAGE_MODELS = [
   { key: 'nano_banana_lite', label: '🍌 Nano Banana Lite' },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+const DRAFT_IDEA_KEY = 'redone_storyboard_draft_idea';
 
 // Module-level state survives SPA navigation (ref File objects too; cleared on F5).
 const form = {
@@ -136,7 +137,16 @@ export function renderStoryboard(root) {
     el('div', { class: 'card' },
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, 'Ý tưởng'),
-        el('textarea', { class: 'textarea', id: 'sb2-idea', rows: 4, placeholder: 'Mô tả ý tưởng kịch bản của bạn...', oninput: (e) => { form.idea = e.target.value; } }),
+        el('textarea', {
+          class: 'textarea',
+          id: 'sb2-idea',
+          rows: 4,
+          placeholder: 'Mô tả ý tưởng kịch bản của bạn...',
+          oninput: (e) => {
+            form.idea = e.target.value;
+            try { localStorage.setItem(DRAFT_IDEA_KEY, e.target.value); } catch (_) {}
+          },
+        }),
       ),
       el('div', { class: 'field-group' },
         el('label', { class: 'field-label' }, refCountLabel),
@@ -190,6 +200,14 @@ export function renderStoryboard(root) {
   );
   layout.appendChild(right);
 
+  // Restore draft idea from localStorage if empty
+  if (!form.idea) {
+    try {
+      const savedDraft = localStorage.getItem(DRAFT_IDEA_KEY);
+      if (savedDraft) form.idea = savedDraft;
+    } catch (_) {}
+  }
+
   // Restore field values (survive navigation)
   root.querySelector('#sb2-idea').value = form.idea;
   root.querySelector('#sb2-model').value = form.model;
@@ -215,7 +233,12 @@ export function renderStoryboard(root) {
       const res = await api.storyboard.start(fd);
       _generating = false;
       // Register so WS image events (carrying the prompt) drive the scene cards.
-      tasksStore.register(res.task_id, 'storyboard', { items: res.prompts, aspect: form.aspect, name: res.name || '' });
+      tasksStore.register(res.task_id, 'storyboard', {
+        items: res.prompts,
+        aspect: form.aspect,
+        name: res.name || '',
+        idea: idea,
+      });
       _taskId = res.task_id;
       _liveRenderSB();   // attach + render on whichever page is shown now
       toast(`Đã tạo ${res.prompts.length} phân cảnh — đang gen ảnh (${res.model_used})`, 'success');
@@ -340,6 +363,68 @@ export function renderStoryboard(root) {
       ));
       statusEl.textContent = 'Chưa tạo';
       return;
+    }
+
+    // Hiển thị ý tưởng kịch bản gốc nếu có (để xem lại bất cứ khi nào mở task)
+    const taskIdea = (state.idea || (state.items && state.items.find(x => x.extra && x.extra.idea)?.extra?.idea) || '').trim();
+    if (taskIdea) {
+      const ideaCard = el('div', {
+        class: 'storyboard-idea-card',
+        style: {
+          background: 'var(--card-bg, #1a1b20)',
+          border: '1px solid var(--border)',
+          borderLeft: '4px solid var(--brand)',
+          borderRadius: '8px',
+          padding: '12px 14px',
+          marginBottom: '14px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+        },
+      },
+        el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, fontSize: '13px', color: 'var(--brand)' } },
+            icon('sparkles', 14),
+            'Ý tưởng kịch bản gốc',
+          ),
+          el('div', { style: { display: 'flex', gap: '6px' } },
+            el('button', {
+              class: 'btn btn-sm btn-ghost',
+              title: 'Sao chép ý tưởng',
+              onclick: () => {
+                navigator.clipboard.writeText(taskIdea);
+                toast('Đã copy ý tưởng kịch bản', 'success');
+              },
+            }, icon('copy', 13), ' Copy'),
+            el('button', {
+              class: 'btn btn-sm btn-ghost',
+              title: 'Nạp ý tưởng này vào ô nhập kịch bản bên trái',
+              onclick: () => {
+                form.idea = taskIdea;
+                try { localStorage.setItem(DRAFT_IDEA_KEY, taskIdea); } catch (_) {}
+                const txt = root.querySelector('#sb2-idea');
+                if (txt) { txt.value = taskIdea; txt.focus(); }
+                toast('Đã nạp lại ý tưởng vào ô nhập', 'success');
+              },
+            }, icon('edit', 13), ' Dùng lại ý tưởng này'),
+          ),
+        ),
+        el('div', {
+          style: {
+            fontSize: '13px',
+            lineHeight: '1.5',
+            color: 'var(--text-main, #e2e8f0)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            background: 'rgba(0,0,0,0.18)',
+            padding: '8px 10px',
+            borderRadius: '6px',
+            maxHeight: '160px',
+            overflowY: 'auto',
+          },
+        }, taskIdea),
+      );
+      wrap.appendChild(ideaCard);
     }
 
     // Scene order = DB item id ascending (creation order); unclaimed slots tail.
@@ -478,11 +563,43 @@ export function renderStoryboard(root) {
   // shows the in-flight Gemini spinner (if a generation is still running) or
   // re-attaches to the last task.
   const pending = window.__app && window.__app._pendingTaskId;
-  if (pending != null && tasksStore.get(pending)) {
-    _taskId = pending;
+  if (pending != null) {
     window.__app._pendingTaskId = null;
+    const existing = tasksStore.get(pending);
+    if (existing) {
+      attachToTask(pending);
+      if (existing.idea && !form.idea) {
+        form.idea = existing.idea;
+        const txt = root.querySelector('#sb2-idea');
+        if (txt) txt.value = existing.idea;
+      }
+    } else {
+      // Not in memory (e.g. app restart or older task) -> fetch from backend!
+      api.tasks.get(pending).then((res) => {
+        if (!root.isConnected) return;
+        if (res && res.task) {
+          const t = tasksStore.ingest(res.task, res.items || []);
+          if (t) {
+            attachToTask(t.id);
+            if (t.idea && !form.idea) {
+              form.idea = t.idea;
+              const txt = root.querySelector('#sb2-idea');
+              if (txt) txt.value = t.idea;
+            }
+          }
+        }
+      }).catch((e) => {
+        console.warn('Failed to load pending storyboard task', e);
+        liveRender();
+      });
+    }
+  } else if (_taskId && tasksStore.get(_taskId)) {
+    attachToTask(_taskId);
+  } else {
+    const latest = tasksStore.latestByKind('storyboard');
+    if (latest) attachToTask(latest.id);
+    else liveRender();
   }
-  liveRender();
 
   // Cleanup when navigated away. `root` is the PERSISTENT #page-container
   // (navigate() only swaps its children), so we detect unmount via our own

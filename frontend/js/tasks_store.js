@@ -104,6 +104,7 @@ export const tasksStore = {
       id: taskId,
       kind,
       name: meta.name || '',
+      idea: meta.idea || '',
       status: 'running',
       aspect: meta.aspect || '1:1',
       model: meta.model || '',
@@ -340,6 +341,75 @@ export const tasksStore = {
     t.error_message = null;
     notify(taskId);
     return true;
+  },
+
+  /**
+   * Ingest a full task record + items (from DB via api.tasks.get).
+   * Restores historical tasks into memory so they can be viewed, navigated,
+   * and interacted with even if the app was restarted or localStorage cleared.
+   */
+  ingest(task, items = []) {
+    if (!task || !task.id) return null;
+    const kind = (task.mode || 'image').toLowerCase();
+    const statusMap = {
+      COMPLETED: 'completed',
+      RUNNING: 'running',
+      PENDING: 'running',
+      PAUSED: 'paused',
+      ERROR: 'error',
+      CANCELLED: 'cancelled',
+    };
+    const t = {
+      id: task.id,
+      kind: kind,
+      name: task.name || '',
+      idea: task.idea || '',
+      status: statusMap[task.status] || (task.status || '').toLowerCase() || 'completed',
+      aspect: task.aspect_ratio || '16:9',
+      model: task.image_model || '',
+      upscale: false,
+      videosPerPrompt: 1,
+      items: (items || []).map(it => {
+        let extra = {};
+        try { extra = it.extra_json ? JSON.parse(it.extra_json) : {}; } catch (_) {}
+        const isDone = (it.status || '').toUpperCase() === 'COMPLETED';
+        const isErr = (it.status || '').toUpperCase() === 'ERROR';
+        const outUrl = isDone && it.output_path ? (pathToUrl(it.output_path) + `?v=${Date.now()}`) : null;
+        const upUrl = extra.upscale_path ? pathToUrl(extra.upscale_path) : null;
+        return {
+          id: it.id,
+          prompt: it.prompt || '',
+          status: isDone ? 'done' : (isErr ? 'error' : 'pending'),
+          output_url: outUrl,
+          output_path: it.output_path || null,
+          error: isErr ? (it.error_message || 'Lỗi') : null,
+          error_detail: it.error_message || null,
+          media_id: extra.media_id || null,
+          upscale_status: extra.upscale_status || null,
+          upscale_path: extra.upscale_path || null,
+          upscale_url: upUrl,
+          upscale_resolution: extra.upscale_resolution || null,
+          extra: extra,
+        };
+      }),
+      done: task.done_count || 0,
+      error: task.error_count || 0,
+      total: task.total_count || (items ? items.length : 0),
+      error_message: null,
+      created_at: task.created_at ? new Date(task.created_at.includes(' ') ? task.created_at.replace(' ', 'T') + 'Z' : task.created_at).getTime() : Date.now(),
+    };
+    if (!t.idea) {
+      for (const it of t.items) {
+        if (it.extra && it.extra.idea) {
+          t.idea = it.extra.idea;
+          break;
+        }
+      }
+    }
+    tasks.set(task.id, t);
+    persist();
+    notify(task.id);
+    return t;
   },
 };
 

@@ -174,8 +174,14 @@ async def start_storyboard(
         total_count=len(prompts),
         status=TaskStatus.PENDING.value,
         user_email=hub_client.current_user_email(),
+        idea=idea,
     )
-    extra_global = {"reference_images": ref_paths} if ref_paths else None
+    extra_global = {}
+    if ref_paths:
+        extra_global["reference_images"] = ref_paths
+    if idea:
+        extra_global["idea"] = idea
+    extra_global = extra_global or None
     for p in prompts:
         db.add_task_item(task_id, p, extra=extra_global)
 
@@ -188,6 +194,7 @@ async def start_storyboard(
         "task_id": task_id,
         "name": name,
         "prompts": prompts,
+        "idea": idea,
         "model_used": result["model_used"],
         "fallback_log": result["fallback_log"],
         "queue_position": position,
