@@ -29,7 +29,7 @@ log = logging.getLogger("redone.features")
 
 INSTALLED_JSON = EXT_DIR / "installed.json"
 _CHUNK = 64 * 1024
-_MAX_BYTES = 600 * 1024 * 1024   # 600 MB hard cap per file
+_MAX_BYTES = 1000 * 1024 * 1024   # 1000 MB cap per file (supports Topaz/AI engines)
 
 # ── Migration: extensions/ → addons/ (v1.5.1+) ──────────────────────
 # Renamed to avoid user confusion with the Chrome "extension/" folder.

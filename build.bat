@@ -33,12 +33,19 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] Bundle Chrome extension...
+echo [4/5] Bundle Chrome extension and Topaz engine...
 REM Copy extension folder into the EXE bundle so user gets ext alongside
 REM the tool — bản portable (zip) Load-unpacked từ folder này.
 if exist "dist\RedOne Creative" (
     xcopy /E /I /Y extension "dist\RedOne Creative\extension" >nul
     echo   Da copy extension/ -^> dist\RedOne Creative\extension\
+)
+
+REM Bundle Topaz Proteus Engine (Cach 1: Dong goi san, mo tool la co dung ngay)
+if exist "addons\tvai-engine" (
+    if not exist "dist\RedOne Creative\addons\tvai-engine" mkdir "dist\RedOne Creative\addons\tvai-engine"
+    xcopy /E /I /Y "addons\tvai-engine" "dist\RedOne Creative\addons\tvai-engine" >nul
+    echo   Da bundle Topaz Proteus Engine -^> dist\RedOne Creative\addons\tvai-engine\
 )
 
 echo.

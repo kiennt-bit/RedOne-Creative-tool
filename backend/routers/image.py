@@ -33,6 +33,29 @@ _active_tasks: dict[int, asyncio.Task] = {}
 
 
 def _pick_account() -> Optional[dict]:
+    """Pick the active Google Flow account currently opened in the Chrome tab first,
+    otherwise fallback to the account with the highest credit in the database."""
+    from ..services.browser_bridge import bridge
+    active_email = bridge.get_active_account_email()
+    if active_email:
+        acc = db.get_account_by_email(active_email)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(active_email)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     accounts = [a for a in db.get_accounts() if a["enabled"]]
     accounts.sort(key=lambda a: -(a.get("credit") or 0))
     if accounts:
@@ -227,6 +250,11 @@ async def generate_image_item(client, task: dict, item: dict) -> bool:
         try:
             from ..services import tracking as _tracking
             _email = task.get("user_email") or ""
+            if not _email:
+                from ..services.oauth_auth import load_session as _load_sess
+                _sess = _load_sess()
+                if _sess:
+                    _email = (_sess.get("email") or "").strip()
             if _email:
                 await _tracking.track_event(_email, "image_created")
         except Exception:

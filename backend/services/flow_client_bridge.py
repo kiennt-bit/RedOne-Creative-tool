@@ -451,7 +451,7 @@ class BridgeFlowClient(FlowClient):
     # ── Credits check (BOQ batchexecute) ─────────────────────────────
 
     async def check_credits(self) -> Optional[dict]:
-        """Check remaining credits via batchexecute RPC `nzlxg`.
+        """Check remaining credits via batchexecute RPC `nzlxg` and bridge tab state.
 
         Returns {"remainingCredits": N, "tier": "FREE|PRO|ULTRA"} on success.
         """
@@ -467,13 +467,42 @@ class BridgeFlowClient(FlowClient):
             err = r.get("error")
             if status != 200 or err:
                 log.warning(f"(bridge) check_credits: status={status} error={err}")
+                # Fallback to bridge tab state if extension detected credits/tier
+                ext_credits = bridge.get_active_account_credits()
+                ext_tier = bridge.get_active_account_tier()
+                if ext_credits is not None:
+                    return {"remainingCredits": ext_credits, "tier": ext_tier}
                 return {"error": f"HTTP {status}: {err}"}
 
-            # nzlxg response: [totalCredits, ?, ?, ?, null, totalCredits]
-            # Example: [25021, 2, 3, 3, null, 25021]
+            # nzlxg response: [totalCredits, paygateTierCode, ?, ?, null, totalCredits]
+            # Example: [21214, 2, 3, 3, null, 21214] where 2 = PAYGATE_TIER_TWO (ULTRA)
+            if isinstance(rpc_result, str):
+                try:
+                    rpc_result = json.loads(rpc_result)
+                except Exception:
+                    pass
+
             if isinstance(rpc_result, list) and len(rpc_result) >= 1:
                 credits = rpc_result[0] if isinstance(rpc_result[0], (int, float)) else 0
-                return {"remainingCredits": int(credits), "tier": "FREE"}
+
+                tier = "FREE"
+                raw_str = json.dumps(rpc_result) if rpc_result else ""
+                if "TIER_TWO" in raw_str or "ADVANCED" in raw_str or "TIER2" in raw_str:
+                    tier = "ULTRA"
+                elif len(rpc_result) >= 2 and rpc_result[1] == 2:
+                    tier = "ULTRA"
+                elif len(rpc_result) >= 2 and rpc_result[1] == 1:
+                    tier = "PRO"
+                elif credits >= 500:
+                    # Free tier never exceeds 100 credits. >= 500 credits indicates paid Ultra/Pro subscription.
+                    tier = "ULTRA"
+
+                # Check if tab DOM explicitly detected ULTRA badge
+                ext_tier = bridge.get_active_account_tier()
+                if ext_tier in ("ULTRA", "PRO"):
+                    tier = ext_tier
+
+                return {"remainingCredits": int(credits), "tier": tier}
             log.warning(f"(bridge) check_credits: unexpected result: {rpc_result}")
             return {"error": "Unexpected credits response format"}
         except Exception as e:
@@ -540,6 +569,15 @@ class BridgeFlowClient(FlowClient):
            tab to it so grecaptcha.enterprise is loaded.
         4. If 0 projects found, ask extension to click "+ Dự án mới" in DOM.
         """
+        # 0. Tab account alignment: If Chrome tab is identified with an account that differs
+        # from self._account_email, align to it so we never look up foreign cached projects!
+        active_email = bridge.get_active_account_email()
+        if active_email and active_email.lower() != self._account_email.lower():
+            log.info(
+                f"Aligning client account from {self._account_email} to active Flow tab account: {active_email}"
+            )
+            self._account_email = active_email
+
         # 1. Active tab check (Chrome tab URL) — HIGHEST PRIORITY
         # If user opened or created a new project in Chrome, adopt it immediately!
         active_tab_proj = bridge.get_active_project_id()

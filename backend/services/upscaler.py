@@ -62,8 +62,13 @@ def _find_ffprobe() -> str | None:
 
 
 def is_upscaler_available() -> bool:
-    """Check if both NCNN EXE and ffmpeg are available."""
-    return _find_ncnn_exe() is not None and _find_ffmpeg() is not None
+    """Check if either NCNN EXE or Topaz engine is available."""
+    ncnn_ready = _find_ncnn_exe() is not None and _find_ffmpeg() is not None
+    try:
+        from .topaz_upscaler import is_topaz_available
+        return ncnn_ready or is_topaz_available()
+    except Exception:
+        return ncnn_ready
 
 
 async def get_video_info(video_path: str) -> dict:
@@ -165,8 +170,9 @@ async def upscale_video(
     model: str = DEFAULT_MODEL,
     denoise: float = DEFAULT_DENOISE,
     progress: Optional[ProgressCb] = None,
+    task_id: Optional[str] = None,
 ) -> str:
-    """Upscale a video file using Real-ESRGAN NCNN-Vulkan.
+    """Upscale a video file using Real-ESRGAN NCNN-Vulkan or Topaz Proteus.
 
     Args:
         input_path: Path to input video
@@ -175,6 +181,7 @@ async def upscale_video(
         model: Model name
         denoise: Denoise strength 0~1 (-1 = model default)
         progress: Optional callback (percent, stage, message)
+        task_id: Batch or task ID for cancellation tracking
 
     Returns:
         Path to the upscaled video file.
@@ -182,6 +189,18 @@ async def upscale_video(
     vp = Path(input_path)
     if not vp.exists():
         raise FileNotFoundError(f"Video không tồn tại: {input_path}")
+
+    # ── Handle Topaz Proteus Model ──
+    if model == "topaz-proteus":
+        from .topaz_upscaler import upscale_with_proteus
+        return await upscale_with_proteus(
+            input_path=input_path,
+            output_path=output_path,
+            resolution=resolution,
+            denoise=denoise,
+            task_id=task_id,
+            progress=progress,
+        )
 
     ncnn_exe = _find_ncnn_exe()
     if not ncnn_exe:

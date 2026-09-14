@@ -44,6 +44,30 @@
           "sha256": "73860193dbc625a2001d3d2129c6a1645d3e55d68e44175089d3cf902546ba2f"
         }
       ]
+    },
+    {
+      "id": "tvai-engine",
+      "name": "Topaz Proteus Engine",
+      "description": "Bộ nhân AI Topaz Video AI (Model Proteus v4 Enhance MQ) chuẩn điện ảnh — hỗ trợ NVIDIA TensorRT, AMD DirectML, Intel OpenVINO và CPU.",
+      "group": "Xử lý media",
+      "icon": "auto_awesome",
+      "tags": ["video", "ai", "heavy"],
+      "kind": "asset",
+      "module": "video_upscale",
+      "renderName": "renderVideoUpscale",
+      "version": "1.0.0",
+      "defaultInstalled": false,
+      "comingSoon": false,
+      "minAppVersion": "1.5.0",
+      "size": "~380 MB",
+      "assets": [
+        {
+          "url": "https://github.com/kiennt-bit/RedOne-Creative-tool-Addon/releases/download/addons-v1/tvai-engine.zip",
+          "dest": "addons/tvai-engine/tvai-engine.zip",
+          "extract_to": "addons/tvai-engine",
+          "sha256": "350e1b6ec39339d426a123e84247942d0e8c511d4f03b404574d23ce56040daf"
+        }
+      ]
     }
   ]
 }

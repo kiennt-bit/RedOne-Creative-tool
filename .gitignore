@@ -96,3 +96,12 @@ backend/bin/
 docs/*.jpeg
 docs/khieu_vu_son_dau_28.png
 docs/kien_truc_role_tracking_video.md
+
+# Scratchpad and temporary debugging files
+scratch/
+
+# Local handover documentation (strictly offline/local, never commit to git)
+BANGIAO.md
+bangiao.md
+
+

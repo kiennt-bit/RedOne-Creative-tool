@@ -51,10 +51,9 @@ let _lastSuccessAt = null;
 // long batch runs. Inspired by G-Labs Automation's grokKeepAlive pattern.
 let _lastJiggleAt = 0;
 
-// Automatic tab prefetch — auto-open labs.google tab if none found.
-// 60s cooldown prevents spamming tabs on repeated failures.
-let _lastPrefetchAt = 0;
-const _PREFETCH_COOLDOWN_MS = 60000;
+// Active detected account from Google Flow tab (email, tier, credits)
+let _lastDetectedAccount = { email: null, tier: "FREE", credits: null };
+let _lastAccountDetectAt = 0;
 
 // Shakker bridge state — set when content_shakker.js sends SHAKKER_SYNC.
 // Restored from chrome.storage at SW wake so the popup shows correct
@@ -245,11 +244,13 @@ async function _findLabsTab() {
                     !u.includes("accounts.google.com");
             });
             if (labsTabs.length > 0) {
-                // Rank: non-discarded first, then an active Flow project tab (full CSRF + reCAPTCHA),
+                // Rank: active focused tab first, non-discarded first, then an active Flow project tab,
                 // then any Flow tab, then general labs.google.
                 const score = (t) => {
                     const u = t.url || t.pendingUrl || "";
-                    let s = t.discarded ? 10 : 0;
+                    let s = 0;
+                    if (t.discarded) s += 20;
+                    if (t.active) s -= 10; // Prioritize user's active/focused tab
                     if (u.match(/\/project\/[a-zA-Z0-9_-]{36}/)) {
                         s += 0; // Best: inside project workspace
                     } else if (u.includes("flow.google.com") || u.includes("/tools/flow")) {
@@ -264,39 +265,230 @@ async function _findLabsTab() {
         } catch (_) { /* fall through to retry */ }
         await new Promise(r => setTimeout(r, 300));
     }
-
-    // ── Automatic Tab Prefetch ────────────────────────────────────────
-    // No labs.google tab found after retries. Auto-open one in the
-    // background so the next task doesn't fail with "no labs.google tab".
-    // 60s cooldown prevents rapid-fire tab creation on repeated failures.
-    // IMPORTANT: Only prefetch when backend is connected — otherwise the
-    // extension opens phantom tabs even after the user has shut down the
-    // tool (reported bug: "extension tự mở tab khi đã tắt tool").
-    if (_connected && Date.now() - _lastPrefetchAt > _PREFETCH_COOLDOWN_MS) {
-        _lastPrefetchAt = Date.now();
-        try {
-            const newTab = await chrome.tabs.create({
-                url: "https://flow.google.com",
-                active: false,
-            });
-            // Wait for page to finish loading
-            await new Promise((resolve) => {
-                const listener = (id, info) => {
-                    if (id === newTab.id && info.status === "complete") {
-                        chrome.tabs.onUpdated.removeListener(listener);
-                        resolve();
-                    }
-                };
-                chrome.tabs.onUpdated.addListener(listener);
-                setTimeout(() => {
-                    chrome.tabs.onUpdated.removeListener(listener);
-                    resolve();
-                }, 15000);
-            });
-            return newTab;
-        } catch (_) { /* tab create failed — give up */ }
-    }
+    // No labs/flow tab found: return null. Never auto-create tabs.
     return null;
+}
+
+/**
+ * Accurately detect which Google account is currently signed in on the Flow tab,
+ * along with subscription tier (ULTRA vs FREE vs PRO) and remaining credits.
+ */
+async function _detectFlowAccountDetails(tab) {
+    if (!tab || !tab.id) return _lastDetectedAccount;
+    const tabUrl = tab.url || tab.pendingUrl || "";
+    if (!tabUrl.includes("flow.google.com") && !tabUrl.includes("labs.google")) {
+        return _lastDetectedAccount;
+    }
+
+    // Cache detection for 5 seconds to avoid over-executing scripts on every poll
+    if (_lastDetectedAccount.email && (Date.now() - _lastAccountDetectAt < 5000)) {
+        return _lastDetectedAccount;
+    }
+
+    let detectedEmail = null;
+    let detectedTier = "FREE";
+    let detectedCredits = null;
+
+    try {
+        // Method 1: Execute in-tab DOM & globals inspection
+        const domResults = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            world: "MAIN",
+            func: () => {
+                const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+                const isRealUserEmail = (em) => {
+                    if (!em || typeof em !== "string") return false;
+                    const low = em.trim().toLowerCase();
+                    if (low.includes("w3.org") || low.includes("schema.org") || low.includes("sentry") || low.includes("github")) return false;
+                    if (low.endsWith("@google.com") && (low.includes("service") || low.includes("noreply") || low.includes("support"))) return false;
+                    return emailRegex.test(low);
+                };
+
+                let email = null;
+                let tier = "FREE";
+                let credits = null;
+
+                // 1. Email detection from profile elements
+                const selectors = [
+                    'a[href*="SignOutOptions"]',
+                    'a[href*="accounts.google.com"]',
+                    'a[href*="myaccount.google.com"]',
+                    '[aria-label*="@"]',
+                    'img[alt*="@"]',
+                    '[data-email]',
+                    '[data-identifier]',
+                    '.gb_d[aria-label]',
+                    '.gb_A[aria-label]',
+                    'header [aria-label]',
+                    'button[aria-label*="Google"]',
+                    'a[aria-label*="Google"]',
+                    'div[aria-label*="Google"]',
+                    'div[aria-label*="Tài khoản"]',
+                    'button[aria-label*="Tài khoản"]'
+                ];
+
+                for (const sel of selectors) {
+                    if (email) break;
+                    try {
+                        const elements = document.querySelectorAll(sel);
+                        for (const el of elements) {
+                            const attrs = [
+                                el.getAttribute("data-email"),
+                                el.getAttribute("data-identifier"),
+                                el.getAttribute("aria-label"),
+                                el.getAttribute("alt"),
+                                el.getAttribute("title"),
+                                el.getAttribute("href"),
+                                el.textContent
+                            ];
+                            for (const val of attrs) {
+                                if (val) {
+                                    const match = val.match(emailRegex);
+                                    if (match && isRealUserEmail(match[0])) {
+                                        email = match[0].toLowerCase();
+                                        break;
+                                    }
+                                }
+                            }
+                            if (email) break;
+                        }
+                    } catch (_) {}
+                }
+
+                // Fallback email from WIZ_global_data
+                try {
+                    if (!email && window.WIZ_global_data) {
+                        const jsonStr = JSON.stringify(window.WIZ_global_data);
+                        const matches = jsonStr.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+                        for (const m of matches) {
+                            if (isRealUserEmail(m)) {
+                                email = m.toLowerCase();
+                                break;
+                            }
+                        }
+                    }
+                } catch (_) {}
+
+                // 2. Credits detection from page text
+                try {
+                    const text = document.body ? document.body.innerText : "";
+                    const creditPatterns = [
+                        /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*Flow/i,
+                        /(\d[\d,.\s]*)\s*Flow\s*credits?/i,
+                        /(\d[\d,.\s]*)\s*T\u00edn\s*d\u1ee5ng\s*AI/i,
+                        /(\d[\d,.\s]*)\s*AI\s*credits?/i,
+                        /credits?\s*:?\s*(\d[\d,.\s]*)/i,
+                        /(\d[\d,.\s]*)\s*credits?\s*remaining/i,
+                    ];
+                    for (const p of creditPatterns) {
+                        const m = text.match(p);
+                        if (m) {
+                            const val = parseInt(m[1].replace(/[,.\s]/g, ""), 10);
+                            if (!isNaN(val)) {
+                                credits = val;
+                                break;
+                            }
+                        }
+                    }
+                } catch (_) {}
+
+                // 3. Tier detection:
+                // 3a. Check WIZ_global_data
+                try {
+                    if (window.WIZ_global_data) {
+                        const str = JSON.stringify(window.WIZ_global_data);
+                        if (str.includes("PAYGATE_TIER_TWO") || str.includes("SERVICE_TIER_ADVANCED") || str.includes("G1_TIER2") || str.includes("AI_PREMIUM")) {
+                            tier = "ULTRA";
+                        } else if (str.includes("PAYGATE_TIER_ONE") || str.includes("SERVICE_TIER_STANDARD") || str.includes("G1_TIER1")) {
+                            tier = "PRO";
+                        }
+                    }
+                } catch (_) {}
+
+                // 3b. Check DOM elements (badges, buttons, chips)
+                if (tier === "FREE") {
+                    try {
+                        const candidates = Array.from(document.querySelectorAll(
+                            'header, nav, [role="banner"], [class*="badge"], [class*="tier"], [class*="chip"], [class*="pill"], button, a, div[role="button"], span'
+                        ));
+                        for (const el of candidates) {
+                            const txt = (el.innerText || el.textContent || "").trim();
+                            const aria = (el.getAttribute("aria-label") || "").trim();
+                            const combined = `${txt} ${aria}`;
+
+                            // Disregard marketing upsells like "Upgrade to Ultra" / "Nâng cấp lên Ultra" / "Try Ultra"
+                            const isUpsell = /nâng cấp|upgrade|try\s+ultra|thử\s+ultra|get\s+ultra/i.test(combined);
+                            if (!isUpsell) {
+                                if (/\bultra\b/i.test(txt) && txt.length <= 25) {
+                                    tier = "ULTRA";
+                                    break;
+                                }
+                                if (/google one ai premium|gói ultra|gói ai cao cấp|ai premium/i.test(combined)) {
+                                    tier = "ULTRA";
+                                    break;
+                                }
+                                if (/\bpro\b/i.test(txt) && txt.length <= 20) {
+                                    tier = "PRO";
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                }
+
+                // 3c. Credits deduction: Free tier has <= 100 credits. 500+ credits indicates Ultra/Pro subscription.
+                if (tier === "FREE" && credits !== null && credits >= 500) {
+                    tier = "ULTRA";
+                }
+
+                return { email, tier, credits };
+            }
+        });
+
+        const r = domResults && domResults[0] && domResults[0].result;
+        if (r && typeof r === "object") {
+            if (r.email) detectedEmail = r.email.trim().toLowerCase();
+            if (r.tier) detectedTier = r.tier.toUpperCase();
+            if (r.credits != null) detectedCredits = r.credits;
+        }
+
+        // Method 2: Check NextAuth session endpoint if email missing
+        if (!detectedEmail) {
+            try {
+                const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
+                const hasSession = cookies.some(c => c.name.includes("session-token"));
+                if (hasSession) {
+                    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+                    const res = await fetch("https://labs.google/fx/api/auth/session", {
+                        headers: { "Accept": "application/json", "Cookie": cookieStr }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.user && data.user.email) {
+                            detectedEmail = data.user.email.toLowerCase();
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+    } catch (e) {
+        console.warn("[RedOne] _detectFlowAccountDetails error:", e);
+    }
+
+    if (detectedEmail) {
+        _lastDetectedAccount = {
+            email: detectedEmail,
+            tier: detectedTier || "FREE",
+            credits: detectedCredits,
+        };
+        _lastAccountDetectAt = Date.now();
+    }
+
+    return _lastDetectedAccount;
+}
+
+async function _detectFlowUserEmail(tab) {
+    const d = await _detectFlowAccountDetails(tab);
+    return d.email || "";
 }
 
 /**
@@ -959,6 +1151,8 @@ async function _pollLoop() {
             const tab = await _findLabsTab();
             const signedIn = await _isSignedIn();
             const status = !tab ? "no_tab" : !signedIn ? "no_login" : "ready";
+            const tabEmail = (tab && status === "ready") ? await _detectFlowUserEmail(tab) : "";
+            const accInfo = (tab && status === "ready") ? await _detectFlowAccountDetails(tab) : {};
 
             // How many more tasks we can take right now. When 0 we still
             // poll (to keep tab_status fresh) but the backend hands nothing.
@@ -967,6 +1161,9 @@ async function _pollLoop() {
             const params = new URLSearchParams({
                 tab_status: status,
                 tab_url: tab && tab.url ? tab.url : "",
+                tab_email: accInfo.email || tabEmail || "",
+                tab_tier: accInfo.tier || "FREE",
+                tab_credits: accInfo.credits != null ? String(accInfo.credits) : "",
                 capacity: String(capacity),
             }).toString();
 

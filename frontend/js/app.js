@@ -867,6 +867,7 @@ async function init() {
       // pages (e.g. Settings) can read it without re-fetching.
       window.__app = window.__app || {};
       window.__app.user = data;
+      window.__redone_user_email = data.email;
     }
   } catch (e) {
     // Backend offline — let init continue; downstream API calls will

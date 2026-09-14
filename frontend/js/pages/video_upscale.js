@@ -24,7 +24,11 @@ function _updateModelHelpText(model) {
   if (!helpEl) return;
   
   let desc = '';
-  if (model === 'realesrgan-x4plus') {
+  if (model === 'topaz-proteus') {
+    desc = '✨ <b>Chất lượng:</b> ⭐⭐⭐⭐⭐ (5/5 - Đỉnh cao điện ảnh, công nghệ Topaz Proteus v4 khôi phục chi tiết, làm nét tự nhiên).<br>' +
+           '⚡ <b>Tăng tốc phần cứng:</b> Tự động nhận diện và tăng tốc (NVIDIA TensorRT / AMD DirectML / Intel OpenVINO / CPU).<br>' +
+           '🎛️ <b>Cấu hình chuẩn Topaz:</b> Tự động nhận diện cảnh (Auto Estimate) + Chống ảo giác (Recover Detail 20%). Điều chỉnh thanh <b>Khử nhiễu</b> bên dưới để lọc mịn thêm.';
+  } else if (model === 'realesrgan-x4plus') {
     desc = '✨ <b>Chất lượng:</b> ⭐⭐⭐⭐⭐ (5/5 - Sắc nét tối đa cho cảnh thực tế, chi tiết phức tạp).<br>' +
            '⚡ <b>Thời gian chờ:</b> Lâu nhất (khoảng 10 - 15 phút / video).<br>' +
            '💻 <b>Cấu hình yêu cầu:</b> Khá nặng. Thích hợp cho máy có GPU rời NVIDIA/AMD mạnh (GTX 1060 trở lên).';
@@ -84,7 +88,7 @@ export async function renderVideoUpscale(root) {
         icon('warning', 32, { style: { color: 'var(--yellow)', marginBottom: '12px' } }),
         el('h3', { className: 'card-title' }, 'Chưa sẵn sàng'),
         el('p', { className: 'field-help', style: { fontSize: '13.5px', marginTop: '8px' } },
-          'realesrgan-ncnn-vulkan chưa được cài đặt. Vui lòng cài đặt tính năng "Video Upscale" từ Kho tính năng.'
+          'Engine Video Upscale chưa được cài đặt. Vui lòng cài đặt tính năng "Video Upscale" hoặc cập nhật bản mới từ Kho tính năng.'
         )
       )
     );
@@ -162,10 +166,11 @@ export async function renderVideoUpscale(root) {
         id: 'upscale-model',
         onchange: (e) => _updateModelHelpText(e.target.value)
       },
-        el('option', { value: 'realesr-general-x4v3', selected: true }, 'realesr-general-x4v3'),
-        el('option', { value: 'realesrgan-x4plus' }, 'realesrgan-x4plus'),
-        el('option', { value: 'realesr-animevideov3' }, 'realesr-animevideov3'),
-        el('option', { value: 'realesrgan-x4plus-anime' }, 'realesrgan-x4plus-anime')
+        el('option', { value: 'topaz-proteus', selected: true }, 'Topaz Proteus (Enhance MQ - Điện ảnh) ⭐'),
+        el('option', { value: 'realesr-general-x4v3' }, 'realesr-general-x4v3 (Nhanh & Cân bằng)'),
+        el('option', { value: 'realesrgan-x4plus' }, 'realesrgan-x4plus (Chi tiết thực tế)'),
+        el('option', { value: 'realesr-animevideov3' }, 'realesr-animevideov3 (Anime nhanh)'),
+        el('option', { value: 'realesrgan-x4plus-anime' }, 'realesrgan-x4plus-anime (Anime sắc nét)')
       ),
       el('div', {
         id: 'upscale-model-help',
@@ -268,7 +273,7 @@ export async function renderVideoUpscale(root) {
   _addStyles();
   _updateSelectedList();
   _renderTasksTable();
-  _updateModelHelpText('realesr-general-x4v3');
+  _updateModelHelpText('topaz-proteus');
 }
 
 // ── Popup Modal (Double Tab Selector) ──
@@ -947,7 +952,7 @@ async function startUpscale() {
     toast('Mất kết nối WebSocket. Hệ thống tự động chuyển sang chế độ Polling dự phòng.', 'info');
   }
 
-  const model = document.getElementById('upscale-model')?.value || 'realesrgan-x4plus';
+  const model = document.getElementById('upscale-model')?.value || 'topaz-proteus';
   const resolution = document.getElementById('upscale-resolution').value;
   const denoise = parseFloat(document.getElementById('upscale-denoise')?.value || '0.5');
   const pathsOnly = _selectedPaths.map(p => p.path);
@@ -986,12 +991,18 @@ async function startUpscale() {
   _renderTasksTable();
 
   try {
-    const res = await api.post('/api/content/upscale-video', {
+    const payload = {
       video_paths: pathsOnly,
       resolution,
       denoise,
       model,
-    });
+    };
+    const userEmail = (typeof window !== 'undefined' && window.__app && window.__app.user && window.__app.user.email)
+      || (typeof window !== 'undefined' && window.__redone_user_email);
+    if (userEmail) {
+      payload.user_email = userEmail;
+    }
+    const res = await api.post('/api/content/upscale-video', payload);
     
     // Update to actual batch_id
     newTask.id = res.batch_id;

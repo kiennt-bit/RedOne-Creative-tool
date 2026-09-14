@@ -108,6 +108,14 @@ class Database:
         # Trình dựng video (Part B): editor state JSON + last-saved time.
         self._add_column_if_missing("projects", "data_json", "TEXT")
         self._add_column_if_missing("projects", "updated_at", "TEXT")
+        # Ensure existing accounts with >= 500 credits don't stay marked as FREE
+        try:
+            self.conn.execute(
+                "UPDATE accounts SET tier = 'ULTRA' WHERE credit >= 500 AND (tier IS NULL OR tier = 'FREE')"
+            )
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _add_column_if_missing(self, table: str, column: str, decl: str):
         try:
@@ -127,6 +135,15 @@ class Database:
     def get_account(self, account_id: int) -> Optional[dict]:
         with self._lock:
             r = self.conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_account_by_email(self, email: str) -> Optional[dict]:
+        if not email:
+            return None
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM accounts WHERE LOWER(email)=LOWER(?)", (email.strip(),)
+            ).fetchone()
             return dict(r) if r else None
 
     def add_account(self, email: str) -> int:

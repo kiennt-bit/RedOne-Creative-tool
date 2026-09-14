@@ -172,6 +172,9 @@ class BrowserBridge:
         self._ext_last_ready_poll: float = 0.0
         self._ext_last_status: str = "unknown"  # "ready" | "no_tab" | "no_login" | "unknown"
         self._ext_last_url: str = ""
+        self._ext_last_email: str = ""
+        self._ext_last_tier: str = "FREE"
+        self._ext_last_credits: Optional[int] = None
         # Server-driven session commands — queued by backend, consumed by
         # extension on next poll. Commands: clear_cookies, reload_tab,
         # navigate_toggle, delay.
@@ -179,14 +182,39 @@ class BrowserBridge:
 
     # ── State / diagnostics ─────────────────────────────────────────
 
-    def update_tab_state(self, status: str, url: str) -> None:
+    def update_tab_state(
+        self,
+        status: str,
+        url: str,
+        email: str = "",
+        tier: str = "",
+        credits: Optional[int] = None,
+    ) -> None:
         """Called by /sync/next-task. Updates our view of what the
         extension currently can/can't do."""
         self._ext_last_poll = time.time()
         self._ext_last_status = status or "unknown"
         self._ext_last_url = url or ""
+        if email:
+            self._ext_last_email = email.strip().lower()
+        if tier:
+            self._ext_last_tier = tier.strip().upper()
+        if credits is not None:
+            self._ext_last_credits = credits
         if status == "ready":
             self._ext_last_ready_poll = time.time()
+
+    def get_active_account_email(self) -> Optional[str]:
+        """Return the Google account email detected from the active Flow tab, if any."""
+        return self._ext_last_email if self._ext_last_email else None
+
+    def get_active_account_tier(self) -> str:
+        """Return the subscription tier detected from the active Flow tab ('ULTRA', 'PRO', 'FREE')."""
+        return self._ext_last_tier or "FREE"
+
+    def get_active_account_credits(self) -> Optional[int]:
+        """Return the remaining credits detected from the active Flow tab, if any."""
+        return self._ext_last_credits
 
     def get_active_project_id(self) -> Optional[str]:
         """Extract project ID from the last reported tab URL if available."""
@@ -221,6 +249,9 @@ class BrowserBridge:
                 if self._ext_last_poll else None,
             "last_tab_status": self._ext_last_status,
             "last_tab_url": self._ext_last_url,
+            "last_tab_email": self._ext_last_email,
+            "last_tab_tier": self._ext_last_tier,
+            "last_tab_credits": self._ext_last_credits,
             "pending_tasks": self._pending.qsize(),
             "in_flight_tasks": len(self._in_flight),
             "pending_session_commands": len(self._session_commands),

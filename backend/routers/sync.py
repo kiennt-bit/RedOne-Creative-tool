@@ -119,6 +119,9 @@ class TaskResultBody(BaseModel):
 async def next_task(
     tab_status: str = "ready",
     tab_url: str = "",
+    tab_email: str = "",
+    tab_tier: str = "",
+    tab_credits: str = "",
     capacity: int = 1,
 ):
     """Extension short-polls (~1.5s) for the next task. Returns
@@ -144,7 +147,91 @@ async def next_task(
     banner without needing to poll the extension themselves.
     """
     from ..services.browser_bridge import bridge
-    bridge.update_tab_state(tab_status, tab_url)
+    from ..database import db
+    from ..ws_hub import hub
+
+    parsed_credits = None
+    if tab_credits:
+        try:
+            parsed_credits = int(tab_credits)
+        except Exception:
+            pass
+
+    bridge.update_tab_state(
+        tab_status, tab_url, email=tab_email, tier=tab_tier, credits=parsed_credits
+    )
+
+    # If extension identified a valid Google account on the active Flow tab,
+    # auto-register or re-enable it in DB so tasks immediately use it.
+    if tab_email and "@" in tab_email:
+        clean_email = tab_email.strip().lower()
+        try:
+            acc = db.get_account_by_email(clean_email)
+            update_kwargs = {}
+            if tab_tier and tab_tier.upper() in ("ULTRA", "PRO", "FREE"):
+                update_kwargs["tier"] = tab_tier.upper()
+            if parsed_credits is not None:
+                update_kwargs["credit"] = parsed_credits
+
+            if not acc:
+                acc_id = db.add_account(clean_email)
+                if update_kwargs:
+                    db.update_account(acc_id, **update_kwargs)
+                acc = db.get_account(acc_id)
+                log.info(
+                    f"Auto-registered active Google Flow account from tab: {clean_email} "
+                    f"(id={acc_id}, tier={update_kwargs.get('tier', 'FREE')}, credits={parsed_credits})"
+                )
+                await hub.broadcast("account_added", {
+                    "id": acc_id,
+                    "email": clean_email,
+                    "tier": update_kwargs.get("tier", "FREE"),
+                    "credit": parsed_credits or 0,
+                    "enabled": True,
+                })
+            else:
+                need_update = False
+                if not acc.get("enabled"):
+                    update_kwargs["enabled"] = 1
+                    need_update = True
+                
+                incoming_tier = tab_tier.upper() if tab_tier else ""
+                current_tier = (acc.get("tier") or "FREE").upper()
+                current_credits = acc.get("credit") or 0
+                if incoming_tier:
+                    if incoming_tier in ("ULTRA", "PRO") and incoming_tier != current_tier:
+                        update_kwargs["tier"] = incoming_tier
+                        need_update = True
+                    elif incoming_tier == "FREE" and current_tier in ("ULTRA", "PRO"):
+                        # If credits >= 500, it is guaranteed a paid Ultra/Pro subscription. Never downgrade to FREE.
+                        effective_credits = parsed_credits if parsed_credits is not None else current_credits
+                        if effective_credits < 500:
+                            update_kwargs["tier"] = "FREE"
+                            need_update = True
+                    elif incoming_tier != current_tier:
+                        update_kwargs["tier"] = incoming_tier
+                        need_update = True
+
+                if parsed_credits is not None and acc.get("credit") != parsed_credits:
+                    need_update = True
+
+                if need_update and update_kwargs:
+                    db.update_account(acc["id"], **update_kwargs)
+                    updated_acc = db.get_account(acc["id"])
+                    log.info(
+                        f"Updated active Flow account: {clean_email} -> tier={updated_acc.get('tier')}, "
+                        f"credits={updated_acc.get('credit')}"
+                    )
+                    await hub.broadcast("account_updated", {
+                        "id": acc["id"],
+                        "email": clean_email,
+                        "tier": updated_acc.get("tier"),
+                        "credit": updated_acc.get("credit"),
+                        "enabled": bool(updated_acc.get("enabled")),
+                    })
+        except Exception as ex:
+            log.warning(f"Error auto-syncing tab account {clean_email}: {ex}")
+
     # At capacity → keep the heartbeat/tab_status fresh but claim nothing.
     if capacity <= 0:
         return {"task": None}

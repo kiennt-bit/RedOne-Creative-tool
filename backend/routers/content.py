@@ -42,6 +42,29 @@ _active_tasks: dict[int, asyncio.Task] = {}
 
 
 def _pick_account() -> Optional[dict]:
+    """Pick the active Google Flow account currently opened in the Chrome tab first,
+    otherwise fallback to the account with the highest credit in the database."""
+    from ..services.browser_bridge import bridge
+    active_email = bridge.get_active_account_email()
+    if active_email:
+        acc = db.get_account_by_email(active_email)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(active_email)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     accounts = [a for a in db.get_accounts() if a["enabled"]]
     accounts.sort(key=lambda a: -(a.get("credit") or 0))
     if accounts:
@@ -315,6 +338,11 @@ async def generate_content_item(client, task: dict, item: dict) -> bool:
         try:
             from ..services import tracking as _tracking
             _email = task.get("user_email") or ""
+            if not _email:
+                from ..services.oauth_auth import load_session as _load_sess
+                _sess = _load_sess()
+                if _sess:
+                    _email = (_sess.get("email") or "").strip()
             if _email:
                 await _tracking.track_event(_email, "video_created")
         except Exception:
@@ -663,13 +691,22 @@ class UpscaleVideoRequest(BaseModel):
     resolution: str = "FHD"  # "FHD", "2K", or "4K"
     denoise: float = -1  # -1 = model default, 0~1 = denoise strength
     model: str = "realesrgan-x4plus"
+    user_email: Optional[str] = None
 
 
 @router.get("/upscale-status")
 async def upscale_status():
     """Check if the upscaler binary is available."""
     from ..services.upscaler import is_upscaler_available
-    return {"available": is_upscaler_available()}
+    try:
+        from ..services.topaz_upscaler import is_topaz_available
+        has_topaz = is_topaz_available()
+    except Exception:
+        has_topaz = False
+    return {
+        "available": is_upscaler_available(),
+        "has_topaz": has_topaz,
+    }
 
 
 # In-memory store for active upscale batches to support HTTP polling fallback
@@ -702,6 +739,11 @@ async def cancel_upscale(batch_id: str):
             proc.kill()
         except Exception:
             pass
+    try:
+        from ..services.topaz_upscaler import cancel_topaz_process
+        cancel_topaz_process(batch_id)
+    except Exception:
+        pass
     prog.update({
         "stage": "cancelled",
         "message": "Đã hủy bởi người dùng",
@@ -747,9 +789,41 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
             raise HTTPException(404, f"Video không tồn tại: {vp_str}")
 
     resolution = body.resolution if body.resolution in ("FHD", "2K", "4K") else "FHD"
-    model = body.model if body.model in ("realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-general-x4v3") else "realesrgan-x4plus"
+    valid_models = (
+        "topaz-proteus",
+        "realesr-animevideov3",
+        "realesrgan-x4plus",
+        "realesrgan-x4plus-anime",
+        "realesr-general-x4v3",
+    )
+    model = body.model if body.model in valid_models else "topaz-proteus"
     loop = asyncio.get_running_loop()
     batch_id = str(uuid.uuid4())[:8]
+
+    # Resolve user email & display name for tracking
+    # Always prioritize the logged-in OAuth session (@redone.vn)
+    _email = ""
+    _name = ""
+    try:
+        from ..services.oauth_auth import load_session as _load_sess
+        _sess = _load_sess()
+        if _sess and _sess.get("email"):
+            _email = (_sess.get("email") or "").strip()
+            _name = (_sess.get("name") or "").strip()
+    except Exception:
+        pass
+
+    if not _email:
+        _email = (body.user_email or "").strip()
+
+    if not _email:
+        try:
+            from ..database import db
+            _accts = db.get_accounts()
+            if _accts:
+                _email = (_accts[0].get("email") or "").strip()
+        except Exception:
+            pass
 
     # Initialize progress store entry
     _upscale_progress[batch_id] = {
@@ -822,11 +896,31 @@ async def upscale_video_endpoint(body: UpscaleVideoRequest):
                     model=model,
                     denoise=body.denoise,
                     progress=emit,
+                    task_id=batch_id,
                 )
                 
                 res_item = {"input": vp_str, "output": output}
                 results.append(res_item)
                 _upscale_progress[batch_id]["results"].append(res_item)
+
+                # ── Firebase tracking (best-effort) ──
+                if _email:
+                    try:
+                        from ..services import tracking as _tracking
+                        from pathlib import Path as _P
+                        await _tracking.track_event(
+                            _email,
+                            "video_upscaled",
+                            count=1,
+                            display_name=_name,
+                            extra={
+                                "model": model,
+                                "resolution": resolution,
+                                "video_name": _P(vp_str).name,
+                            },
+                        )
+                    except Exception as _tr_err:
+                        log.debug("tracking video_upscaled failed: %s", _tr_err)
 
                 await hub.broadcast("video_upscale_completed", {
                     "batch_id": batch_id,

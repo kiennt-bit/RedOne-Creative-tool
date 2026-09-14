@@ -117,3 +117,17 @@ FIREBASE_TRACKING_ENABLED = True
 # ── Session config ───────────────────────────────────────────────────
 # How long a logged-in session stays valid before re-auth is required.
 SESSION_MAX_AGE_DAYS = 30
+
+
+# ── Admin emails (Tracking page access) ──────────────────────────────
+# List of admin emails allowed to view the Tracking dashboard and usage stats.
+TRACKING_ADMIN_EMAILS = [
+    # "admin@yourdomain.com",
+]
+
+
+# ── Discord Webhook alerts (Optional) ────────────────────────────────
+# Webhook URL for server crash notifications, daily production summaries, etc.
+# Leave empty "" if not using Discord notifications.
+DISCORD_WEBHOOK_URL = ""
+

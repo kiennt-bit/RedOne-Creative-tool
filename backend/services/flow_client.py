@@ -1859,26 +1859,35 @@ class FlowClient:
                         });
                         if (!r.ok) return null;
                         const data = await r.json();
+                        let tier = "FREE";
+                        const pg = (data.userPaygateTier || "").toUpperCase();
+                        const sv = (data.serviceTier || "").toUpperCase();
+                        const sk = (data.sku || "").toUpperCase();
+                        if (pg.includes("TIER_TWO") || sv.includes("ADVANCED") || sk.includes("TIER2")) {
+                            tier = "ULTRA";
+                        } else if (pg.includes("TIER_ONE") || sv.includes("STANDARD") || sk.includes("TIER1")) {
+                            tier = "PRO";
+                        }
                         // Prefer subscriptionCredits — matches the "Tín dụng
                         // Flow" number Google shows in the popup. Fall back
                         // to `credits` (total) only if subscriptionCredits
                         // is missing.
+                        let val = null;
                         if (typeof data.subscriptionCredits === "number")
-                            return data.subscriptionCredits;
-                        if (typeof data.credits === "number")
-                            return data.credits;
-                        return null;
+                            val = data.subscriptionCredits;
+                        else if (typeof data.credits === "number")
+                            val = data.credits;
+                        if (val != null && val >= 500 && tier === "FREE") tier = "ULTRA";
+                        return { value: val, tier: tier };
                     } catch(e) { return null; }
                 }
 
                 // 1st attempt: Bearer only (same pattern as videoGen etc.)
                 const baseUrl = "https://aisandbox-pa.googleapis.com/v1/credits";
-                let credits = await tryFetch(baseUrl);
-                if (credits != null) return { value: credits, source: "bearer" };
+                let res = await tryFetch(baseUrl);
+                if (res != null && res.value != null) return { value: res.value, tier: res.tier, source: "bearer" };
 
                 // 2nd: with ?key= extracted from page bundle globals.
-                // Labs frontend embeds a public API key in __NEXT_DATA__ /
-                // window config — search for any AIza... string.
                 let apiKey = null;
                 try {
                     const html = document.documentElement.outerHTML;
@@ -1886,25 +1895,25 @@ class FlowClient:
                     if (m) apiKey = m[0];
                 } catch(e) {}
                 if (apiKey) {
-                    credits = await tryFetch(baseUrl + "?key=" + apiKey);
-                    if (credits != null) return { value: credits, source: "bearer+key" };
+                    res = await tryFetch(baseUrl + "?key=" + apiKey);
+                    if (res != null && res.value != null) return { value: res.value, tier: res.tier, source: "bearer+key" };
                 }
 
-                // 3rd: relative fetch via labs.google (in case CORS blocks
-                // direct aisandbox call but labs proxies it)
-                credits = await tryFetch("/fx/api/credits");
-                if (credits != null) return { value: credits, source: "labs-proxy" };
+                // 3rd: relative fetch via labs.google
+                res = await tryFetch("/fx/api/credits");
+                if (res != null && res.value != null) return { value: res.value, tier: res.tier, source: "labs-proxy" };
 
                 return null;
             }''', [self._token or ""])
 
             if api_credits and isinstance(api_credits, dict) and isinstance(api_credits.get("value"), (int, float)):
                 value = int(api_credits["value"])
+                tier = api_credits.get("tier") or ("ULTRA" if value >= 500 else "FREE")
                 log.info(
-                    f"[{self._account_email}] Credits from aisandbox: {value} "
+                    f"[{self._account_email}] Credits from aisandbox: {value} (tier: {tier}) "
                     f"(auth: {api_credits.get('source')})"
                 )
-                return {"remainingCredits": value}
+                return {"remainingCredits": value, "tier": tier}
         except Exception as e:
             log.debug(f"[{self._account_email}] aisandbox credits endpoint failed: {e}")
         
@@ -1934,13 +1943,10 @@ class FlowClient:
                 }
             ''')
             
-            # Accept 0 as a valid reading — user might genuinely be out of
-            # credit. Previously `> 0` silently dropped 0 and fell through
-            # to other methods which also failed → end result "credit=None"
-            # which the frontend rendered as "0 credits" anyway. False alarm.
             if page_credits is not None and page_credits >= 0:
-                log.info(f"[{self._account_email}] Credits from page text: {page_credits}")
-                return {"remainingCredits": page_credits}
+                tier = "ULTRA" if page_credits >= 500 else "FREE"
+                log.info(f"[{self._account_email}] Credits from page text: {page_credits} (tier: {tier})")
+                return {"remainingCredits": page_credits, "tier": tier}
         except Exception as e:
             log.debug(f"[{self._account_email}] Page text credit check failed: {e}")
         
@@ -2056,8 +2062,9 @@ class FlowClient:
             # Accept 0 — see note in Method 2. A genuine "0 credits" reading
             # is more useful than False-None which the UI also rendered as 0.
             if credits is not None and credits >= 0:
-                log.info(f"[{self._account_email}] Credits from badge popup: {credits}")
-                return {"remainingCredits": credits}
+                tier = "ULTRA" if credits >= 500 else "FREE"
+                log.info(f"[{self._account_email}] Credits from badge popup: {credits} (tier: {tier})")
+                return {"remainingCredits": credits, "tier": tier}
             
             # Debug: dump popup content 
             try:

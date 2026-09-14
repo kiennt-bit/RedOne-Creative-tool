@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 APP_NAME = "RedOne Creative"
-APP_VERSION = "1.5.11"
+APP_VERSION = "1.5.12"
 
 # GitHub repo for auto-update check (releases API)
 GITHUB_REPO = "kiennt-bit/RedOne-Creative-tool"
@@ -194,7 +194,8 @@ _FIREBASE_SA, FIREBASE_PROJECT_ID, FIREBASE_TRACKING_ENABLED = _resolve_firebase
 FIREBASE_SERVICE_ACCOUNT_INFO: dict = _FIREBASE_SA
 
 # Heartbeat interval (seconds) for session-time tracking.
-FIREBASE_HEARTBEAT_INTERVAL_S = 60
+# 180s (3 min) conserves Spark plan 20,000 writes/day quota across team members.
+FIREBASE_HEARTBEAT_INTERVAL_S = 180
 
 # Admin emails — only these users can see the Tracking tab and view stats.
 # Override in private_config.py to add/remove admins without changing code.

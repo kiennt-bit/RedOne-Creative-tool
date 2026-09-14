@@ -28,7 +28,29 @@ router = APIRouter(prefix="/api/ps-genfill", tags=["ps-genfill"])
 
 
 def _pick_account() -> Optional[dict]:
-    """Pick the best available account (highest credits)."""
+    """Pick the active Google Flow account currently opened in the Chrome tab first,
+    otherwise fallback to the account with the highest credit in the database."""
+    from ..services.browser_bridge import bridge
+    active_email = bridge.get_active_account_email()
+    if active_email:
+        acc = db.get_account_by_email(active_email)
+        if acc:
+            if not acc.get("enabled"):
+                try:
+                    db.update_account(acc["id"], enabled=1)
+                    acc["enabled"] = 1
+                except Exception:
+                    pass
+            return acc
+        else:
+            try:
+                acc_id = db.add_account(active_email)
+                new_acc = db.get_account(acc_id)
+                if new_acc:
+                    return new_acc
+            except Exception:
+                pass
+
     accounts = [a for a in db.get_accounts() if a["enabled"]]
     accounts.sort(key=lambda a: -(a.get("credit") or 0))
     if accounts:
