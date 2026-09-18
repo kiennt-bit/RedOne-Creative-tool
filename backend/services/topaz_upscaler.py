@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -31,11 +32,16 @@ _active_topaz_procs: dict[str, asyncio.subprocess.Process] = {}
 
 def find_topaz_engine_dir() -> Path | None:
     """Locate the standalone Topaz engine directory."""
+    exe_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path.cwd()
     candidates = [
         EXT_DIR / "tvai-engine",
         USER_DATA_ROOT / "addons" / "tvai-engine",
-        # Fallback to local Topaz installation if developer has it installed
+        exe_dir / "addons" / "tvai-engine",
+        Path.cwd() / "addons" / "tvai-engine",
+        # Fallback to local Topaz installation if installed on the machine
         Path(r"C:\Program Files\Topaz Labs LLC\Topaz Video AI"),
+        Path(r"D:\Program Files\Topaz Labs LLC\Topaz Video AI"),
+        Path(r"C:\Program Files (x86)\Topaz Labs LLC\Topaz Video AI"),
     ]
     for c in candidates:
         if (c / "ffmpeg.exe").exists() and (c / "videoai.dll").exists():
@@ -150,7 +156,8 @@ async def upscale_with_proteus(
     if not engine_dir:
         raise FileNotFoundError(
             "Chưa tìm thấy bộ nhân Topaz Engine trong addons/tvai-engine. "
-            "Vui lòng cài đặt từ Kho tính năng hoặc chạy script đóng gói."
+            "Cách xử lý: Copy thư mục 'addons/tvai-engine' vào cạnh file RedOne Creative.exe "
+            "hoặc chuyển sang chọn mô hình 'realesr-general-x4v3' trong ô chọn mô hình AI."
         )
 
     models_dir = find_topaz_models_dir()

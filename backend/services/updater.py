@@ -455,18 +455,6 @@ def apply_update_and_exit(extracted_dir: Path) -> None:
     except Exception as e:
         log.warning(f"Could not prune staged data/: {e}")
 
-    # ── Strip addons/ (and legacy extensions/) from staged bundle ────
-    # User's installed features live in addons/ next to the EXE. The
-    # release zip should never contain this, but guard defensively.
-    for _addon_name in ("addons", "extensions"):
-        try:
-            _addon_staged = extracted_dir / _addon_name
-            if _addon_staged.exists():
-                shutil.rmtree(_addon_staged, ignore_errors=True)
-                log.info(f"Auto-update: stripped {_addon_name}/ from staged bundle")
-        except Exception as e:
-            log.warning(f"Could not prune staged {_addon_name}/: {e}")
-
     bat = write_install_batch(extracted_dir, install_dir)
 
     _UPDATE_STATE.update({
