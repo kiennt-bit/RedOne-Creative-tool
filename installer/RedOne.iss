@@ -1,4 +1,4 @@
-﻿; ============================================================
+; ============================================================
 ;  RedOne Creative — Windows installer (Inno Setup 6)
 ;  Build:  build_installer.bat   (hoặc:  ISCC.exe installer\RedOne.iss)
 ;  Prereq: 1) Inno Setup 6 đã cài   2) dist\RedOne Creative\ đã build (build.bat)
@@ -8,7 +8,7 @@
 ; ============================================================
 
 #define MyAppName "RedOne Creative"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "RedOne"
 #define MyAppExeName "RedOne Creative.exe"
 
