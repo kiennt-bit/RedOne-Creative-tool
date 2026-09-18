@@ -577,6 +577,7 @@ class BridgeFlowClient(FlowClient):
                 f"Aligning client account from {self._account_email} to active Flow tab account: {active_email}"
             )
             self._account_email = active_email
+            self.project_id = ""
 
         # 1. Active tab check (Chrome tab URL) — HIGHEST PRIORITY
         # If user opened or created a new project in Chrome, adopt it immediately!
@@ -595,10 +596,16 @@ class BridgeFlowClient(FlowClient):
             # If tab is not currently on this cached project, navigate to it!
             if not active_tab_proj or active_tab_proj != cached:
                 try:
-                    await bridge.init_flow_project(target_project_id=cached, timeout_ms=20000)
+                    res = await bridge.init_flow_project(target_project_id=cached, timeout_ms=20000)
+                    if isinstance(res, dict) and res.get("error") == "project_not_found":
+                        log.warning(f"[{self._account_email}] Cached project {cached} not found on Flow. Discarding cache.")
+                        BridgeFlowClient._FAILED_PROJECT_IDS.add(cached)
+                        BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+                        cached = None
                 except Exception as ex:
                     log.warning(f"[{self._account_email}] Tab navigation to cached {cached} failed: {ex}")
-            return self.project_id
+            if cached:
+                return self.project_id
 
         # 3. RPC UpteDb check (Google Cloud source of truth for user's real projects)
         projects = await self.fetch_user_projects()
@@ -608,15 +615,20 @@ class BridgeFlowClient(FlowClient):
             BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = latest_proj
             self.project_id = latest_proj
             log.info(f"[{self._account_email}] Auto-selected latest Google Flow project: {latest_proj}")
-            # Ensure the Chrome tab navigates to this project so grecaptcha is loaded!
+            # Ensure the Chrome tab navigates to this project preserving user session
             active_tab_proj = bridge.get_active_project_id()
             if not active_tab_proj or active_tab_proj != latest_proj:
                 log.info(f"[{self._account_email}] Tab not on {latest_proj} (currently {bridge._ext_last_url}). Navigating tab...")
                 try:
-                    await bridge.init_flow_project(target_project_id=latest_proj, timeout_ms=20000)
+                    nav_res = await bridge.init_flow_project(target_project_id=latest_proj, timeout_ms=20000)
+                    if isinstance(nav_res, dict) and nav_res.get("error") == "project_not_found":
+                        BridgeFlowClient._FAILED_PROJECT_IDS.add(latest_proj)
+                        BridgeFlowClient._ACTIVE_PROJECT_IDS.pop(self._account_email, None)
+                        valid_projects.remove(latest_proj)
                 except Exception as ex:
                     log.warning(f"[{self._account_email}] Tab navigation to {latest_proj} failed: {ex}")
-            return latest_proj
+            if latest_proj not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                return latest_proj
 
         # 4. Provision new project via browser extension (click "+ Dự án mới" in DOM)
         log.info(f"[{self._account_email}] No projects found. Requesting browser to initialize new project...")

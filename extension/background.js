@@ -54,6 +54,8 @@ let _lastJiggleAt = 0;
 // Active detected account from Google Flow tab (email, tier, credits)
 let _lastDetectedAccount = { email: null, tier: "FREE", credits: null };
 let _lastAccountDetectAt = 0;
+// Map tabId -> { email, tier, credits, url, lastDetectAt }
+const _tabAccountMap = new Map();
 
 // Shakker bridge state — set when content_shakker.js sends SHAKKER_SYNC.
 // Restored from chrome.storage at SW wake so the popup shows correct
@@ -138,9 +140,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onInstalled.addListener(() => _pollLoop());
 chrome.runtime.onStartup.addListener(() => _pollLoop());
 
-// Restart poll loop when any labs.google or flow.google.com tab completes load
-// (might be a new login).
+// Invalidate per-tab cache on navigation or closure, and restart poll loop
+// when any labs.google or flow.google.com tab completes load.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url) {
+        _tabAccountMap.delete(tabId);
+        _lastAccountDetectAt = 0;
+        _lastDetectedAccount = { email: null, tier: "FREE", credits: null };
+    }
     if (
         changeInfo.status === "complete" &&
         tab.url &&
@@ -149,6 +156,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     ) {
         _pollLoop();
     }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    _tabAccountMap.delete(tabId);
 });
 
 
@@ -227,12 +238,15 @@ async function _findShakkerTab() {
 
 
 /**
- * Find the first labs.google / flow.google.com tab that's signed in.
+ * Find the most relevant labs.google / flow.google.com tab that's signed in.
  * Returns the tab object or null.
  *
- * Google migrated the Flow UI from labs.google to flow.google.com in
- * Sep 2026 — we accept both domains so the extension works regardless
- * of which URL the user has open.
+ * Scoring criteria:
+ *  1. Penalize discarded tabs (+100) or tabs with error titles (+200).
+ *  2. Strongly prioritize tabs with tier === 'ULTRA' (-60) or 'PRO' (-30).
+ *  3. Strongly prioritize the user's active/focused tab (-40).
+ *  4. Favor more recently accessed tabs (t.lastAccessed recency).
+ *  5. Prefer flow.google.com (-10) over legacy labs.google.
  */
 async function _findLabsTab() {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -244,22 +258,43 @@ async function _findLabsTab() {
                     !u.includes("accounts.google.com");
             });
             if (labsTabs.length > 0) {
-                // Rank: active focused tab first, non-discarded first, then an active Flow project tab,
-                // then any Flow tab, then general labs.google.
+                const now = Date.now();
                 const score = (t) => {
                     const u = t.url || t.pendingUrl || "";
+                    const title = (t.title || "").toLowerCase();
                     let s = 0;
-                    if (t.discarded) s += 20;
-                    if (t.active) s -= 10; // Prioritize user's active/focused tab
-                    if (u.match(/\/project\/[a-zA-Z0-9_-]{36}/)) {
-                        s += 0; // Best: inside project workspace
-                    } else if (u.includes("flow.google.com") || u.includes("/tools/flow")) {
-                        s += 2; // Flow homepage
-                    } else {
-                        s += 4; // Other labs.google page
+
+                    // 1. Heavy penalty for discarded or error tabs
+                    if (t.discarded) s += 100;
+                    if (title.includes("không tìm thấy") || title.includes("not found") || title.includes("404")) {
+                        s += 200;
                     }
+
+                    // 2. High priority for ULTRA / PRO tier accounts
+                    const cachedAcc = _tabAccountMap.get(t.id);
+                    const tier = cachedAcc ? (cachedAcc.tier || "").toUpperCase() : "";
+                    if (tier === "ULTRA") s -= 60;
+                    else if (tier === "PRO") s -= 30;
+
+                    // 3. User focus & recency
+                    if (t.active) s -= 40; // Active tab in window
+                    const ageMs = Math.max(0, now - (t.lastAccessed || 0));
+                    // Up to +30 penalty for older inactive tabs (1 pt per 10s age, cap at 30)
+                    s += Math.min(30, Math.floor(ageMs / 10000));
+
+                    // 4. Domain: flow.google.com is current, labs.google is legacy
+                    if (u.includes("flow.google.com")) {
+                        s -= 10;
+                    }
+
+                    // 5. Slight preference for project view if otherwise equal
+                    if (u.match(/\/project\/[a-zA-Z0-9_-]{36}/)) {
+                        s -= 5;
+                    }
+
                     return s;
                 };
+
                 return labsTabs.sort((a, b) => score(a) - score(b))[0];
             }
         } catch (_) { /* fall through to retry */ }
@@ -274,15 +309,16 @@ async function _findLabsTab() {
  * along with subscription tier (ULTRA vs FREE vs PRO) and remaining credits.
  */
 async function _detectFlowAccountDetails(tab) {
-    if (!tab || !tab.id) return _lastDetectedAccount;
+    if (!tab || !tab.id) return { email: null, tier: "FREE", credits: null };
     const tabUrl = tab.url || tab.pendingUrl || "";
     if (!tabUrl.includes("flow.google.com") && !tabUrl.includes("labs.google")) {
-        return _lastDetectedAccount;
+        return { email: null, tier: "FREE", credits: null };
     }
 
-    // Cache detection for 5 seconds to avoid over-executing scripts on every poll
-    if (_lastDetectedAccount.email && (Date.now() - _lastAccountDetectAt < 5000)) {
-        return _lastDetectedAccount;
+    // Check per-tab cache (valid for 5s)
+    const cached = _tabAccountMap.get(tab.id);
+    if (cached && cached.email && (Date.now() - (cached.lastDetectAt || 0) < 5000)) {
+        return cached;
     }
 
     let detectedEmail = null;
@@ -358,16 +394,31 @@ async function _detectFlowAccountDetails(tab) {
                 // Fallback email from WIZ_global_data
                 try {
                     if (!email && window.WIZ_global_data) {
-                        const jsonStr = JSON.stringify(window.WIZ_global_data);
-                        const matches = jsonStr.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
-                        for (const m of matches) {
-                            if (isRealUserEmail(m)) {
-                                email = m.toLowerCase();
-                                break;
+                        if (typeof window.WIZ_global_data.oBeKc === "string" && isRealUserEmail(window.WIZ_global_data.oBeKc)) {
+                            email = window.WIZ_global_data.oBeKc.toLowerCase();
+                        }
+                        if (!email) {
+                            const jsonStr = JSON.stringify(window.WIZ_global_data);
+                            const matches = jsonStr.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+                            for (const m of matches) {
+                                if (isRealUserEmail(m)) {
+                                    email = m.toLowerCase();
+                                    break;
+                                }
                             }
                         }
                     }
                 } catch (_) {}
+
+                // Fallback email from URL query authuser
+                if (!email) {
+                    try {
+                        const m = window.location.search.match(/[?&]authuser=([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+                        if (m && isRealUserEmail(m[1])) {
+                            email = decodeURIComponent(m[1]).toLowerCase();
+                        }
+                    } catch (_) {}
+                }
 
                 // 2. Credits detection from page text
                 try {
@@ -451,8 +502,8 @@ async function _detectFlowAccountDetails(tab) {
             if (r.credits != null) detectedCredits = r.credits;
         }
 
-        // Method 2: Check NextAuth session endpoint if email missing
-        if (!detectedEmail) {
+        // Method 2: Check NextAuth session ONLY if on legacy labs.google/fx page (NOT flow.google.com)
+        if (!detectedEmail && tabUrl.includes("labs.google/fx")) {
             try {
                 const cookies = await chrome.cookies.getAll({ domain: "labs.google" });
                 const hasSession = cookies.some(c => c.name.includes("session-token"));
@@ -474,12 +525,16 @@ async function _detectFlowAccountDetails(tab) {
         console.warn("[RedOne] _detectFlowAccountDetails error:", e);
     }
 
+    const resultObj = {
+        email: detectedEmail,
+        tier: detectedTier || "FREE",
+        credits: detectedCredits,
+        lastDetectAt: Date.now(),
+    };
+
     if (detectedEmail) {
-        _lastDetectedAccount = {
-            email: detectedEmail,
-            tier: detectedTier || "FREE",
-            credits: detectedCredits,
-        };
+        _tabAccountMap.set(tab.id, resultObj);
+        _lastDetectedAccount = resultObj;
         _lastAccountDetectAt = Date.now();
     }
 
@@ -846,8 +901,18 @@ async function _doBatchExecuteTask(task) {
                     console.log("[RedOne BOQ] at:", atToken.substring(0, 30) + "...");
                     console.log("[RedOne BOQ] buildLabel:", buildLabel);
 
-                    // 3) Build URL
-                    const url = `/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
+                    // 3) Build URL preserving user account route (/u/1/, /u/2/, etc.) and authuser
+                    let basePath = "/";
+                    const uMatch = window.location.pathname.match(/^(\/u\/\d+)/);
+                    if (uMatch) {
+                        basePath = `${uMatch[1]}/`;
+                    }
+                    const authUserMatch = window.location.search.match(/[?&]authuser=([^&#]+)/);
+                    const authUserParam = authUserMatch
+                        ? `&authuser=${encodeURIComponent(authUserMatch[1])}`
+                        : (uMatch ? `&authuser=${uMatch[1].replace('/u/', '')}` : "");
+
+                    const url = `${basePath}_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcIdArg)}&source-path=${encodeURIComponent(sourcePathArg)}&bl=${encodeURIComponent(buildLabel)}&f.sid=${encodeURIComponent(fSid)}&hl=vi${authUserParam}&_reqid=${Math.floor(Math.random() * 900000) + 100000}&rt=c`;
 
                     // 4) POST (same-origin, browser attaches cookies automatically)
                     const ac = new AbortController();
@@ -932,6 +997,34 @@ async function _doBatchExecuteTask(task) {
 }
 
 
+// Helper: check if tab is on a Google Flow "Project not found" / error screen
+async function _checkIfTabHasProjectNotFound(tabId) {
+    try {
+        const res = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "MAIN",
+            func: () => {
+                const text = (document.body ? document.body.innerText : "").toLowerCase();
+                const title = (document.title || "").toLowerCase();
+                const errSignals = [
+                    "không tìm thấy dự án",
+                    "project not found",
+                    "dự án này không tồn tại",
+                    "this project does not exist",
+                    "bạn không có quyền truy cập",
+                    "you don't have access",
+                    "you do not have access",
+                    "you don't have permission"
+                ];
+                return errSignals.some(s => text.includes(s) || title.includes(s));
+            }
+        });
+        return Boolean(res && res[0] && res[0].result);
+    } catch (_) {
+        return false;
+    }
+}
+
 // ── Task: init_flow_project (ensure a project is active in Flow) ──────
 async function _doInitFlowProjectTask(task) {
     const tab = await _findLabsTab();
@@ -940,19 +1033,36 @@ async function _doInitFlowProjectTask(task) {
     const currentUrl = tab.url || tab.pendingUrl || "";
     const targetPid = task.payload?.target_project_id;
 
-    // A) If a target project was specified, navigate directly to it
+    // Preserve user routing prefix (/u/1/, /u/2/, etc.) and authuser query param
+    const uMatch = currentUrl.match(/\/(u\/\d+)\b/);
+    const userPrefix = uMatch ? `/${uMatch[1]}` : "";
+    const authUserMatch = currentUrl.match(/[?&]authuser=([^&#]+)/);
+    const authUserQuery = authUserMatch ? `?authuser=${encodeURIComponent(authUserMatch[1])}` : "";
+
+    const buildProjectUrl = (pid) => `https://flow.google.com${userPrefix}/project/${pid}${authUserQuery}`;
+
+    // A) If a target project was specified, navigate directly to it preserving user session
     if (targetPid) {
-        const targetUrl = `https://flow.google.com/project/${targetPid}`;
+        const targetUrl = buildProjectUrl(targetPid);
         if (!currentUrl.includes(targetPid)) {
-            console.log(`[RedOne] Navigating Flow tab to target project: ${targetPid}`);
+            console.log(`[RedOne] Navigating Flow tab to target project: ${targetPid} (url: ${targetUrl})`);
             await chrome.tabs.update(tab.id, { url: targetUrl });
             for (let i = 0; i < 30; i++) {
                 await new Promise(r => setTimeout(r, 500));
                 const updatedTab = await chrome.tabs.get(tab.id).catch(() => null);
                 const u = updatedTab ? (updatedTab.url || "") : "";
                 if (u.includes(targetPid)) {
+                    // Check if page ended up on "Project not found"
+                    await new Promise(r => setTimeout(r, 1200));
+                    const isError = await _checkIfTabHasProjectNotFound(tab.id);
+                    if (isError) {
+                        console.warn(`[RedOne] Project ${targetPid} not found. Recovering tab back to homepage...`);
+                        const homeUrl = `https://flow.google.com${userPrefix}/${authUserQuery}`;
+                        await chrome.tabs.update(tab.id, { url: homeUrl });
+                        return { error: "project_not_found", project_id: targetPid };
+                    }
                     // Give Angular SPA time to initialize grecaptcha.enterprise
-                    await new Promise(r => setTimeout(r, 1500));
+                    await new Promise(r => setTimeout(r, 1000));
                     return { project_id: targetPid, status: "navigated" };
                 }
             }
@@ -1003,7 +1113,7 @@ async function _doInitFlowProjectTask(task) {
         const res = (domResult && domResult[0] && domResult[0].result) || {};
         if (res.action === "found_existing" && res.id) {
             console.log(`[RedOne] Navigating to existing project from DOM: ${res.id}`);
-            await chrome.tabs.update(tab.id, { url: `https://flow.google.com/project/${res.id}` });
+            await chrome.tabs.update(tab.id, { url: buildProjectUrl(res.id) });
             await new Promise(r => setTimeout(r, 2000));
             return { project_id: res.id, status: "navigated" };
         }

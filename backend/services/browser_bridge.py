@@ -195,30 +195,43 @@ class BrowserBridge:
         self._ext_last_poll = time.time()
         self._ext_last_status = status or "unknown"
         self._ext_last_url = url or ""
-        if email:
-            self._ext_last_email = email.strip().lower()
-        if tier:
-            self._ext_last_tier = tier.strip().upper()
-        if credits is not None:
-            self._ext_last_credits = credits
         if status == "ready":
             self._ext_last_ready_poll = time.time()
+            if email:
+                self._ext_last_email = email.strip().lower()
+            else:
+                self._ext_last_email = None
+            if tier:
+                self._ext_last_tier = tier.strip().upper()
+            if credits is not None:
+                self._ext_last_credits = credits
+        else:
+            # If tab is not ready (logged out / no tab), clear active credentials immediately
+            self._ext_last_email = None
+            self._ext_last_tier = None
+            self._ext_last_credits = None
 
     def get_active_account_email(self) -> Optional[str]:
         """Return the Google account email detected from the active Flow tab, if any."""
+        if self._ext_last_status != "ready":
+            return None
         return self._ext_last_email if self._ext_last_email else None
 
     def get_active_account_tier(self) -> str:
         """Return the subscription tier detected from the active Flow tab ('ULTRA', 'PRO', 'FREE')."""
+        if self._ext_last_status != "ready":
+            return "FREE"
         return self._ext_last_tier or "FREE"
 
     def get_active_account_credits(self) -> Optional[int]:
         """Return the remaining credits detected from the active Flow tab, if any."""
+        if self._ext_last_status != "ready":
+            return None
         return self._ext_last_credits
 
     def get_active_project_id(self) -> Optional[str]:
         """Extract project ID from the last reported tab URL if available."""
-        if not self._ext_last_url:
+        if self._ext_last_status != "ready" or not self._ext_last_url:
             return None
         import re
         m = re.search(r"/project/([a-zA-Z0-9_-]{36})", self._ext_last_url)

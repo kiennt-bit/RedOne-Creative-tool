@@ -51,9 +51,17 @@ def _pick_account() -> Optional[dict]:
             except Exception:
                 pass
 
-    accounts = [a for a in db.get_accounts() if a["enabled"]]
-    accounts.sort(key=lambda a: -(a.get("credit") or 0))
+    accounts = [a for a in db.get_accounts() if a.get("enabled")]
     if accounts:
+        def _tier_score(tier_str: Optional[str]) -> int:
+            t = (tier_str or "").upper()
+            if "ULTRA" in t:
+                return 30
+            if "PRO" in t:
+                return 20
+            return 10
+
+        accounts.sort(key=lambda a: (_tier_score(a.get("tier")), a.get("credit") or 0), reverse=True)
         return accounts[0]
     from ..services.flow_factory import is_vertex_mode, synthetic_vertex_account
     if is_vertex_mode():
