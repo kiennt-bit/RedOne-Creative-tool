@@ -1144,8 +1144,14 @@ class BridgeFlowClient(FlowClient):
         "veo_3_generate_video_lite_lp": "veo_3_1_t2v_lite_low_priority",
         "veo_3_1_t2v_lite_low_priority": "veo_3_1_t2v_lite_low_priority",
         "veo_3_1_i2v_lite_low_priority": "veo_3_1_i2v_lite_low_priority",
+        "veo_3_1_t2v_fast_ultra": "veo_3_1_t2v_fast_ultra",
+        "veo_3_1_t2v_lite": "veo_3_1_t2v_lite",
+        "veo_3_1_t2v": "veo_3_1_t2v",
+        "veo_3_1_fast": "veo_3_1_t2v_fast",
         "veo_2_i2v_fast": "veo_2_i2v_fast",
         "veo_2_generate_video_fast": "veo_2_i2v_fast",
+        "veo_2_0_distilled_t2v": "veo_2_0_distilled_t2v",
+        "veo_2_0_t2v": "veo_2_0_t2v",
     }
 
     async def generate_video(
@@ -1157,8 +1163,10 @@ class BridgeFlowClient(FlowClient):
         aspect_ratio: str = "LANDSCAPE",
         duration: int = 8,
     ) -> Optional[str]:
-        """Submit video generation request via BOQ batchexecute RPC `eb1hJf`.
+        """Submit video generation request via BOQ batchexecute RPC.
 
+        - Text-to-Video (T2V): RPC `YhhmEf` (5-item candidate, no ref_config)
+        - Image-to-Video (I2V): RPC `eb1hJf` (6-item candidate with ref_config)
         Returns the generation/media ID.
         """
         import uuid as _uuid
@@ -1167,83 +1175,103 @@ class BridgeFlowClient(FlowClient):
         # Map aspect ratio: 2 = 16:9 (LANDSCAPE), 1 = 9:16 (PORTRAIT)
         ar_code = 1 if ("9:16" in str(aspect_ratio) or "PORTRAIT" in str(aspect_ratio).upper()) else 2
 
-        # Map model name
+        # Map model name and RPC ID
         if reference_image:
             model_name = "veo_3_1_i2v_lite_low_priority"
+            rpc_id = "eb1hJf"
         else:
-            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, "veo_3_1_t2v_lite_low_priority")
-
-        recaptcha_token = await self.get_recaptcha_token("VIDEO_GENERATION")
-
-        client_ctx = [
-            None, 22, None, None, None,
-            self.project_id,
-            None, None, None, None,
-            [recaptcha_token, 1] if recaptcha_token else None,
-        ]
-
-        ref_config = None
-        if reference_image:
-            # reference_image is media_id
-            ref_config = [None, reference_image, None, None, None, [None, None, 1, 1]]
-
-        prompt_item = [None, None, [[[prompt or "Static shot"]]]]
-        uuid_a = str(_uuid.uuid4()).upper()
-        uuid_b = str(_uuid.uuid4()).upper()
-
-        candidate = [
-            prompt_item,
-            model_name,
-            ar_code,
-            None,
-            ref_config,
-            [None, None, None, None, uuid_a, uuid_b],
-        ]
-
-        batch_uuid = str(_uuid.uuid4()).upper()
-        inner_payload = [
-            [candidate],
-            client_ctx,
-            [batch_uuid, 2],
-        ]
+            model_name = self.BOQ_VIDEO_MODEL_MAP.get(model_key, model_key or "veo_3_1_t2v_lite_low_priority")
+            rpc_id = "YhhmEf"
 
         source_path = f"/project/{self.project_id}"
         log.info(
-            f"[{self._account_email}] (BOQ) Generating video: model={model_name}, "
+            f"[{self._account_email}] (BOQ) Generating video ({rpc_id}): model={model_name}, "
             f"has_ref={bool(reference_image)}, project={self.project_id}"
         )
 
-        r = await bridge.batch_execute(
-            rpc_id="eb1hJf",
-            inner_payload=inner_payload,
-            source_path=source_path,
-            timeout_ms=120000,
-        )
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(2.0)
 
-        status = r.get("status", 0)
-        err = r.get("error")
-        rpc_result = r.get("rpc_result")
+            recaptcha_token = await self.get_recaptcha_token("VIDEO_GENERATION")
 
-        if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err))):
-            await self._handle_project_error(status, err)
+            client_ctx = [
+                None, 22, None, None, None,
+                self.project_id,
+                None, None, None, None,
+                [recaptcha_token, 1] if recaptcha_token else None,
+            ]
 
-        if err or status != 200 or not rpc_result:
-            log.error(f"(BOQ) eb1hJf failed: status={status}, err={err}")
-            raise ValueError(f"Tạo video thất bại: {err or f'HTTP {status}'}")
+            prompt_item = [None, None, [[[prompt or "Static shot"]]]]
+            uuid_a = str(_uuid.uuid4()).upper()
+            uuid_b = str(_uuid.uuid4()).upper()
 
-        active_p = r.get("active_project_id")
-        if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
-            BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
-            self.project_id = active_p
+            if reference_image:
+                # I2V: 6-item candidate with ref_config at index 4
+                ref_config = [None, reference_image, None, None, None, [None, None, 1, 1]]
+                candidate = [
+                    prompt_item,
+                    model_name,
+                    ar_code,
+                    None,
+                    ref_config,
+                    [None, None, None, None, uuid_a, uuid_b],
+                ]
+            else:
+                # T2V: 5-item candidate directly ending with UUIDs at index 4 (confirmed via HAR capture)
+                candidate = [
+                    prompt_item,
+                    model_name,
+                    ar_code,
+                    None,
+                    [None, None, None, None, uuid_a, uuid_b],
+                ]
 
-        try:
-            candidates = rpc_result[3] if len(rpc_result) > 3 and isinstance(rpc_result[3], list) else rpc_result[1]
-            generation_id = candidates[0][0]
-            log.info(f"[{self._account_email}] (BOQ) Video generation started: {generation_id}")
-            return generation_id
-        except (IndexError, TypeError) as e:
-            log.error(f"(BOQ) Could not extract generation_id from eb1hJf: {e}, res={str(rpc_result)[:300]}")
-            raise ValueError(f"Không thể trích xuất ID video: {e}")
+            batch_uuid = str(_uuid.uuid4()).upper()
+            inner_payload = [
+                [candidate],
+                client_ctx,
+                [batch_uuid, 2],
+            ]
+
+            r = await bridge.batch_execute(
+                rpc_id=rpc_id,
+                inner_payload=inner_payload,
+                source_path=source_path,
+                timeout_ms=120000,
+            )
+
+            status = r.get("status", 0)
+            err = r.get("error")
+            rpc_result = r.get("rpc_result")
+
+            if status == 400 or (err and ("UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err))):
+                await self._handle_project_error(status, err)
+                if attempt < 2:
+                    source_path = f"/project/{self.project_id}"
+                    continue
+
+            if err or status != 200 or not rpc_result:
+                log.error(f"(BOQ) {rpc_id} failed (attempt {attempt + 1}): status={status}, err={err}")
+                if attempt < 2 and (not err or "UNUSUAL_ACTIVITY" in str(err) or "[7," in str(err)):
+                    continue
+                raise ValueError(f"Tạo video thất bại: {err or f'HTTP {status}'}")
+
+            active_p = r.get("active_project_id")
+            if active_p and active_p != self.project_id and active_p not in BridgeFlowClient._FAILED_PROJECT_IDS:
+                BridgeFlowClient._ACTIVE_PROJECT_IDS[self._account_email] = active_p
+                self.project_id = active_p
+
+            try:
+                candidates = rpc_result[3] if len(rpc_result) > 3 and isinstance(rpc_result[3], list) else rpc_result[1]
+                generation_id = candidates[0][0]
+                log.info(f"[{self._account_email}] (BOQ) Video generation started ({rpc_id}): {generation_id}")
+                return generation_id
+            except (IndexError, TypeError) as e:
+                log.error(f"(BOQ) Could not extract generation_id from {rpc_id}: {e}, res={str(rpc_result)[:300]}")
+                if attempt < 2:
+                    continue
+                raise ValueError(f"Không thể trích xuất ID video: {e}")
 
     async def poll_status(self, generation_id: str) -> dict:
         """Poll video generation status via BOQ batchexecute RPC `jwpduf`."""
